@@ -159,13 +159,23 @@ class MyCustomServer(BaseMCPServer):
         super().__init__(*args, **kwargs)
         # Initialize custom functionality
         self.setup_custom_handlers()
-    
+
     def setup_custom_handlers(self):
         # Add custom functionality
         pass
 ```
 
-### 2. Implementing Extensions
+### 2. Registry Registration Requirement
+**CRITICAL: Every MCP server MUST register with the local MCP registry on startup.** This is a mandatory requirement for all MCP server implementations:
+
+- The server must automatically register with the local MCP registry when it starts up
+- The server must continuously send health checks to the registry at regular intervals
+- The server must update its health status in the registry when its status changes
+- The server must deregister from the registry when shutting down gracefully
+
+This ensures proper service discovery, monitoring, and orchestration within the MCP ecosystem.
+
+### 3. Implementing Extensions
 Use the extension pattern for modular functionality:
 
 ```python

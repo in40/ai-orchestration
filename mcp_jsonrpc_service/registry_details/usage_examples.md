@@ -18,7 +18,7 @@ python -m src.registry.main
 
 ### HTTP Transport
 ```bash
-python -m src.registry.main --transport streamable-http --port 8080
+python -m src.registry.main --transport streamable-http --port 6000
 ```
 
 ### With Custom Configuration
@@ -27,7 +27,7 @@ python -m src.registry.main --transport streamable-http --port 8080
 export DATABASE_URL="postgresql://user:pass@localhost/mcp_registry"
 export HEALTH_CHECK_INTERVAL=30
 
-python -m src.registry.main --transport streamable-http --port 8080
+python -m src.registry.main --transport streamable-http --port 6000
 ```
 
 ## Registering an MCP Server
@@ -238,7 +238,7 @@ The registry can be configured using environment variables:
 | `DATABASE_URL` | `postgresql://mcp_user:mcp_password@localhost/mcp_registry` | Database connection string |
 | `REDIS_URL` | `redis://localhost:6379` | Redis URL for caching |
 | `HTTP_HOST` | `0.0.0.0` | Host for HTTP transport |
-| `HTTP_PORT` | `8080` | Port for HTTP transport |
+| `HTTP_PORT` | `6000` | Port for HTTP transport (as configured in .env) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `HEALTH_CHECK_INTERVAL` | `60` | Interval for health checks in seconds |
 | `JWT_SECRET` | `dev-secret-change-in-production` | Secret for JWT tokens |
