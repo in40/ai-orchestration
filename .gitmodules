@@ -1,0 +1,3 @@
+[submodule "mcp_jsonrpc_registry"]
+	path = mcp_jsonrpc_registry
+	url = ./mcp_jsonrpc_registry
