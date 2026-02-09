@@ -19,12 +19,25 @@ The MCP Server Registry is a centralized service that maintains a catalog of ava
 
 The registry implements the following MCP primitives:
 
+### HTTP Transport Endpoints
+The registry supports HTTP transport for MCP protocol communication:
+
+- **POST `/rpc`**: Handle MCP JSON-RPC requests over HTTP
+  - Accepts JSON-RPC 2.0 requests for all registry methods
+  - Request format: `{"jsonrpc": "2.0", "method": "<method_name>", "params": {...}, "id": "<request_id>"}`
+  - Response format: `{"jsonrpc": "2.0", "result": {...}, "id": "<request_id>"}` or `{"jsonrpc": "2.0", "error": {...}, "id": "<request_id>"}`
+  
+- **GET `/rpc`**: MCP Protocol Info Endpoint
+  - Provides information about the MCP server capabilities
+  - Returns server information in JSON format
+
 ### Tools
 - `registry/list_servers`: List all registered MCP servers
 - `registry/get_server_details`: Get details for a specific server
 - `registry/search_servers`: Search servers by name, description, or tags
 - `registry/register_server`: Register a new MCP server
 - `registry/update_server_status`: Update server health status
+- `rpc.discover`: Return the OpenRPC schema for this service
 
 ### Resources
 - `registry://servers`: Provides all registered servers in structured format
@@ -33,8 +46,11 @@ The registry implements the following MCP primitives:
 
 ## Prerequisites
 
-- Python 3.9+
-- PostgreSQL database
+- Python 3.13+
+- PostgreSQL 12+ with the following:
+  - Database: `mcp_registry`
+  - User: `mcp_user` with password `mcp_password`
+  - Proper permissions granted to the user
 - Redis (for caching, optional)
 
 ## Installation
@@ -45,17 +61,53 @@ The registry implements the following MCP primitives:
    cd mcp-jsonrpc-registry
    ```
 
-2. Install dependencies:
+2. Set up PostgreSQL database:
+   
+   **Option 1: Using the initialization script**
    ```bash
-   pip install -r requirements.txt
+   # Make sure PostgreSQL server is running
+   sudo systemctl start postgresql  # On Debian/Ubuntu systems
+   
+   # Run the database initialization script
+   ./init_database.sh
    ```
    
-   Or with Poetry:
+   **Option 2: Manual setup**
    ```bash
-   poetry install
+   # Switch to postgres user and access PostgreSQL
+   sudo -u postgres psql
+   
+   # In PostgreSQL prompt, run these commands:
+   CREATE USER mcp_user WITH PASSWORD 'mcp_password';
+   CREATE DATABASE mcp_registry OWNER mcp_user;
+   GRANT ALL PRIVILEGES ON DATABASE mcp_registry TO mcp_user;
+   \q  # Exit PostgreSQL prompt
    ```
 
-3. Set up environment variables:
+3. Set up the virtual environment:
+   
+   **On Linux/Mac:**
+   ```bash
+   ./setup_env.sh
+   ```
+   
+   **On Windows:**
+   ```cmd
+   setup_env.bat
+   ```
+
+   Or set up manually:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Linux/Mac
+   # or
+   venv\Scripts\activate     # On Windows
+   
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+4. Set up environment variables:
    ```bash
    cp .env.example .env
    # Edit .env with your configuration
@@ -168,9 +220,39 @@ mypy src/
 ### Running the Development Server
 
 ```bash
-# With virtual environment activated
-source venv/bin/activate
+# Activate the virtual environment first
+source venv/bin/activate  # On Linux/Mac
+# or
+venv\Scripts\activate     # On Windows
+
+# Then run the server
 python -m src.registry.main
+```
+
+Or use the convenience script to run the server directly:
+```bash
+# On Linux/Mac
+source venv/bin/activate && python -m src.registry.main --transport streamable-http --port 8080
+
+# On Windows
+venv\Scripts\activate && python -m src.registry.main --transport streamable-http --port 8080
+```
+
+Or use the automated startup scripts:
+```bash
+# On Linux/Mac
+./start_registry.sh
+
+# On Windows
+start_registry.bat
+```
+
+To stop the registry server:
+```bash
+# On Linux/Mac
+./stop_registry.sh
+
+# On Windows (just press Ctrl+C in the terminal where it's running)
 ```
 
 ## Project Structure
@@ -192,6 +274,21 @@ mcp-jsonrpc-registry/
 ├── pyproject.toml         # Poetry configuration
 └── README.md
 ```
+
+## Database Schema
+
+The registry uses PostgreSQL to store information about registered MCP servers. The following database objects are created automatically when the application starts:
+
+### Database Requirements
+- Database name: `mcp_registry`
+- Database user: `mcp_user` with password `mcp_password`
+- User permissions: Full access to the `mcp_registry` database
+
+### Tables
+- `registered_servers`: Stores information about registered MCP servers including name, description, endpoint, capabilities, metadata, registration timestamp, last seen timestamp, health status, and tags.
+
+### Automatic Setup
+When the registry server starts, it will automatically create the required tables if they don't exist.
 
 ## Contributing
 

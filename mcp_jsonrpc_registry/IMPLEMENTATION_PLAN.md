@@ -39,8 +39,8 @@ This document outlines the implementation plan for an MCP (Model Context Protoco
 - Redis: Caching for frequently accessed registry data
 
 #### Infrastructure
-- Docker: Containerization
-- Kubernetes: Orchestration for production
+- Virtual Environment: Python environment isolation
+- Kubernetes: Orchestration for production (optional)
 - Nginx/Traefik: Load balancing
 
 ## Phase 2: MCP Server Contract Documentation
@@ -87,7 +87,7 @@ This document outlines the implementation plan for an MCP (Model Context Protoco
 ## Phase 5: Deployment and Operations
 
 ### 5.1 Deployment Options
-- Docker containers for easy deployment
+- Virtual environment for Python dependency isolation
 - Kubernetes manifests for production deployment
 - Configuration management for different environments
 
