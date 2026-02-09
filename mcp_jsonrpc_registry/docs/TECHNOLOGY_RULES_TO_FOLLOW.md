@@ -16,7 +16,7 @@ Your server must define its capabilities using this exact structure:
 ```python
 {
   "resources": boolean,    # Whether the server supports resources
-  "tools": boolean,        # Whether the server supports tools  
+  "tools": boolean,        # Whether the server supports tools
   "prompts": boolean,      # Whether the server supports prompts
   "roots": boolean,        # Whether the server supports roots
   "sampling": boolean      # Whether the server supports sampling
@@ -25,7 +25,7 @@ Your server must define its capabilities using this exact structure:
 
 ## 3. Registration Requirements
 
-Your server must be able to register with the registry using the `registry/register_server` method with this payload structure:
+Your server must be able to register with the registry using the `registry-register_server` method with this payload structure:
 
 ```python
 {
@@ -48,7 +48,7 @@ Your server must support at least one of these transport methods:
 ## 5. Technology Stack Requirements
 
 ### Python-Based Implementation (Recommended)
-- **Python Version**: 3.9 or higher
+- **Python Version**: 3.13 or higher
 - **MCP Library**: Use the official `mcp` library (version 1.0.0 or higher)
 - **Web Framework**: Compatible with FastAPI-style routing if using HTTP transport
 - **Async Support**: Implement asynchronous operations for optimal performance
@@ -63,7 +63,7 @@ If implementing in another language:
 
 - Implement a health check endpoint accessible via HTTP at `/health` (if using HTTP transport)
 - Return HTTP 200 status when operational
-- Respond to health status updates from the registry via the `registry/update_server_status` method
+- Respond to health status updates from the registry via the `registry-update_server_status` method
 - Maintain connection availability for the registry's periodic health checks (default interval: 60 seconds)
 
 ## 7. Data Model Compliance
@@ -112,5 +112,11 @@ Your server should support configurable settings similar to the registry:
 - Provide clear endpoint information for the registry
 - Include usage examples showing how to interact with your server
 - Specify any prerequisites or dependencies required to run your server
+
+## 13. MCP Standard Endpoint
+
+- The registry follows MCP standards with the `/mcp` endpoint for HTTP transport
+- The previous `/rpc` endpoint has been deprecated in favor of the standardized `/mcp` endpoint
+- All MCP communications should use the `/mcp` endpoint for compliance with the Model Context Protocol
 
 These rules ensure that your MCP server will integrate smoothly with the registry and be discoverable by clients using the standard MCP protocol.

@@ -74,13 +74,9 @@ class BaseMCPServer:
         self._openrpc_schema = self._generate_openrpc_schema()
     
     def _initialize_server(self):
-        """Initialize the underlying MCP server based on the selected transport.
-        
-        For HTTP transport, sets up endpoints at /mcp for both GET and POST methods
-        as per the new MCP standards, replacing the deprecated /rpc endpoint.
-        """
+        """Initialize the underlying MCP server based on the selected transport."""
         self._server = Server(self.name)
-
+        
         # Add default handlers
         self._setup_default_handlers()
     
@@ -91,9 +87,9 @@ class BaseMCPServer:
 
     def _generate_openrpc_schema(self) -> Dict[str, Any]:
         """Generate the OpenRPC schema for this server."""
-        # This is a simplified version - in a real implementation,
+        # This is a simplified version - in a real implementation, 
         # this would be a complete OpenRPC schema
-        schema = {
+        return {
             "openrpc": "1.3.2",
             "info": {
                 "title": self.name,
@@ -122,25 +118,6 @@ class BaseMCPServer:
                 }
             ]
         }
-        
-        # If using HTTP transport, add information about the /mcp endpoint
-        if self.transport == "http":
-            schema["paths"] = {
-                "/mcp": {
-                    "post": {
-                        "summary": "Handle MCP JSON-RPC requests over HTTP",
-                        "description": "Accepts JSON-RPC 2.0 requests via POST method for MCP protocol communication",
-                        "operationId": "handleMcpPost"
-                    },
-                    "get": {
-                        "summary": "MCP Protocol Info Endpoint",
-                        "description": "Provides information about the MCP server capabilities",
-                        "operationId": "handleMcpGet"
-                    }
-                }
-            }
-        
-        return schema
 
     async def handle_discover_method(self) -> Dict[str, Any]:
         """Handle the rpc.discover method call."""
@@ -227,14 +204,14 @@ class BaseMCPServer:
                 return response
         
         # Add the MCP server routes to the FastAPI app
-        # Implement both GET and POST for /mcp endpoint as per new MCP standards
-
+        # Implement both GET and POST for /rpc endpoint as per OpenRPC spec
+        
         # Import required classes
         from fastapi import Request
-
-        # GET /mcp: Provides information about the MCP server capabilities
-        @app.get("/mcp")
-        async def get_mcp_info():
+        
+        # GET /rpc: Provides information about the MCP server capabilities
+        @app.get("/rpc")
+        async def get_rpc_info():
             return {
                 "server_info": {
                     "name": self.name,
@@ -243,21 +220,21 @@ class BaseMCPServer:
                     "endpoint": self._get_endpoint()
                 }
             }
-
-        # POST /mcp: Accepts JSON-RPC 2.0 requests via POST method for MCP protocol communication
-        @app.post("/mcp")
-        async def handle_mcp_post(request: Request):
+        
+        # POST /rpc: Accepts JSON-RPC 2.0 requests via POST method for MCP protocol communication
+        @app.post("/rpc")
+        async def handle_rpc_post(request: Request):
             from starlette.requests import Request as StarletteRequest
-
+            
             # Get raw body to process JSON-RPC request
             body_bytes = await request.body()
             try:
                 rpc_request = json.loads(body_bytes.decode())
-
+                
                 # Process the JSON-RPC request
                 if rpc_request.get("method") == "rpc.discover":
                     result = await self.handle_discover_method()
-
+                    
                     # Create JSON-RPC response
                     response = {
                         "jsonrpc": "2.0",
@@ -298,16 +275,6 @@ class BaseMCPServer:
                     "id": rpc_request.get("id") if 'rpc_request' in locals() else None
                 }
                 return response
-
-        # Update the OpenRPC schema to reflect the new endpoint
-        self._openrpc_schema = self._generate_openrpc_schema()
-
-        # Update the docstring to reflect the new endpoint
-        """Initialize the underlying MCP server based on the selected transport.
-        
-        For HTTP transport, sets up endpoints at /mcp for both GET and POST methods
-        as per the new MCP standards, replacing the deprecated /rpc endpoint.
-        """
 
         # Run the server in a background task
         config = uvicorn.Config(

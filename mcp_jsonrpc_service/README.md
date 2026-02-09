@@ -15,7 +15,7 @@ This is a base skeleton for MCP (Model Context Protocol) servers that can be ext
 
 ## Prerequisites
 
-- Python 3.9 or higher
+- Python 3.13 or higher
 - MCP library (version 1.0.0 or higher)
 
 ## Installation
@@ -255,6 +255,12 @@ pytest --cov=src tests/
 - Use async/await consistently throughout your implementation
 - Follow the security best practices outlined in the developer documentation
 
+### Migration Guide
+With the new MCP standards, please note the following changes:
+- The HTTP transport endpoint has changed from `/rpc` to `/mcp`
+- Registry method names now use hyphens instead of slashes (e.g., `registry/register_server` is now `registry-register_server`)
+- Minimum Python version requirement has been updated from 3.9+ to 3.13+
+
 ### New Functionality Added for Compliance:
 
 #### OpenRPC Schema Discovery
@@ -267,9 +273,9 @@ print(result['openrpc'])  # Should output "1.3.2"
 ```
 
 #### HTTP Transport Enhancement
-The HTTP transport now fully supports both GET and POST methods for the `/rpc` endpoint:
-- GET `/rpc`: Returns server information and capabilities
-- POST `/rpc`: Accepts JSON-RPC 2.0 requests for MCP protocol communication
+The HTTP transport now fully supports both GET and POST methods for the `/mcp` endpoint:
+- GET `/mcp`: Returns server information and capabilities
+- POST `/mcp`: Accepts JSON-RPC 2.0 requests for MCP protocol communication
 
 #### Improved Registry Communication
 The registry client now has enhanced stdio communication capabilities, allowing for proper communication with the registry server via stdio transport.

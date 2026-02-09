@@ -21,11 +21,11 @@ servers:
     description: "HTTPS transport for remote registry server deployment"
 
 paths:
-  /rpc:
+  /mcp:
     post:
       summary: "Handle MCP JSON-RPC requests over HTTP"
       description: "Accepts JSON-RPC 2.0 requests via POST method for MCP protocol communication"
-      operationId: "handleRpcPost"
+      operationId: "handleMcpPost"
       requestBody:
         required: true
         content:
@@ -84,7 +84,7 @@ paths:
     get:
       summary: "MCP Protocol Info Endpoint"
       description: "Provides information about the MCP server capabilities"
-      operationId: "handleRpcGet"
+      operationId: "handleMcpGet"
       responses:
         '200':
           description: "Server information"
@@ -96,7 +96,7 @@ paths:
 
 methods:
   # Registry Tools
-  - name: "registry/list_servers"
+  - name: "registry-list_servers"
     summary: "List all registered MCP servers"
     description: "Returns a list of all MCP servers registered with the registry, including their capabilities and status."
     params: []
@@ -166,7 +166,7 @@ methods:
                     type: "string"
                     description: "Tags associated with the server"
 
-  - name: "registry/get_server_details"
+  - name: "registry-get_server_details"
     summary: "Get detailed information about a specific registered server"
     description: "Retrieves detailed information about a specific registered MCP server by its ID."
     params:
@@ -237,7 +237,7 @@ methods:
             type: "string"
             description: "Error message if the server was not found"
 
-  - name: "registry/search_servers"
+  - name: "registry-search_servers"
     summary: "Search for registered MCP servers"
     description: "Search for registered MCP servers by name, description, or tags."
     params:
@@ -321,7 +321,7 @@ methods:
                     type: "string"
                     description: "Tags associated with the server"
 
-  - name: "registry/register_server"
+  - name: "registry-register_server"
     summary: "Register a new MCP server with the registry"
     description: "Registers a new MCP server with the registry, making it discoverable to clients."
     params:
@@ -402,7 +402,7 @@ methods:
             type: "string"
             description: "Error message if registration failed"
 
-  - name: "registry/update_server_status"
+  - name: "registry-update_server_status"
     summary: "Update the health status of a registered server"
     description: "Updates the health status of a registered server in the registry."
     params:

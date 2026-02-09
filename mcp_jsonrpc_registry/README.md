@@ -22,14 +22,16 @@ The registry implements the following MCP primitives:
 ### HTTP Transport Endpoints
 The registry supports HTTP transport for MCP protocol communication:
 
-- **POST `/rpc`**: Handle MCP JSON-RPC requests over HTTP
+- **POST `/mcp`**: Handle MCP JSON-RPC requests over HTTP (STANDARD)
   - Accepts JSON-RPC 2.0 requests for all registry methods
   - Request format: `{"jsonrpc": "2.0", "method": "<method_name>", "params": {...}, "id": "<request_id>"}`
   - Response format: `{"jsonrpc": "2.0", "result": {...}, "id": "<request_id>"}` or `{"jsonrpc": "2.0", "error": {...}, "id": "<request_id>"}`
-  
-- **GET `/rpc`**: MCP Protocol Info Endpoint
+  - NOTE: Previously, `/rpc` was used as the endpoint, but this has been removed as it does not follow MCP standards. The `/mcp` endpoint follows the Model Context Protocol convention.
+
+- **GET `/mcp`**: MCP Protocol Info Endpoint (STANDARD)
   - Provides information about the MCP server capabilities
   - Returns server information in JSON format
+  - NOTE: The `/rpc` endpoint was previously used but has been removed as non-standard.
 
 ### Tools
 - `registry/list_servers`: List all registered MCP servers
@@ -120,7 +122,7 @@ The registry can be configured using environment variables:
 - `DATABASE_URL`: PostgreSQL database URL (default: `postgresql://mcp_user:mcp_password@localhost/mcp_registry`)
 - `REDIS_URL`: Redis URL (default: `redis://localhost:6379`)
 - `HTTP_HOST`: Host for HTTP transport (default: `0.0.0.0`)
-- `HTTP_PORT`: Port for HTTP transport (default: `8080`)
+- `HTTP_PORT`: Port for HTTP transport (default: `6000` as configured in .env)
 - `LOG_LEVEL`: Logging level (default: `INFO`)
 - `HEALTH_CHECK_INTERVAL`: Interval for health checks in seconds (default: `60`)
 - `JWT_SECRET`: Secret for JWT tokens (default: `dev-secret-change-in-production`)
@@ -136,7 +138,7 @@ python -m src.registry.main
 
 For HTTP transport:
 ```bash
-python -m src.registry.main --transport streamable-http --port 8080
+python -m src.registry.main --transport streamable-http --port 6000
 ```
 
 ### Registering an MCP Server
@@ -232,10 +234,10 @@ python -m src.registry.main
 Or use the convenience script to run the server directly:
 ```bash
 # On Linux/Mac
-source venv/bin/activate && python -m src.registry.main --transport streamable-http --port 8080
+source venv/bin/activate && python -m src.registry.main --transport streamable-http --port 6000
 
 # On Windows
-venv\Scripts\activate && python -m src.registry.main --transport streamable-http --port 8080
+venv\Scripts\activate && python -m src.registry.main --transport streamable-http --port 6000
 ```
 
 Or use the automated startup scripts:

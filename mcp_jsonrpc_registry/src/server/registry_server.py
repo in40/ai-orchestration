@@ -4,6 +4,10 @@ from mcp.server import FastMCP
 from typing import List, Dict, Any
 import asyncio
 from datetime import datetime
+from starlette.applications import Starlette
+from starlette.routing import Route
+from starlette.responses import Response
+import json
 
 from src.services.database import DatabaseService
 from src.services.health_monitor import HealthMonitorService
@@ -13,7 +17,8 @@ from config.settings import settings
 
 class RegistryServer:
     def __init__(self):
-        self.mcp = FastMCP("mcp-registry-server")
+        # Initialize FastMCP with /mcp as the standard endpoint (following MCP convention)
+        self.mcp = FastMCP("mcp-registry-server", streamable_http_path="/mcp")
         self.db_service = DatabaseService()
         self.health_monitor = HealthMonitorService(self.db_service)
 
@@ -342,41 +347,23 @@ class RegistryServer:
             **kwargs: Additional arguments for the transport (host, port for HTTP)
         """
         import asyncio
-        import uvicorn
-        
+
         # Define an async wrapper to properly manage the event loop
         async def run_with_health_monitor():
             # Start the health monitor in the background
             health_task = asyncio.create_task(self.health_monitor.start_periodic_health_checks())
-            
+
             # Run the MCP server based on transport type
             if transport == "streamable-http":
-                # For streamable-http, we need to run the FastAPI app with uvicorn
-                # But we need to do this properly within the async context
-                # We'll run the app in a separate thread or use an alternative approach
-                host = kwargs.get("host", "0.0.0.0")
-                port = kwargs.get("port", 8080)
+                # For streamable-http, use the FastMCP's built-in method
+                # Update settings if host/port are provided
+                if "host" in kwargs:
+                    self.mcp.settings.host = kwargs["host"]
+                if "port" in kwargs:
+                    self.mcp.settings.port = kwargs["port"]
                 
-                # Get the FastAPI app for streamable HTTP transport
-                app = self.mcp.streamable_http_app
-                
-                # Run the app in a separate thread so we can continue with the event loop
-                import threading
-                import time
-                
-                def run_uvicorn():
-                    uvicorn.run(app, host=host, port=port, log_level="info")
-                
-                # Start uvicorn in a separate thread
-                server_thread = threading.Thread(target=run_uvicorn, daemon=True)
-                server_thread.start()
-                
-                # Keep the main event loop running
-                try:
-                    while True:
-                        await asyncio.sleep(1)
-                except KeyboardInterrupt:
-                    print("Shutting down server...")
+                # Run the streamable HTTP server using FastMCP's implementation
+                await self.mcp.run_streamable_http_async()
             else:
                 # For stdio transport, run normally
                 await self.mcp.run(transport=transport)
@@ -393,7 +380,7 @@ if __name__ == "__main__":
     
     # Determine transport based on arguments
     if len(sys.argv) > 1 and sys.argv[1] == "--http":
-        registry_server.run(transport="streamable-http", host="0.0.0.0", port=8080)
+        registry_server.run(transport="streamable-http", host="0.0.0.0", port=6000)
     else:
         # Default to stdio for local connections
         registry_server.run(transport="stdio")

@@ -83,7 +83,7 @@ The MCP Server Registry is a comprehensive solution that implements the Model Co
 python -m src.registry.main
 
 # HTTP transport
-python -m src.registry.main --transport streamable-http --port 8080
+python -m src.registry.main --transport streamable-http --port 6000
 ```
 
 ### Registering a Server
