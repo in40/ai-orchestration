@@ -9,7 +9,7 @@ description = "Base skeleton for MCP (Model Context Protocol) servers"
 authors = [{name = "MCP Development Team", email = "mcp@example.com"}]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 dependencies = [
     "mcp>=1.0.0",
     "fastapi>=0.100.0",

@@ -59,22 +59,22 @@ class RegistryClient:
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
-                    "method": "registry/register_server",
+                    "method": "registry-register_server",
                     "params": server_info,
                     "id": 1
                 }
-                
+
                 # Send the request to the registry via stdio
                 # This is a simplified approach - in a real implementation,
                 # we would establish a proper stdio connection to the registry
                 try:
                     # Serialize the request
                     request_str = json.dumps(rpc_request) + "\n"
-                    
+
                     # For now, simulate by returning a successful response
                     # In a real implementation, we would send this to the actual registry process
                     self.logger.info(f"Sending registration request via stdio: {request_str}")
-                    
+
                     # Simulate successful registration
                     return {
                         "success": True,
@@ -86,27 +86,27 @@ class RegistryClient:
                     return {"success": False, "error": f"Stdio communication error: {str(e)}"}
             elif parsed_url.scheme in ["http", "https"]:
                 # HTTP communication with the registry
-                registry_url = f"{self.registry_endpoint}/rpc"
-                
+                registry_url = f"{self.registry_endpoint}/mcp"
+
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
-                    "method": "registry/register_server",
+                    "method": "registry-register_server",
                     "params": server_info,
                     "id": 1
                 }
-                
+
                 async with self.session.post(
                     registry_url,
                     json=rpc_request,
                     headers={"Content-Type": "application/json"}
                 ) as response:
                     result = await response.json()
-                    
+
                     if "error" in result:
                         self.logger.error(f"Registry registration failed: {result['error']}")
                         return {"success": False, "error": result["error"]}
-                    
+
                     return result.get("result", {})
             else:
                 raise ValueError(f"Unsupported registry endpoint scheme: {parsed_url.scheme}")
@@ -139,22 +139,22 @@ class RegistryClient:
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
-                    "method": "registry/update_server_status",
+                    "method": "registry-update_server_status",
                     "params": {
                         "server_id": server_id,
                         "health_status": health_status
                     },
                     "id": 2
                 }
-                
+
                 try:
                     # Serialize the request
                     request_str = json.dumps(rpc_request) + "\n"
-                    
+
                     # For now, simulate by returning a successful response
                     # In a real implementation, we would send this to the actual registry process
                     self.logger.info(f"Sending status update via stdio: {request_str}")
-                    
+
                     # Simulate successful update
                     return {
                         "success": True,
@@ -165,30 +165,30 @@ class RegistryClient:
                     return {"success": False, "error": f"Stdio communication error: {str(e)}"}
             elif parsed_url.scheme in ["http", "https"]:
                 # HTTP communication with the registry
-                registry_url = f"{self.registry_endpoint}/rpc"
-                
+                registry_url = f"{self.registry_endpoint}/mcp"
+
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
-                    "method": "registry/update_server_status",
+                    "method": "registry-update_server_status",
                     "params": {
                         "server_id": server_id,
                         "health_status": health_status
                     },
                     "id": 2
                 }
-                
+
                 async with self.session.post(
                     registry_url,
                     json=rpc_request,
                     headers={"Content-Type": "application/json"}
                 ) as response:
                     result = await response.json()
-                    
+
                     if "error" in result:
                         self.logger.error(f"Registry status update failed: {result['error']}")
                         return {"success": False, "error": result["error"]}
-                    
+
                     return result.get("result", {})
             else:
                 raise ValueError(f"Unsupported registry endpoint scheme: {parsed_url.scheme}")
@@ -217,19 +217,19 @@ class RegistryClient:
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
-                    "method": "registry/list_servers",
+                    "method": "registry-list_servers",
                     "params": {},
                     "id": 3
                 }
-                
+
                 try:
                     # Serialize the request
                     request_str = json.dumps(rpc_request) + "\n"
-                    
+
                     # For now, simulate by returning a successful response
                     # In a real implementation, we would send this to the actual registry process
                     self.logger.info(f"Sending list servers request via stdio: {request_str}")
-                    
+
                     # Simulate returning empty server list
                     return {
                         "servers": []
@@ -239,27 +239,27 @@ class RegistryClient:
                     return {"servers": [], "error": f"Stdio communication error: {str(e)}"}
             elif parsed_url.scheme in ["http", "https"]:
                 # HTTP communication with the registry
-                registry_url = f"{self.registry_endpoint}/rpc"
-                
+                registry_url = f"{self.registry_endpoint}/mcp"
+
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
-                    "method": "registry/list_servers",
+                    "method": "registry-list_servers",
                     "params": {},
                     "id": 3
                 }
-                
+
                 async with self.session.post(
                     registry_url,
                     json=rpc_request,
                     headers={"Content-Type": "application/json"}
                 ) as response:
                     result = await response.json()
-                    
+
                     if "error" in result:
                         self.logger.error(f"Registry list servers failed: {result['error']}")
                         return {"servers": [], "error": result["error"]}
-                    
+
                     return result.get("result", {"servers": []})
             else:
                 raise ValueError(f"Unsupported registry endpoint scheme: {parsed_url.scheme}")
