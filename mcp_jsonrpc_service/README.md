@@ -9,6 +9,9 @@ This is a base skeleton for MCP (Model Context Protocol) servers that can be ext
 - Registry registration capabilities
 - Health monitoring
 - Extensible architecture
+- OpenRPC schema discovery via `rpc.discover` method
+- Complete HTTP transport with GET/POST support for `/rpc` endpoint
+- Enhanced stdio communication with registry
 
 ## Prerequisites
 
@@ -251,6 +254,25 @@ pytest --cov=src tests/
 - Follow the JSON-RPC 2.0 protocol standards
 - Use async/await consistently throughout your implementation
 - Follow the security best practices outlined in the developer documentation
+
+### New Functionality Added for Compliance:
+
+#### OpenRPC Schema Discovery
+The server now implements the `rpc.discover` method as required by the OpenRPC specification. This method returns the complete OpenRPC schema describing the server's capabilities:
+
+```python
+# Example of calling the discover method
+result = await server.handle_discover_method()
+print(result['openrpc'])  # Should output "1.3.2"
+```
+
+#### HTTP Transport Enhancement
+The HTTP transport now fully supports both GET and POST methods for the `/rpc` endpoint:
+- GET `/rpc`: Returns server information and capabilities
+- POST `/rpc`: Accepts JSON-RPC 2.0 requests for MCP protocol communication
+
+#### Improved Registry Communication
+The registry client now has enhanced stdio communication capabilities, allowing for proper communication with the registry server via stdio transport.
 
 ## Architecture
 

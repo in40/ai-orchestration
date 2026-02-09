@@ -1,6 +1,6 @@
 """MCP Server implementation for the Registry."""
 
-from mcp.server import Server
+from mcp.server import FastMCP
 from typing import List, Dict, Any
 import asyncio
 from datetime import datetime
@@ -13,27 +13,80 @@ from config.settings import settings
 
 class RegistryServer:
     def __init__(self):
-        self.mcp = Server("mcp-registry-server")
+        self.mcp = FastMCP("mcp-registry-server")
         self.db_service = DatabaseService()
         self.health_monitor = HealthMonitorService(self.db_service)
-        
+
         # Register MCP methods
         self._register_mcp_methods()
     
     def _register_mcp_methods(self):
         """Register all MCP methods for the registry server."""
-        
-        # Registry tools
-        self.mcp.call_tool(self._registry_list_servers)
-        self.mcp.call_tool(self._registry_get_server_details)
-        self.mcp.call_tool(self._registry_search_servers)
-        self.mcp.call_tool(self._registry_register_server)
-        self.mcp.call_tool(self._registry_update_server_status)
-        
-        # Registry resources
-        self.mcp.read_resource(self._get_all_servers_resource)
-        self.mcp.read_resource(self._get_all_capabilities_resource)
-        self.mcp.read_resource(self._get_health_status_resource)
+
+        # Registry tools - using decorators with proper names (compliant with MCP standard)
+        @self.mcp.tool(
+            name="registry-list_servers",
+            description="List all registered MCP servers with their capabilities"
+        )
+        def list_servers() -> List[Dict[str, Any]]:
+            return self._registry_list_servers()
+
+        @self.mcp.tool(
+            name="registry-get_server_details",
+            description="Retrieve detailed information about a specific registered server"
+        )
+        def get_server_details(server_id: str) -> Dict[str, Any]:
+            return self._registry_get_server_details(server_id)
+
+        @self.mcp.tool(
+            name="registry-search_servers",
+            description="Search for servers by name, description, or tags"
+        )
+        def search_servers(query: str = "", tags: List[str] = []) -> List[Dict[str, Any]]:
+            return self._registry_search_servers(query, tags)
+
+        @self.mcp.tool(
+            name="registry-register_server",
+            description="Register a new MCP server with the registry"
+        )
+        def register_server(
+            name: str,
+            description: str = "",
+            endpoint: str = "",
+            capabilities: Dict[str, bool] = {},
+            metadata: Dict[str, str] = {},
+            tags: List[str] = []
+        ) -> Dict[str, Any]:
+            return self._registry_register_server(name, description, endpoint, capabilities, metadata, tags)
+
+        @self.mcp.tool(
+            name="registry-update_server_status",
+            description="Update the health status of a registered server"
+        )
+        def update_server_status(server_id: str, health_status: str) -> Dict[str, Any]:
+            return self._registry_update_server_status(server_id, health_status)
+
+        # Registry resources - using decorators
+        @self.mcp.resource(
+            "registry://servers",
+            description="Provides all registered servers in structured format"
+        )
+        def get_all_servers_resource() -> Dict[str, Any]:
+            return self._get_all_servers_resource()
+
+        @self.mcp.resource(
+            "registry://capabilities",
+            description="Shows collective capabilities of all registered servers"
+        )
+        def get_all_capabilities_resource() -> Dict[str, Any]:
+            return self._get_all_capabilities_resource()
+
+        @self.mcp.resource(
+            "registry://health-status",
+            description="Provides current health status of registered servers"
+        )
+        def get_health_status_resource() -> Dict[str, Any]:
+            return self._get_health_status_resource()
     
     def _registry_list_servers(self) -> List[Dict[str, Any]]:
         """
@@ -283,16 +336,53 @@ class RegistryServer:
     def run(self, transport: str = "stdio", **kwargs):
         """
         Run the registry server.
-        
+
         Args:
             transport: Transport method ('stdio', 'streamable-http', etc.)
-            **kwargs: Additional arguments for the transport
+            **kwargs: Additional arguments for the transport (host, port for HTTP)
         """
-        # Start the health monitor in the background
-        asyncio.create_task(self.health_monitor.start_periodic_health_checks())
+        import asyncio
+        import uvicorn
         
-        # Run the MCP server
-        self.mcp.run(transport=transport, **kwargs)
+        # Define an async wrapper to properly manage the event loop
+        async def run_with_health_monitor():
+            # Start the health monitor in the background
+            health_task = asyncio.create_task(self.health_monitor.start_periodic_health_checks())
+            
+            # Run the MCP server based on transport type
+            if transport == "streamable-http":
+                # For streamable-http, we need to run the FastAPI app with uvicorn
+                # But we need to do this properly within the async context
+                # We'll run the app in a separate thread or use an alternative approach
+                host = kwargs.get("host", "0.0.0.0")
+                port = kwargs.get("port", 8080)
+                
+                # Get the FastAPI app for streamable HTTP transport
+                app = self.mcp.streamable_http_app
+                
+                # Run the app in a separate thread so we can continue with the event loop
+                import threading
+                import time
+                
+                def run_uvicorn():
+                    uvicorn.run(app, host=host, port=port, log_level="info")
+                
+                # Start uvicorn in a separate thread
+                server_thread = threading.Thread(target=run_uvicorn, daemon=True)
+                server_thread.start()
+                
+                # Keep the main event loop running
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    print("Shutting down server...")
+            else:
+                # For stdio transport, run normally
+                await self.mcp.run(transport=transport)
+
+        # Run the async wrapper
+        asyncio.run(run_with_health_monitor())
 
 
 # For standalone execution

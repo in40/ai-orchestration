@@ -62,6 +62,7 @@ The MCP Server Registry is a comprehensive solution that implements the Model Co
 - `README.md` - Main project documentation
 - `docs/usage_examples.md` - Usage examples
 - `docs/openrpc.yml` - API specification
+- `docs/database_setup.md` - Database setup guide
 - `IMPLEMENTATION_PLAN.md` - Development plan
 
 ### Testing
@@ -69,8 +70,8 @@ The MCP Server Registry is a comprehensive solution that implements the Model Co
 - `check_implementation.py` - Basic implementation checker
 
 ### Deployment
-- `Dockerfile` - Container configuration
-- `docker-compose.yml` - Multi-container setup
+- `setup_env.sh` - Virtual environment setup script (Linux/Mac)
+- `setup_env.bat` - Virtual environment setup script (Windows)
 - `requirements.txt` - Dependencies
 - `pyproject.toml` - Poetry configuration
 
@@ -127,9 +128,8 @@ pytest tests/
 ## Deployment
 
 The registry can be deployed using:
+- Virtual environment for dependency isolation
 - Direct Python execution
-- Docker container
-- Docker Compose for multi-container setup with PostgreSQL and Redis
 
 ## Standards Compliance
 

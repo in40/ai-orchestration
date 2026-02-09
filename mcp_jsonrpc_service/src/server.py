@@ -13,16 +13,16 @@ import os
 
 import mcp.types as types
 from mcp.server import Server
-from mcp.stdio import stdio_server
+from mcp import stdio_server
 from fastapi import FastAPI
 import uvicorn
 
 from .errors import (
-    RPCException, 
-    ParseError, 
-    InvalidRequestError, 
-    MethodNotFoundError, 
-    InvalidParamsError, 
+    RPCException,
+    ParseError,
+    InvalidRequestError,
+    MethodNotFoundError,
+    InvalidParamsError,
     InternalError,
     handle_rpc_error
 )
@@ -69,6 +69,9 @@ class BaseMCPServer:
         
         # Initialize the MCP server based on transport
         self._initialize_server()
+        
+        # Define the OpenRPC schema for this server
+        self._openrpc_schema = self._generate_openrpc_schema()
     
     def _initialize_server(self):
         """Initialize the underlying MCP server based on the selected transport."""
@@ -81,6 +84,44 @@ class BaseMCPServer:
         """Setup default handlers for basic MCP functionality."""
         # Add handlers for basic functionality
         pass
+
+    def _generate_openrpc_schema(self) -> Dict[str, Any]:
+        """Generate the OpenRPC schema for this server."""
+        # This is a simplified version - in a real implementation, 
+        # this would be a complete OpenRPC schema
+        return {
+            "openrpc": "1.3.2",
+            "info": {
+                "title": self.name,
+                "description": self.description,
+                "version": "1.0.0"
+            },
+            "servers": [
+                {
+                    "url": self._get_endpoint(),
+                    "name": self.name,
+                    "description": self.description
+                }
+            ],
+            "methods": [
+                {
+                    "name": "rpc.discover",
+                    "summary": "Return the OpenRPC schema for this service",
+                    "description": "Returns the complete OpenRPC schema describing this service.",
+                    "params": [],
+                    "result": {
+                        "name": "discoverResult",
+                        "schema": {
+                            "$ref": "#"
+                        }
+                    }
+                }
+            ]
+        }
+
+    async def handle_discover_method(self) -> Dict[str, Any]:
+        """Handle the rpc.discover method call."""
+        return self._openrpc_schema
     
     def set_capability(self, capability: str, enabled: bool):
         """Enable or disable a specific capability."""
@@ -163,9 +204,78 @@ class BaseMCPServer:
                 return response
         
         # Add the MCP server routes to the FastAPI app
-        # This would need to be adapted based on the actual MCP library's HTTP support
-        # For now, we'll create a placeholder that shows how this could work
+        # Implement both GET and POST for /rpc endpoint as per OpenRPC spec
         
+        # Import required classes
+        from fastapi import Request
+        
+        # GET /rpc: Provides information about the MCP server capabilities
+        @app.get("/rpc")
+        async def get_rpc_info():
+            return {
+                "server_info": {
+                    "name": self.name,
+                    "description": self.description,
+                    "capabilities": self.capabilities,
+                    "endpoint": self._get_endpoint()
+                }
+            }
+        
+        # POST /rpc: Accepts JSON-RPC 2.0 requests via POST method for MCP protocol communication
+        @app.post("/rpc")
+        async def handle_rpc_post(request: Request):
+            from starlette.requests import Request as StarletteRequest
+            
+            # Get raw body to process JSON-RPC request
+            body_bytes = await request.body()
+            try:
+                rpc_request = json.loads(body_bytes.decode())
+                
+                # Process the JSON-RPC request
+                if rpc_request.get("method") == "rpc.discover":
+                    result = await self.handle_discover_method()
+                    
+                    # Create JSON-RPC response
+                    response = {
+                        "jsonrpc": "2.0",
+                        "result": result,
+                        "id": rpc_request.get("id")
+                    }
+                    return response
+                else:
+                    # For other methods, return method not found error
+                    response = {
+                        "jsonrpc": "2.0",
+                        "error": {
+                            "code": -32601,  # Method not found
+                            "message": "Method not implemented"
+                        },
+                        "id": rpc_request.get("id")
+                    }
+                    return response
+            except json.JSONDecodeError:
+                # Invalid JSON
+                response = {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32700,  # Parse error
+                        "message": "Parse error"
+                    },
+                    "id": None
+                }
+                return response
+            except Exception as e:
+                # Internal error
+                response = {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32603,  # Internal error
+                        "message": f"Internal error: {str(e)}"
+                    },
+                    "id": rpc_request.get("id") if 'rpc_request' in locals() else None
+                }
+                return response
+
         # Run the server in a background task
         config = uvicorn.Config(
             app,
@@ -174,10 +284,10 @@ class BaseMCPServer:
             log_level="info"
         )
         server = uvicorn.Server(config)
-        
+
         # Run the server in a background task
         self._http_server_task = asyncio.create_task(server.serve())
-        
+
         # Wait for the server to actually start
         await asyncio.sleep(0.1)
     
