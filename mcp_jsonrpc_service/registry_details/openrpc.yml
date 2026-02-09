@@ -1,0 +1,392 @@
+# OpenRPC Specification for MCP Server Registry
+openrpc: "1.3.2"
+info:
+  title: "MCP Server Registry"
+  description: "Registry service for MCP (Model Context Protocol) servers that implements the MCP protocol itself"
+  version: "1.0.0"
+  contact:
+    name: "MCP Registry Team"
+    email: "registry@mcp.io"
+    url: "https://modelcontextprotocol.io"
+
+servers:
+  - url: "stdio://"
+    name: "stdio"
+    description: "Standard input/output transport for local registry server"
+  - url: "http://localhost:8080"
+    name: "http-local"
+    description: "HTTP transport for local registry server development"
+  - url: "https://registry.mcp.example.com"
+    name: "https-remote"
+    description: "HTTPS transport for remote registry server deployment"
+
+methods:
+  # Registry Tools
+  - name: "registry/list_servers"
+    summary: "List all registered MCP servers"
+    description: "Returns a list of all MCP servers registered with the registry, including their capabilities and status."
+    params: []
+    result:
+      name: "listServersResult"
+      schema:
+        type: "object"
+        required: ["servers"]
+        properties:
+          servers:
+            type: "array"
+            items:
+              type: "object"
+              required: ["id", "name", "endpoint", "capabilities"]
+              properties:
+                id:
+                  type: "string"
+                  description: "Unique identifier for the server"
+                name:
+                  type: "string"
+                  description: "Display name of the server"
+                description:
+                  type: "string"
+                  description: "Description of the server"
+                endpoint:
+                  type: "string"
+                  description: "Endpoint URL or transport method for the server"
+                capabilities:
+                  type: "object"
+                  description: "Capabilities of the server"
+                  properties:
+                    resources:
+                      type: "boolean"
+                      description: "Whether the server supports resources"
+                    tools:
+                      type: "boolean"
+                      description: "Whether the server supports tools"
+                    prompts:
+                      type: "boolean"
+                      description: "Whether the server supports prompts"
+                    roots:
+                      type: "boolean"
+                      description: "Whether the server supports roots"
+                    sampling:
+                      type: "boolean"
+                      description: "Whether the server supports sampling"
+                metadata:
+                  type: "object"
+                  description: "Additional metadata about the server"
+                  additionalProperties:
+                    type: "string"
+                registered_at:
+                  type: "string"
+                  format: "date-time"
+                  description: "Timestamp when the server was registered"
+                last_seen:
+                  type: "string"
+                  format: "date-time"
+                  description: "Timestamp when the server was last seen (nullable)"
+                health_status:
+                  type: "string"
+                  enum: ["healthy", "unhealthy", "unknown"]
+                  description: "Current health status of the server"
+                tags:
+                  type: "array"
+                  items:
+                    type: "string"
+                    description: "Tags associated with the server"
+
+  - name: "registry/get_server_details"
+    summary: "Get detailed information about a specific registered server"
+    description: "Retrieves detailed information about a specific registered MCP server by its ID."
+    params:
+      - name: "server_id"
+        required: true
+        schema:
+          type: "string"
+          description: "ID of the server to retrieve details for"
+    result:
+      name: "getServerDetailsResult"
+      schema:
+        type: "object"
+        properties:
+          id:
+            type: "string"
+            description: "Unique identifier for the server"
+          name:
+            type: "string"
+            description: "Display name of the server"
+          description:
+            type: "string"
+            description: "Description of the server"
+          endpoint:
+            type: "string"
+            description: "Endpoint URL or transport method for the server"
+          capabilities:
+            type: "object"
+            description: "Capabilities of the server"
+            properties:
+              resources:
+                type: "boolean"
+                description: "Whether the server supports resources"
+              tools:
+                type: "boolean"
+                description: "Whether the server supports tools"
+              prompts:
+                type: "boolean"
+                description: "Whether the server supports prompts"
+              roots:
+                type: "boolean"
+                description: "Whether the server supports roots"
+              sampling:
+                type: "boolean"
+                description: "Whether the server supports sampling"
+          metadata:
+            type: "object"
+            description: "Additional metadata about the server"
+            additionalProperties:
+              type: "string"
+          registered_at:
+            type: "string"
+            format: "date-time"
+            description: "Timestamp when the server was registered"
+          last_seen:
+            type: "string"
+            format: "date-time"
+            description: "Timestamp when the server was last seen (nullable)"
+          health_status:
+            type: "string"
+            enum: ["healthy", "unhealthy", "unknown"]
+            description: "Current health status of the server"
+          tags:
+            type: "array"
+            items:
+              type: "string"
+              description: "Tags associated with the server"
+          error:
+            type: "string"
+            description: "Error message if the server was not found"
+
+  - name: "registry/search_servers"
+    summary: "Search for registered MCP servers"
+    description: "Search for registered MCP servers by name, description, or tags."
+    params:
+      - name: "query"
+        required: false
+        schema:
+          type: "string"
+          description: "Search term to match in server names or descriptions"
+          default: ""
+      - name: "tags"
+        required: false
+        schema:
+          type: "array"
+          items:
+            type: "string"
+          description: "List of tags to filter servers by"
+          default: []
+    result:
+      name: "searchServersResult"
+      schema:
+        type: "object"
+        required: ["servers"]
+        properties:
+          servers:
+            type: "array"
+            items:
+              type: "object"
+              required: ["id", "name", "endpoint", "capabilities"]
+              properties:
+                id:
+                  type: "string"
+                  description: "Unique identifier for the server"
+                name:
+                  type: "string"
+                  description: "Display name of the server"
+                description:
+                  type: "string"
+                  description: "Description of the server"
+                endpoint:
+                  type: "string"
+                  description: "Endpoint URL or transport method for the server"
+                capabilities:
+                  type: "object"
+                  description: "Capabilities of the server"
+                  properties:
+                    resources:
+                      type: "boolean"
+                      description: "Whether the server supports resources"
+                    tools:
+                      type: "boolean"
+                      description: "Whether the server supports tools"
+                    prompts:
+                      type: "boolean"
+                      description: "Whether the server supports prompts"
+                    roots:
+                      type: "boolean"
+                      description: "Whether the server supports roots"
+                    sampling:
+                      type: "boolean"
+                      description: "Whether the server supports sampling"
+                metadata:
+                  type: "object"
+                  description: "Additional metadata about the server"
+                  additionalProperties:
+                    type: "string"
+                registered_at:
+                  type: "string"
+                  format: "date-time"
+                  description: "Timestamp when the server was registered"
+                last_seen:
+                  type: "string"
+                  format: "date-time"
+                  description: "Timestamp when the server was last seen (nullable)"
+                health_status:
+                  type: "string"
+                  enum: ["healthy", "unhealthy", "unknown"]
+                  description: "Current health status of the server"
+                tags:
+                  type: "array"
+                  items:
+                    type: "string"
+                    description: "Tags associated with the server"
+
+  - name: "registry/register_server"
+    summary: "Register a new MCP server with the registry"
+    description: "Registers a new MCP server with the registry, making it discoverable to clients."
+    params:
+      - name: "name"
+        required: true
+        schema:
+          type: "string"
+          description: "Name of the server"
+      - name: "description"
+        required: false
+        schema:
+          type: "string"
+          description: "Description of the server"
+          default: ""
+      - name: "endpoint"
+        required: true
+        schema:
+          type: "string"
+          description: "Endpoint URL or transport method for the server"
+      - name: "capabilities"
+        required: true
+        schema:
+          type: "object"
+          description: "Capabilities of the server"
+          properties:
+            resources:
+              type: "boolean"
+              description: "Whether the server supports resources"
+              default: false
+            tools:
+              type: "boolean"
+              description: "Whether the server supports tools"
+              default: false
+            prompts:
+              type: "boolean"
+              description: "Whether the server supports prompts"
+              default: false
+            roots:
+              type: "boolean"
+              description: "Whether the server supports roots"
+              default: false
+            sampling:
+              type: "boolean"
+              description: "Whether the server supports sampling"
+              default: false
+      - name: "metadata"
+        required: false
+        schema:
+          type: "object"
+          description: "Additional metadata about the server"
+          additionalProperties:
+            type: "string"
+          default: {}
+      - name: "tags"
+        required: false
+        schema:
+          type: "array"
+          items:
+            type: "string"
+          description: "Tags for categorizing the server"
+          default: []
+    result:
+      name: "registerServerResult"
+      schema:
+        type: "object"
+        required: ["success"]
+        properties:
+          success:
+            type: "boolean"
+            description: "Whether the registration was successful"
+          server_id:
+            type: "string"
+            description: "ID assigned to the registered server (present if successful)"
+          message:
+            type: "string"
+            description: "Human-readable message about the result"
+          error:
+            type: "string"
+            description: "Error message if registration failed"
+
+  - name: "registry/update_server_status"
+    summary: "Update the health status of a registered server"
+    description: "Updates the health status of a registered server in the registry."
+    params:
+      - name: "server_id"
+        required: true
+        schema:
+          type: "string"
+          description: "ID of the server to update"
+      - name: "health_status"
+        required: true
+        schema:
+          type: "string"
+          enum: ["healthy", "unhealthy", "unknown"]
+          description: "New health status for the server"
+    result:
+      name: "updateServerStatusResult"
+      schema:
+        type: "object"
+        required: ["success"]
+        properties:
+          success:
+            type: "boolean"
+            description: "Whether the update was successful"
+          message:
+            type: "string"
+            description: "Human-readable message about the result"
+          error:
+            type: "string"
+            description: "Error message if update failed"
+
+  # Service Discovery Method
+  - name: "rpc.discover"
+    summary: "Return the OpenRPC schema for this service"
+    description: "Returns the complete OpenRPC schema describing this registry service."
+    params: []
+    result:
+      name: "discoverResult"
+      schema:
+        $ref: "https://raw.githubusercontent.com/open-rpc/meta-schema/master/schema.json"
+
+# Registry Resources
+components:
+  schemas:
+    # Common error schema
+    Error:
+      type: "object"
+      required: ["code", "message"]
+      properties:
+        code:
+          type: "integer"
+          description: "Error code"
+        message:
+          type: "string"
+          description: "Human-readable error message"
+        data:
+          type: "object"
+          description: "Additional error data"
+
+externalDocs:
+  description: "Complete MCP Protocol Specification"
+  url: "https://modelcontextprotocol.io/specification"
