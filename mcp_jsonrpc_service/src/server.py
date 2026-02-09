@@ -234,7 +234,25 @@ class BaseMCPServer:
 
         # GET /mcp: Provides information about the MCP server capabilities
         @app.get("/mcp")
-        async def get_mcp_info():
+        async def get_mcp_info(request: Request):
+            # Check Accept header as required by MCP protocol
+            accept_header = request.headers.get("accept", "")
+            accepts_json = "application/json" in accept_header
+            accepts_stream = "text/event-stream" in accept_header
+            
+            if not (accepts_json and accepts_stream):
+                # Return 406 Not Acceptable if client doesn't accept both required content types
+                from fastapi.responses import JSONResponse
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": 406,  # Not Acceptable
+                        "message": "Not Acceptable - Client must accept both application/json and text/event-stream"
+                    },
+                    "id": None
+                }
+                return JSONResponse(content=error_response, status_code=406)
+
             return {
                 "server_info": {
                     "name": self.name,
@@ -248,6 +266,24 @@ class BaseMCPServer:
         @app.post("/mcp")
         async def handle_mcp_post(request: Request):
             from starlette.requests import Request as StarletteRequest
+            from fastapi import HTTPException
+
+            # Check Accept header as required by MCP protocol
+            accept_header = request.headers.get("accept", "")
+            accepts_json = "application/json" in accept_header
+            accepts_stream = "text/event-stream" in accept_header
+            
+            if not (accepts_json and accepts_stream):
+                # Return 406 Not Acceptable if client doesn't accept both required content types
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": 406,  # Not Acceptable
+                        "message": "Not Acceptable - Client must accept both application/json and text/event-stream"
+                    },
+                    "id": None
+                }
+                return error_response
 
             # Get raw body to process JSON-RPC request
             body_bytes = await request.body()

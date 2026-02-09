@@ -45,6 +45,16 @@ Your server must support at least one of these transport methods:
 - `streamable-http` - HTTP-based transport
 - Any other transport compatible with the MCP specification
 
+## 4.1 HTTP Transport Accept Header Requirements
+
+When using HTTP transport (streamable-http), clients must include an Accept header that specifies both required content types:
+
+```
+Accept: application/json, text/event-stream
+```
+
+This is required because the MCP protocol supports both regular JSON-RPC responses and streaming responses via server-sent events (SSE). Failure to include both content types in the Accept header will result in a 406 Not Acceptable response.
+
 ## 5. Technology Stack Requirements
 
 ### Python-Based Implementation (Recommended)
