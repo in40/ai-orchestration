@@ -12,11 +12,10 @@ from src.errors import RPCException, InternalError
 
 
 @pytest.fixture
-async def base_server():
+def base_server():
     """Create a BaseMCPServer instance for testing."""
     server = BaseMCPServer(transport="stdio")
-    yield server
-    # Cleanup if needed
+    return server
 
 
 @pytest.mark.asyncio

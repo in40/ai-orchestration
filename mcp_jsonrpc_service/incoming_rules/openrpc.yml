@@ -26,6 +26,14 @@ paths:
       summary: "Handle MCP JSON-RPC requests over HTTP"
       description: "Accepts JSON-RPC 2.0 requests via POST method for MCP protocol communication"
       operationId: "handleMcpPost"
+      parameters:
+        - name: "Accept"
+          in: "header"
+          required: true
+          description: "Client must accept both application/json and text/event-stream for proper MCP protocol communication"
+          schema:
+            type: "string"
+            default: "application/json, text/event-stream"
       requestBody:
         required: true
         content:
@@ -81,10 +89,24 @@ paths:
                     type: [string, integer]
                     description: "Request ID from the request"
                 required: ["jsonrpc"]
+        '406':
+          description: "Not Acceptable - Client must accept both application/json and text/event-stream"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     get:
       summary: "MCP Protocol Info Endpoint"
       description: "Provides information about the MCP server capabilities"
       operationId: "handleMcpGet"
+      parameters:
+        - name: "Accept"
+          in: "header"
+          required: true
+          description: "Client must accept both application/json and text/event-stream for proper MCP protocol communication"
+          schema:
+            type: "string"
+            default: "application/json, text/event-stream"
       responses:
         '200':
           description: "Server information"
@@ -93,6 +115,12 @@ paths:
               schema:
                 type: object
                 description: "Server information and capabilities"
+        '406':
+          description: "Not Acceptable - Client must accept both application/json and text/event-stream"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 methods:
   # Registry Tools
