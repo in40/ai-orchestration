@@ -15,7 +15,7 @@ This is a base skeleton for MCP (Model Context Protocol) servers that can be ext
 
 ## Prerequisites
 
-- Python 3.13 or higher
+- Python 3.13 or higher (updated from 3.9+ as per new MCP standards)
 - MCP library (version 1.0.0 or higher)
 
 ## Installation
