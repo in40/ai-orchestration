@@ -11,41 +11,72 @@ from typing import Dict, Any, Optional
 from urllib.parse import urlparse
 
 import aiohttp
+from mcp.client.streamable_http import streamable_http_client
+import mcp
 
 
 class RegistryClient:
     """
     Client for interacting with the MCP server registry.
     """
-    
+
     def __init__(self, registry_endpoint: str):
         self.registry_endpoint = registry_endpoint
         self.session: Optional[aiohttp.ClientSession] = None
         self.logger = logging.getLogger(self.__class__.__name__)
-    
+        self.client_session: Optional[mcp.ClientSession] = None
+
     async def __aenter__(self):
         """Context manager entry."""
-        self.session = aiohttp.ClientSession()
-        return self
-    
+        # Determine how to communicate with the registry based on endpoint
+        parsed_url = urlparse(self.registry_endpoint)
+        
+        if parsed_url.scheme in ["http", "https"]:
+            # For HTTP transport, establish proper session using MCP client initialization sequence
+            try:
+                # Establish connection to the registry using proper MCP sequence
+                async with streamable_http_client(url=f"{self.registry_endpoint}/mcp") as (receive_stream, send_stream, get_session_id_callback):
+                    self.logger.info("✅ Connected to registry with proper streams")
+
+                    # Create a ClientSession with the streams
+                    self.client_session = mcp.ClientSession(
+                        read_stream=receive_stream,
+                        write_stream=send_stream
+                    )
+
+                    # Initialize the session (CRITICAL: This establishes proper session context)
+                    # Without this step, the registry will return "Bad Request: Missing session ID"
+                    init_result = await self.client_session.initialize()
+                    self.logger.info(f"✅ Session initialized: {init_result}")
+                    
+                    return self
+            except Exception as e:
+                self.logger.error(f"Failed to establish session with registry: {e}")
+                raise
+        else:
+            # For stdio and other transports, initialize as before
+            self.session = aiohttp.ClientSession()
+            return self
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         if self.session:
             await self.session.close()
-    
+        # Close the client session if it exists
+        if self.client_session:
+            # No explicit close method in mcp.ClientSession, but we could add cleanup here if needed
+            pass
+
     async def register_server(self, server_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         Register a server with the registry.
-        
+
         Args:
             server_info: Dictionary containing server information
-            
+
         Returns:
             Registration result from the registry
         """
-        if not self.session:
-            raise RuntimeError("RegistryClient not initialized. Use as context manager.")
-        
         try:
             # Determine how to communicate with the registry based on endpoint
             parsed_url = urlparse(self.registry_endpoint)
@@ -55,7 +86,7 @@ class RegistryClient:
                 # This simulates the communication via stdio by using a subprocess
                 import subprocess
                 import sys
-                
+
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
@@ -85,57 +116,55 @@ class RegistryClient:
                     self.logger.error(f"Error in stdio communication: {e}")
                     return {"success": False, "error": f"Stdio communication error: {str(e)}"}
             elif parsed_url.scheme in ["http", "https"]:
-                # HTTP communication with the registry
-                registry_url = f"{self.registry_endpoint}/mcp"
+                # HTTP communication with the registry using proper session
+                if not self.client_session:
+                    raise RuntimeError("Client session not initialized. Use as context manager.")
+                
+                try:
+                    # Register with the registry using the proper session
+                    result = await self.client_session.call_tool_async(
+                        "registry-register_server",
+                        server_info
+                    )
 
-                # Prepare the JSON-RPC request
-                rpc_request = {
-                    "jsonrpc": "2.0",
-                    "method": "registry-register_server",
-                    "params": server_info,
-                    "id": 1
-                }
-
-                async with self.session.post(
-                    registry_url,
-                    json=rpc_request,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    result = await response.json()
-
-                    if "error" in result:
-                        self.logger.error(f"Registry registration failed: {result['error']}")
-                        return {"success": False, "error": result["error"]}
-
-                    return result.get("result", {})
+                    if isinstance(result, dict) and result.get("success"):
+                        server_id = result.get("server_id")
+                        self.logger.info(f"✅ Successfully registered with ID: {server_id}")
+                        return result
+                    else:
+                        self.logger.error(f"❌ Registration failed: {result.get('message', 'Unknown error')}")
+                        return result
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error during registration: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    return {"success": False, "error": str(e)}
             else:
                 raise ValueError(f"Unsupported registry endpoint scheme: {parsed_url.scheme}")
-                
+
         except Exception as e:
             self.logger.error(f"Failed to register server with registry: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def update_server_status(self, server_id: str, health_status: str) -> Dict[str, Any]:
         """
         Update the health status of a registered server.
-        
+
         Args:
             server_id: ID of the server to update
             health_status: New health status ('healthy', 'unhealthy', 'unknown')
-            
+
         Returns:
             Update result from the registry
         """
-        if not self.session:
-            raise RuntimeError("RegistryClient not initialized. Use as context manager.")
-        
         try:
             parsed_url = urlparse(self.registry_endpoint)
 
             if parsed_url.scheme == "stdio":
                 # Implement actual stdio communication for updating server status
                 import subprocess
-                
+
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
@@ -164,56 +193,56 @@ class RegistryClient:
                     self.logger.error(f"Error in stdio communication: {e}")
                     return {"success": False, "error": f"Stdio communication error: {str(e)}"}
             elif parsed_url.scheme in ["http", "https"]:
-                # HTTP communication with the registry
-                registry_url = f"{self.registry_endpoint}/mcp"
-
-                # Prepare the JSON-RPC request
-                rpc_request = {
-                    "jsonrpc": "2.0",
-                    "method": "registry-update_server_status",
-                    "params": {
+                # HTTP communication with the registry using proper session
+                if not self.client_session:
+                    raise RuntimeError("Client session not initialized. Use as context manager.")
+                
+                try:
+                    # Prepare update data
+                    update_data = {
                         "server_id": server_id,
                         "health_status": health_status
-                    },
-                    "id": 2
-                }
+                    }
+                    
+                    # Update server status using the proper session
+                    result = await self.client_session.call_tool_async(
+                        "registry-update_server_status",
+                        update_data
+                    )
 
-                async with self.session.post(
-                    registry_url,
-                    json=rpc_request,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    result = await response.json()
-
-                    if "error" in result:
-                        self.logger.error(f"Registry status update failed: {result['error']}")
-                        return {"success": False, "error": result["error"]}
-
-                    return result.get("result", {})
+                    if isinstance(result, dict) and result.get("success"):
+                        self.logger.info(f"✅ Successfully updated status for server {server_id}")
+                        return result
+                    else:
+                        self.logger.error(f"❌ Status update failed: {result.get('message', 'Unknown error')}")
+                        return result
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error during status update: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    return {"success": False, "error": str(e)}
             else:
                 raise ValueError(f"Unsupported registry endpoint scheme: {parsed_url.scheme}")
-                
+
         except Exception as e:
             self.logger.error(f"Failed to update server status with registry: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def list_servers(self) -> Dict[str, Any]:
         """
         List all registered servers in the registry.
-        
+
         Returns:
             List of servers from the registry
         """
-        if not self.session:
-            raise RuntimeError("RegistryClient not initialized. Use as context manager.")
-        
         try:
             parsed_url = urlparse(self.registry_endpoint)
 
             if parsed_url.scheme == "stdio":
                 # Implement actual stdio communication for listing servers
                 import subprocess
-                
+
                 # Prepare the JSON-RPC request
                 rpc_request = {
                     "jsonrpc": "2.0",
@@ -238,32 +267,32 @@ class RegistryClient:
                     self.logger.error(f"Error in stdio communication: {e}")
                     return {"servers": [], "error": f"Stdio communication error: {str(e)}"}
             elif parsed_url.scheme in ["http", "https"]:
-                # HTTP communication with the registry
-                registry_url = f"{self.registry_endpoint}/mcp"
+                # HTTP communication with the registry using proper session
+                if not self.client_session:
+                    raise RuntimeError("Client session not initialized. Use as context manager.")
+                
+                try:
+                    # List servers using the proper session
+                    result = await self.client_session.call_tool_async(
+                        "registry-list_servers",
+                        {}
+                    )
 
-                # Prepare the JSON-RPC request
-                rpc_request = {
-                    "jsonrpc": "2.0",
-                    "method": "registry-list_servers",
-                    "params": {},
-                    "id": 3
-                }
-
-                async with self.session.post(
-                    registry_url,
-                    json=rpc_request,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    result = await response.json()
-
-                    if "error" in result:
-                        self.logger.error(f"Registry list servers failed: {result['error']}")
-                        return {"servers": [], "error": result["error"]}
-
-                    return result.get("result", {"servers": []})
+                    if isinstance(result, dict) and "servers" in result:
+                        self.logger.info(f"✅ Successfully retrieved {len(result['servers'])} servers")
+                        return result
+                    else:
+                        self.logger.error(f"❌ List servers failed: {result.get('message', 'Unknown error')}")
+                        return result
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error during list servers: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    return {"servers": [], "error": str(e)}
             else:
                 raise ValueError(f"Unsupported registry endpoint scheme: {parsed_url.scheme}")
-                
+
         except Exception as e:
             self.logger.error(f"Failed to list servers from registry: {e}")
             return {"servers": [], "error": str(e)}
