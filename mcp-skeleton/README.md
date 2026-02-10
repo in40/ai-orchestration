@@ -63,6 +63,12 @@ python -m mcp_server.server --transport http --port 3030 --enable-registry
 2. Other MCP servers can register with the registry via the `/send` endpoint
 3. AI agents can discover services by querying the registry's `registry/list` method
 
+### Auto-Registration and Heartbeat Monitoring:
+- Servers can auto-register with a registry using `--register-with-registry` flag
+- Registered services send periodic heartbeats (every 30 seconds) to maintain registration
+- Services not seen within 10 minutes are automatically removed from the registry
+- Services automatically deregister when shutting down cleanly
+
 ## Architecture
 
 The server is organized into several modules:
@@ -83,6 +89,9 @@ The server can be configured via command-line arguments:
 - `--host`: Host for HTTP transport (default: 127.0.0.1)
 - `--port`: Port for HTTP transport (default: 3030)
 - `--enable-registry`: Enable registry functionality to track multiple MCP services (optional)
+- `--register-with-registry`: Register this server with a registry server (requires --registry-host and --registry-port)
+- `--registry-host`: Registry server host to register with (default: 127.0.0.1)
+- `--registry-port`: Registry server port to register with (default: 3031)
 
 ## Example Usage
 

@@ -235,6 +235,20 @@ The server provides:
 1. An SSE endpoint at `/sse` for server messages
 2. An HTTP POST endpoint at `/send` for client messages
 
+## Heartbeat and Service Health Configuration
+
+When using registry functionality, the server includes automatic heartbeat and service health monitoring:
+
+### Heartbeat Settings (Not directly configurable via command line, but hardcoded):
+- Heartbeat interval: 30 seconds (frequency of heartbeat updates)
+- Stale service threshold: 10 minutes (services not seen within this time are removed)
+- These settings ensure registry only lists currently active services
+
+### Service Lifecycle:
+- Auto-registration: Services automatically register when using `--register-with-registry`
+- Periodic heartbeats: Registered services send periodic updates to maintain registration
+- Graceful deregistration: Services automatically deregister when shutting down cleanly
+
 ## Extending the Server
 
 The server is designed to be easily extensible. See `example.py` for examples of:
@@ -262,6 +276,19 @@ The server includes an auto-registration feature that allows servers to automati
 3. Server sends its capabilities (tools, resources, prompts) to the registry
 4. Registry stores the server information in its database
 5. AI agents can discover the server through the registry
+
+### Heartbeat and Service Health Monitoring
+When a server registers with a registry, it automatically begins sending periodic heartbeats to maintain its registration status:
+- Heartbeat interval: Every 30 seconds by default
+- Stale service cleanup: Services not seen within 10 minutes are automatically removed
+- Each heartbeat updates the `last_seen` timestamp for the service
+- This ensures the registry only lists currently active services
+
+### Graceful Deregistration
+When a server shuts down gracefully, it automatically deregisters itself from the registry:
+- SIGTERM or SIGINT triggers graceful shutdown sequence
+- Server sends deregistration request to registry before terminating
+- Registry removes the service from its active list
 
 ### Auto-Registration Example:
 ```bash
