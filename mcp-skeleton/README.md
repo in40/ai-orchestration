@@ -1,0 +1,344 @@
+# MCP Standard Server
+
+This is a standard implementation of the Model Context Protocol (MCP) server in Python. It provides a complete, compliant implementation of the MCP specification with support for both stdio and HTTP/SSE transports.
+
+## Features
+
+- Full compliance with MCP specification
+- Support for stdio and HTTP/SSE transports
+- Implementation of all standard server methods:
+  - `initialize`
+  - `tools/list`, `tools/call`
+  - `resources/list`, `resources/read`
+  - `prompts/list`, `prompts/get`
+  - `shutdown`
+- Implementation of client methods that server can initiate:
+  - `sampling/complete`
+  - `elicitation/request`
+  - `logging/message`
+- Notification support for dynamic updates:
+  - `notifications/tools/list_changed`
+  - `notifications/resources/list_changed`
+  - `notifications/prompts/list_changed`
+- Optional registry functionality for service discovery (see below)
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+
+### Stdio Transport (Default)
+```bash
+python -m mcp_server.server --transport stdio
+```
+
+### HTTP/SSE Transport
+```bash
+python -m mcp_server.server --transport http --host 127.0.0.1 --port 3030
+```
+
+## Optional Registry Functionality
+
+The server includes optional registry functionality that enables a service discovery architecture:
+
+### Enabling Registry Mode
+```bash
+python -m mcp_server.server --transport http --port 3030 --enable-registry
+```
+
+### Registry Endpoints (when enabled):
+- `registry/register` - Register a service with the registry
+- `registry/list` - List all registered services
+
+### Registry Architecture:
+1. **Registry Server** - Central server that tracks available services
+2. **Service Servers** - Individual MCP servers that register their capabilities
+3. **AI Agent** - Queries the registry to discover available services
+
+### How to Use Registry:
+1. Start the registry server with `--enable-registry` flag
+2. Other MCP servers can register with the registry via the `/send` endpoint
+3. AI agents can discover services by querying the registry's `registry/list` method
+
+## Architecture
+
+The server is organized into several modules:
+
+- `utils/json_rpc.py`: JSON-RPC 2.0 message handling
+- `transports/stdio.py`: Stdio transport implementation
+- `transports/http_sse.py`: HTTP/SSE transport implementation
+- `handlers/server_handlers.py`: Standard server method handlers
+- `handlers/client_handlers.py`: Client method handlers
+- `utils/notifications.py`: Notification management
+- `utils/service_registry_db.py`: Optional database integration for registry functionality
+- `server.py`: Main server implementation
+
+## Configuration
+
+The server can be configured via command-line arguments:
+- `--transport`: Select transport mechanism ('stdio' or 'http')
+- `--host`: Host for HTTP transport (default: 127.0.0.1)
+- `--port`: Port for HTTP transport (default: 3030)
+- `--enable-registry`: Enable registry functionality to track multiple MCP services (optional)
+
+## Example Usage
+
+For stdio transport, the server communicates via stdin/stdout as per MCP specification:
+```bash
+echo '{"jsonrpc": "2.0", "id": "1", "method": "initialize", "params": {"clientInfo": {"name": "test-client", "version": "1.0"}}}' | python -m mcp_server.server
+```
+
+For HTTP/SSE transport, the server provides:
+1. An SSE endpoint at `/sse` for server messages
+2. An HTTP POST endpoint at `/send` for client messages
+
+## Starting the Server
+
+### Using Python Directly
+```bash
+# Start with default settings (HTTP on port 3030)
+python -m mcp_server.server --transport http
+
+# Start with custom port
+python -m mcp_server.server --transport http --port 9000
+
+# Start registry server
+python -m mcp_server.server --transport http --port 3030 --enable-registry
+```
+
+### Using Startup Scripts
+
+Two convenient shell scripts are provided:
+
+1. **Simple startup script** (starts with defaults):
+```bash
+./start_mcp_default.sh
+```
+
+2. **Configurable startup script** (supports all options):
+```bash
+./start_mcp_server.sh --help
+./start_mcp_server.sh --port 9000
+./start_mcp_server.sh --enable-registry --port 5000
+./start_mcp_server.sh --register-with-registry --registry-port 3031
+```
+
+### Auto-Registration with Registry
+
+Servers can automatically register with a registry server:
+
+```bash
+# Start a server and register it with the registry at localhost:3031
+./start_mcp_server.sh --port 3032 --register-with-registry
+
+# Start a server and register it with a registry at a custom host/port
+./start_mcp_server.sh --port 3032 --register-with-registry --registry-host registry.example.com --registry-port 8080
+```
+
+### Running in Background
+
+Servers can be started in the background using several methods:
+
+#### Method 1: Standard Backgrounding
+```bash
+# Start in background using &
+./start_mcp_server.sh --port 3031 --enable-registry --use-postgres --postgres-user postgres --postgres-password postgres &
+echo "Registry server started in background"
+```
+
+#### Method 2: Using nohup for Persistence
+```bash
+# Start with nohup to persist after terminal closes
+nohup ./start_mcp_server.sh --port 3031 --enable-registry --use-postgres --postgres-user postgres --postgres-password postgres > registry.log 2>&1 &
+```
+
+#### Method 3: Using Screen or Tmux
+```bash
+# Using screen
+screen -dmS mcp-registry './start_mcp_server.sh --port 3031 --enable-registry --use-postgres --postgres-user postgres --postgres-password postgres'
+
+# Using tmux
+tmux new-session -d -s mcp-registry './start_mcp_server.sh --port 3031 --enable-registry --use-postgres --postgres-user postgres --postgres-password postgres'
+```
+
+### Testing the Registry
+
+A test script is provided to verify registry functionality:
+
+```bash
+# First start a registry server
+./start_mcp_server.sh --port 3031 --enable-registry
+
+# Then run the test script in another terminal
+./test_registry_simple.sh
+```
+
+### Testing Auto-Registration
+
+Test scripts are provided to verify auto-registration functionality:
+
+```bash
+# Start registry server
+./start_mcp_server.sh --port 3031 --enable-registry &
+
+# Start server that auto-registers with registry
+./start_mcp_server.sh -R --registry-port 3031 --port 3032 &
+
+# Query registry as an AI agent would
+./query_registry.sh
+
+# Or run complete AI agent workflow simulation
+./ai_agent_workflow.sh
+```
+
+### Database Support
+
+The MCP server includes support for multiple database backends:
+
+#### SQLite (Default)
+- Built-in support for registry functionality
+- Stores data in `mcp_registry.db` file
+- No configuration required - ready to use out of the box
+
+#### PostgreSQL (Optional)
+- Production-ready database solution
+- High availability and scalability
+- Requires PostgreSQL installation and configuration
+
+**PostgreSQL Usage:**
+```bash
+# Start registry server with PostgreSQL backend
+./start_mcp_server.sh --port 3031 --enable-registry --use-postgres
+
+# With custom PostgreSQL parameters
+./start_mcp_server.sh --port 3031 --enable-registry --use-postgres \
+  --postgres-host localhost --postgres-port 5432 \
+  --postgres-db mcp_registry --postgres-user postgres \
+  --postgres-password ''
+```
+
+#### PostgreSQL Setup Requirements
+
+When using PostgreSQL backend, ensure the following setup is completed:
+
+1. **Set up PostgreSQL user password**:
+   ```bash
+   sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
+   ```
+
+2. **Configure pg_hba.conf** for proper authentication:
+   - The default `pg_hba.conf` uses `peer` authentication for local connections, which may not work with the server
+   - Change authentication method to `md5` or `scram-sha-256` for the postgres user
+   - Example configuration:
+     ```
+     local   all             postgres                                md5
+     host    all             all             127.0.0.1/32            md5
+     host    all             all             ::1/128                 md5
+     ```
+
+3. **Restart PostgreSQL** after configuration changes:
+   ```bash
+   sudo systemctl restart postgresql
+   ```
+
+4. **Use 127.0.0.1 instead of localhost** to avoid IPv6 resolution issues
+
+### Running in Background
+
+Servers can be started in the background using several methods:
+
+#### Method 1: Standard Backgrounding
+```bash
+# Start in background using &
+./start_mcp_server.sh --port 3031 --enable-registry &
+echo "Registry server started in background"
+
+# Start auto-registering server in background
+./start_mcp_server.sh -R --registry-port 3031 --port 3032 &
+echo "Auto-registering server started in background"
+```
+
+#### Method 2: Using Enhanced Script with Background Options
+```bash
+# Start in background with the enhanced script
+./start_mcp_server_bg.sh -b --port 3031 --enable-registry
+
+# Start with logging
+./start_mcp_server_bg.sh -b -l registry.log --port 3031 --enable-registry
+
+# Start with PID file
+./start_mcp_server_bg.sh -b --pid-file registry.pid --port 3031 --enable-registry
+
+# Start registry with PostgreSQL in background
+./start_mcp_server_bg.sh -b --port 3031 --enable-registry --use-postgres
+```
+
+#### Method 3: Using nohup for Persistence
+```bash
+# Start with nohup to persist after terminal closes
+nohup ./start_mcp_server.sh --port 3031 --enable-registry > registry.log 2>&1 &
+```
+
+#### Method 4: Using Screen or Tmux
+```bash
+# Using screen
+screen -dmS mcp-registry ./start_mcp_server.sh --port 3031 --enable-registry
+
+# Using tmux
+tmux new-session -d -s mcp-registry './start_mcp_server.sh --port 3031 --enable-registry'
+```
+
+#### Managing Background Processes
+```bash
+# Check running processes
+ps aux | grep "python -m mcp_server.server"
+
+# Kill specific process
+pkill -f "python -m mcp_server.server"
+
+# Or using PID if saved to file
+kill $(cat registry.pid)
+```
+
+## Extending the Server
+
+The server is designed to be easily extensible. See `example.py` for examples of:
+- Adding custom tools, resources, and prompts
+- Creating a registry server for service discovery
+- Connecting to databases for persistent storage
+
+### Code Reusability
+
+The server architecture promotes code reuse when building additional servers:
+- **Transport Layer**: HTTP/stdio transport abstractions can be reused
+- **Database Integration**: PostgreSQL and SQLite connection management is reusable
+- **Registry System**: Service discovery and registration patterns can be extended
+- **Configuration Management**: Command-line parsing and configuration loading
+- **Lifecycle Management**: Startup/shutdown procedures and signal handling
+- **Logging Infrastructure**: Comprehensive logging setup and debug utilities
+
+This modular design allows you to build new servers by inheriting from base classes and reusing existing components with minimal duplication.
+
+## Complete Script Reference
+
+The MCP server project includes multiple shell scripts for different purposes:
+
+### Startup Scripts
+- `./start_mcp_default.sh` - Simple startup with default settings
+- `./start_mcp_server.sh` - Full-featured startup with all configuration options
+- `./start_mcp_server_bg.sh` - Enhanced startup with built-in background operation
+- `./start_registry_server.sh` - Dedicated registry server startup with optimized defaults
+
+### Testing Scripts
+- `./test_registry_simple.sh` - Basic registry functionality test
+- `./test_registry.sh` - Comprehensive registry functionality test
+- `./test_auto_registration.sh` - Auto-registration functionality test
+- `./test_postgres_integration.sh` - PostgreSQL integration test
+
+### Utility Scripts
+- `./query_registry.sh` - Query registered services from registry
+- `./ai_agent_workflow.sh` - Complete AI agent workflow simulation
+- `./final_verification.sh` - Complete system verification
