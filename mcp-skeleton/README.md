@@ -340,5 +340,6 @@ The MCP server project includes multiple shell scripts for different purposes:
 
 ### Utility Scripts
 - `./query_registry.sh` - Query registered services from registry using MCP protocol
+- `./query_registry_client.py` - Advanced registry client with full service details via HTTP/SSE
 - `./ai_agent_workflow.sh` - Complete AI agent workflow simulation using MCP protocol
 - `./final_verification.sh` - Complete system verification using MCP protocol

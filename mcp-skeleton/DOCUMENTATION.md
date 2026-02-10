@@ -1053,6 +1053,28 @@ Simulates how an AI agent would query the registry server using proper MCP proto
 ./query_registry.sh
 ```
 
+#### `query_registry_client.py` - Advanced Registry Client
+Advanced Python client that properly implements the MCP HTTP/SSE protocol to query the registry.
+
+**Features:**
+- Opens SSE connection first, then sends requests (proper MCP pattern)
+- Retrieves complete service information including capabilities
+- Shows detailed service metadata (ID, name, endpoint, description)
+- Supports querying specific services by ID (if supported by registry)
+- Real-time response handling through SSE
+
+**Usage:**
+```bash
+# Query all registered services
+python query_registry_client.py
+
+# Query specific service by ID
+python query_registry_client.py --service-id "server-127.0.0.1-3030"
+
+# Use custom registry URL and timeout
+python query_registry_client.py --registry-url "http://localhost:3031" --timeout 20
+```
+
 #### `ai_agent_workflow.sh` - Complete AI Agent Simulation
 Runs a complete simulation of the AI agent service discovery workflow using MCP protocol calls.
 
