@@ -31,6 +31,12 @@ class Settings:
         # Registry-specific settings
         self.max_registration_attempts: int = int(os.getenv("MAX_REGISTRATION_ATTEMPTS", "3"))
         self.registration_timeout: int = int(os.getenv("REGISTRATION_TIMEOUT", "30"))  # seconds
+        
+        # Session management settings
+        self.session_timeout: int = int(os.getenv("SESSION_TIMEOUT", "3600"))  # seconds
+        # Initially disable session requirement for registration to allow first-time registration
+        self.require_session_for_registration: bool = os.getenv("REQUIRE_SESSION_FOR_REGISTRATION", "false").lower() == "true"
+        self.require_session_for_updates: bool = os.getenv("REQUIRE_SESSION_FOR_UPDATES", "true").lower() == "true"
 
 
 # Global settings instance

@@ -10,6 +10,7 @@ The MCP Server Registry is a centralized service that maintains a catalog of ava
 
 - **MCP Protocol Compliance**: Implements the Model Context Protocol as both a client and server
 - **Server Registration**: Allows MCP servers to register their capabilities and endpoints
+- **Session Management**: Enforces session-based authentication for secure operations
 - **Discovery Tools**: Provides tools for discovering registered servers by capabilities, tags, or search terms
 - **Health Monitoring**: Automatically monitors the health status of registered servers
 - **Rich Metadata**: Stores detailed information about registered servers including capabilities, metadata, and tags
@@ -126,6 +127,9 @@ The registry can be configured using environment variables:
 - `LOG_LEVEL`: Logging level (default: `INFO`)
 - `HEALTH_CHECK_INTERVAL`: Interval for health checks in seconds (default: `60`)
 - `JWT_SECRET`: Secret for JWT tokens (default: `dev-secret-change-in-production`)
+- `SESSION_TIMEOUT`: Session timeout in seconds (default: `3600`)
+- `REQUIRE_SESSION_FOR_REGISTRATION`: Require session for registration (default: `true`)
+- `REQUIRE_SESSION_FOR_UPDATES`: Require session for updates (default: `true`)
 
 ## Usage
 
@@ -170,6 +174,15 @@ result = client.call_tool("registry_register_server", {
     "tags": ["utility", "data-access"]
 })
 ```
+
+### Session Management
+
+The registry enforces session-based authentication for secure operations. When connecting to the registry:
+
+- Sessions are automatically established when connecting via supported transports
+- Registration and update operations require valid session contexts
+- Session timeouts are configurable (default: 1 hour)
+- Invalid or expired sessions will result in authentication errors
 
 ### Discovering MCP Servers
 

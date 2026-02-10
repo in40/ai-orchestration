@@ -53,16 +53,15 @@ class TestRegistryServer:
         """Test that the registry server can be initialized."""
         # Mock the database service to avoid needing a real database connection
         with patch('src.server.registry_server.DatabaseService') as mock_db_service_class, \
-             patch('src.server.registry_server.HealthMonitorService') as mock_health_monitor_class, \
-             patch('src.server.registry_server.Server'):
-            
+             patch('src.server.registry_server.HealthMonitorService') as mock_health_monitor_class:
+
             # Create mock instances
             mock_db_service = Mock()
             mock_health_monitor = Mock()
-            
+
             mock_db_service_class.return_value = mock_db_service
             mock_health_monitor_class.return_value = mock_health_monitor
-            
+
             registry = RegistryServer()
             assert registry.db_service is mock_db_service
             assert registry.health_monitor is mock_health_monitor
