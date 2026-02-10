@@ -15,6 +15,7 @@ from .transports.http_sse import HttpSseTransport
 from .handlers.server_handlers import McpServerHandlers
 from .handlers.client_handlers import ClientMethodsHandlers
 from .utils.notifications import NotificationManager
+from .utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
 
 # Optional registry functionality - uncomment to enable
 # from .utils.service_registry_db import ServiceRegistryDB
@@ -87,6 +88,19 @@ class McpServer:
                 }
             }
             self.service_registry.register_service(self.service_info)
+            
+            # Initialize heartbeat manager for the registry server
+            self.heartbeat_manager = HeartbeatManager(
+                self.service_registry,
+                self.service_info["id"],
+                heartbeat_interval=30,  # Every 30 seconds
+                max_age_minutes=10      # Remove services not seen in 10 minutes
+            )
+        else:
+            self.heartbeat_manager = None
+
+        # Initialize remote heartbeat manager for auto-registration
+        self.remote_heartbeat_manager = None
         
         # Initialize transport based on type
         if transport_type == "stdio":
@@ -109,44 +123,55 @@ class McpServer:
         if not self.register_with_registry:
             print("DEBUG: register_with_registry is False, skipping registration")
             return
-        
+
         print(f"DEBUG: Attempting to register with registry at {self.registry_host}:{self.registry_port}")
         try:
             import requests
             import json
-            
-            registry_url = f"http://{self.registry_host}:{self.registry_port}/send"
+
+            registry_url = f"http://{self.registry_host}:{self.registry_port}"
             print(f"DEBUG: Preparing registration payload to {registry_url}")
-            
+
             # Prepare registration payload
+            self.service_info = {
+                "id": f"server-{self.host}-{self.port}",
+                "name": f"MCP Server on {self.host}:{self.port}",
+                "description": f"MCP server providing services on {self.host}:{self.port}",
+                "endpoint": f"http://{self.host}:{self.port}",
+                "capabilities": {
+                    "tools": [tool["name"] for tool in self.server_handlers.tools],
+                    "resources": [resource["uri"] for resource in self.server_handlers.resources],
+                    "prompts": [prompt["name"] for prompt in self.server_handlers.prompts]
+                }
+            }
+            
             payload = {
                 "jsonrpc": "2.0",
                 "id": f"register-{self.port}",
                 "method": "registry/register",
-                "params": {
-                    "id": f"server-{self.host}-{self.port}",
-                    "name": f"MCP Server on {self.host}:{self.port}",
-                    "description": f"MCP server providing services on {self.host}:{self.port}",
-                    "endpoint": f"http://{self.host}:{self.port}",
-                    "capabilities": {
-                        "tools": [tool["name"] for tool in self.server_handlers.tools],
-                        "resources": [resource["uri"] for resource in self.server_handlers.resources],
-                        "prompts": [prompt["name"] for prompt in self.server_handlers.prompts]
-                    }
-                }
+                "params": self.service_info
             }
             print(f"DEBUG: Registration payload prepared: {payload['params']['id']}")
-            
-            print(f"DEBUG: Sending registration request to {registry_url}")
-            response = requests.post(registry_url, json=payload)
+
+            print(f"DEBUG: Sending registration request to {registry_url}/send")
+            response = requests.post(f"{registry_url}/send", json=payload)
             print(f"DEBUG: Registration response status: {response.status_code}")
             print(f"DEBUG: Registration response text: {response.text}")
-            
+
             if response.status_code == 200:
                 print(f"Successfully registered with registry at {self.registry_host}:{self.registry_port}")
+                
+                # Initialize remote heartbeat manager to maintain registration
+                self.remote_heartbeat_manager = RemoteHeartbeatManager(
+                    registry_url=registry_url,
+                    service_info=self.service_info,
+                    heartbeat_interval=30,  # Every 30 seconds
+                    max_age_minutes=10      # Registry considers service stale after 10 minutes
+                )
+                self.remote_heartbeat_manager.start()
             else:
                 print(f"Failed to register with registry: {response.status_code} - {response.text}")
-                
+
         except ImportError:
             print("Warning: 'requests' library not available. Install it to enable auto-registration with registry.")
         except Exception as e:
@@ -211,7 +236,7 @@ class McpServer:
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""
-        print(f"Received signal {signum}, shutting down...")
+        print(f"Received signal {signum}, initiating graceful shutdown...")
         self.stop()
         sys.exit(0)
     
@@ -229,21 +254,24 @@ class McpServer:
         if self.register_with_registry:
             print(f"Registering with registry at {self.registry_host}:{self.registry_port}...")
             self._register_with_registry()
-        
+        elif self.enable_registry and self.heartbeat_manager:
+            # Start heartbeat manager for registry server
+            self.heartbeat_manager.start()
+
         # Keep the server running
         try:
             while self.running:
                 time.sleep(0.1)  # Small sleep to prevent busy waiting
                 # Check for any pending notifications to send
                 changes = self.notification_manager.get_changes_status()
-                
+
                 if changes["tools_changed"]:
                     self.notification_manager.notify_tools_list_changed()
                 if changes["resources_changed"]:
                     self.notification_manager.notify_resources_list_changed()
                 if changes["prompts_changed"]:
                     self.notification_manager.notify_prompts_list_changed()
-                    
+
         except KeyboardInterrupt:
             print("Interrupt received, shutting down...")
         finally:
@@ -252,6 +280,16 @@ class McpServer:
     def stop(self):
         """Stop the MCP server"""
         print("Stopping MCP server...")
+        
+        # Stop heartbeat managers first
+        if self.remote_heartbeat_manager:
+            print("Stopping remote heartbeat manager...")
+            self.remote_heartbeat_manager.stop()
+        
+        if self.heartbeat_manager:
+            print("Stopping local heartbeat manager...")
+            self.heartbeat_manager.stop()
+        
         self.running = False
         self.transport.stop()
         print("MCP server stopped")
