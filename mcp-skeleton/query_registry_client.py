@@ -25,47 +25,83 @@ class RegistryQueryClient:
         
     def start_sse_listener(self):
         """Start listening to SSE stream in a separate thread"""
+        self.session_id = None  # Store the session ID from the endpoint event
+        self.session_id_received = False  # Flag to indicate if session ID has been received
+        
         def listen():
             try:
                 # Open SSE connection
                 sse_url = f"{self.registry_url}/sse"
                 response = self.session.get(sse_url, stream=True, timeout=self.timeout)
-                
+
                 for line in response.iter_lines(decode_unicode=True):
                     if self.stop_event.is_set():
                         break
-                    
+
                     line = line.strip()
-                    if line.startswith("data: "):
+                    if line.startswith("event: endpoint"):
+                        # This is the endpoint event that contains the session ID
+                        # Next line should contain the data
+                        continue
+                    elif line.startswith("data: "):
                         data = line[6:]  # Remove "data: " prefix
                         try:
                             json_data = json.loads(data)
-                            self.response_queue.put(json_data)
+                            
+                            # Check if this is an endpoint event with session ID
+                            if isinstance(json_data, dict) and 'sessionId' in json_data:
+                                self.session_id = json_data['sessionId']
+                                self.session_id_received = True
+                                print(f"📝 Got session ID from server: {self.session_id}")
+                            else:
+                                # This is a regular message, put it in the queue
+                                self.response_queue.put(json_data)
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
                 if not self.stop_event.is_set():
                     print(f"Error in SSE listener: {e}")
-        
+
         self.sse_thread = Thread(target=listen, daemon=True)
         self.sse_thread.start()
+        
+        # Wait briefly to allow session ID to be received
+        import time
+        time.sleep(0.5)
+        
         return self.sse_thread
 
     def send_request(self, method, params=None, request_id=None):
         """Send a request to the registry server"""
         if request_id is None:
             request_id = str(uuid.uuid4())
-        
+
+        # Wait for session ID if not yet received
+        if hasattr(self, 'session_id_received') and not self.session_id_received:
+            print("⏳ Waiting for session ID from server...")
+            import time
+            wait_start = time.time()
+            while (not getattr(self, 'session_id_received', False) and 
+                   time.time() - wait_start < 5):  # Wait up to 5 seconds
+                time.sleep(0.1)
+
         payload = {
             "jsonrpc": "2.0",
             "id": request_id,
             "method": method,
             "params": params or {}
         }
-        
+
         send_url = f"{self.registry_url}/send"
+        headers = {}
+        
+        # Add session ID to headers if available
+        if hasattr(self, 'session_id') and self.session_id:
+            headers['X-MCP-Session-ID'] = self.session_id
+            print(f"📤 Using session ID for request: {self.session_id}")
+        
         try:
-            response = self.session.post(send_url, json=payload, timeout=5)
+            response = self.session.post(send_url, json=payload, headers=headers, timeout=5)
             if response.status_code == 200:
                 result = response.json()
                 if result.get("status") == "received":

@@ -182,10 +182,10 @@ class McpServer:
                 self._send_response(response)
         except Exception as e:
             # Log error and send error response if it was a request
-            if message.message_type.value == 'request':
+            if hasattr(message, 'message_type') and message.message_type.value == 'request':
                 error_response = self.rpc_handler._create_error_response(
-                    message.get_id(), 
-                    -32603, 
+                    message.get_id(),
+                    -32603,
                     f"Internal error: {str(e)}"
                 )
                 self._send_response(error_response)
@@ -195,7 +195,11 @@ class McpServer:
     
     def _send_response(self, response):
         """Send a response message through the transport"""
-        self.transport.send_message(response)
+        # Use the transport's specific response method if available
+        if hasattr(self.transport, '_send_response'):
+            self.transport._send_response(response)
+        else:
+            self.transport.send_message(response)
     
     def _send_notification(self, notification):
         """Send a notification message through the transport"""
