@@ -34,42 +34,47 @@ curl -s -X POST "$REGISTRY_URL/send" \
 echo "Registry responded with: $(cat $RESPONSE_FILE)"
 echo ""
 
-# Step 2: Check registry database to confirm services are registered
-echo "📋 STEP 2: Verifying registered services in database"
-echo "----------------------------------------------------"
+# Step 2: Parse registry response to confirm services are registered
+echo "📋 STEP 2: Verifying registered services via MCP protocol"
+echo "---------------------------------------------------------"
 
-if [ -f "mcp_registry.db" ]; then
-    TOTAL_COUNT=$(sqlite3 mcp_registry.db "SELECT COUNT(*) FROM services;")
-    echo "Total services registered: $TOTAL_COUNT"
-    
-    echo ""
-    echo "Registered services:"
-    sqlite3 mcp_registry.db "SELECT id, name, endpoint FROM services;" | while IFS='|' read -r id name endpoint; do
-        echo "  • $name ($id)"
-        echo "    Endpoint: $endpoint"
-        
-        # Check if this is our auto-registered server
-        if [[ "$id" == *"3032"* ]]; then
-            echo "    🎯 This is our auto-registered server!"
-        fi
-        echo ""
-    done
+# Check if the registry acknowledged the request
+if grep -q '"status":"received"' "$RESPONSE_FILE"; then
+    echo "Registry acknowledged discovery request (expected for HTTP/SSE transport)"
+    echo "Actual service list would be delivered via SSE connection to original client"
 else
-    echo "❌ Registry database not found"
+    echo "Registry responded with service information:"
+    echo "$(cat $RESPONSE_FILE)"
+    
+    # If jq is available, parse the service information
+    if command -v jq >/dev/null 2>&1; then
+        if jq -e '.result.services[]?' "$RESPONSE_FILE" >/dev/null 2>&1; then
+            TOTAL_COUNT=$(jq -r '.result.total_count // 0' "$RESPONSE_FILE" 2>/dev/null || echo "0")
+            echo "Total services registered: $TOTAL_COUNT"
+            
+            echo ""
+            echo "Registered services:"
+            jq -r '.result.services[]? | "  • \(.name) (\(.id))\n    Endpoint: \(.endpoint)\n    Capabilities: \(.capabilities)\n"' "$RESPONSE_FILE"
+        else
+            echo "No services currently registered"
+        fi
+    else
+        echo "Service information retrieved (install jq for detailed analysis)"
+    fi
 fi
 
 # Step 3: Simulate AI agent selecting a service based on capabilities
 echo "🎯 STEP 3: AI agent selecting service based on capabilities"
 echo "----------------------------------------------------------"
 
-if [ -f "mcp_registry.db" ]; then
-    # Find the auto-registered server
-    SERVER_INFO=$(sqlite3 mcp_registry.db "SELECT id, name, endpoint FROM services WHERE id LIKE '%3032%';")
-    if [ -n "$SERVER_INFO" ]; then
-        SERVER_ID=$(echo $SERVER_INFO | cut -d'|' -f1)
-        SERVER_NAME=$(echo $SERVER_INFO | cut -d'|' -f2)
-        SERVER_ENDPOINT=$(echo $SERVER_INFO | cut -d'|' -f3)
-        
+# Check if services were returned in the response
+if command -v jq >/dev/null 2>&1 && jq -e '.result.services[]?' "$RESPONSE_FILE" >/dev/null 2>&1; then
+    # Look for the auto-registered server in the response
+    if jq -e '.result.services[]? | select(.id | contains("3032"))' "$RESPONSE_FILE" >/dev/null 2>&1; then
+        SERVER_ID=$(jq -r '.result.services[]? | select(.id | contains("3032")) | .id' "$RESPONSE_FILE" 2>/dev/null || echo "Not found")
+        SERVER_NAME=$(jq -r '.result.services[]? | select(.id | contains("3032")) | .name' "$RESPONSE_FILE" 2>/dev/null || echo "Not found")
+        SERVER_ENDPOINT=$(jq -r '.result.services[]? | select(.id | contains("3032")) | .endpoint' "$RESPONSE_FILE" 2>/dev/null || echo "Not found")
+
         echo "AI agent selected service:"
         echo "  ID: $SERVER_ID"
         echo "  Name: $SERVER_NAME"
@@ -77,10 +82,12 @@ if [ -f "mcp_registry.db" ]; then
         echo ""
         echo "✅ AI agent can now interact with this service directly!"
     else
-        echo "❌ No auto-registered server found"
+        echo "❌ No auto-registered server found in registry response"
+        echo "   This may be because no auto-registering server is currently running"
     fi
 else
-    echo "❌ Cannot determine available services"
+    echo "❌ Cannot determine available services from registry response"
+    echo "   Either no services are registered or registry is not responding properly"
 fi
 
 # Step 4: Summary

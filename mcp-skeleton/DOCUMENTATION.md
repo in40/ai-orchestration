@@ -1039,13 +1039,13 @@ Tests the registry functionality and provides detailed output.
 ```
 
 #### `query_registry.sh` - Registry Query Test
-Simulates how an AI agent would query the registry server.
+Simulates how an AI agent would query the registry server using proper MCP protocol.
 
 **Features:**
-- Sends `registry/list` requests to registry
-- Verifies registered services in database
+- Sends `registry/list` requests to registry via MCP protocol
+- Parses service information from registry response
 - Simulates AI agent discovery workflow
-- Shows detailed verification results
+- Uses only MCP-compliant communication methods
 
 **Usage:**
 ```bash
@@ -1054,14 +1054,14 @@ Simulates how an AI agent would query the registry server.
 ```
 
 #### `ai_agent_workflow.sh` - Complete AI Agent Simulation
-Runs a complete simulation of the AI agent service discovery workflow.
+Runs a complete simulation of the AI agent service discovery workflow using MCP protocol calls.
 
 **Features:**
 - Complete 4-step workflow simulation
-- Queries registry for services
-- Verifies auto-registered servers
-- Shows service selection process
-- Comprehensive verification
+- Queries registry for services via MCP protocol
+- Uses only MCP-compliant communication methods
+- Shows service selection process based on capabilities
+- Comprehensive verification via proper channels
 
 **Usage:**
 ```bash
@@ -1112,15 +1112,16 @@ Tests the PostgreSQL database integration functionality.
 ```
 
 #### `final_verification.sh` - Complete System Verification
-Performs a comprehensive verification of all MCP server functionality.
+Performs a comprehensive verification of all MCP server functionality using MCP protocol calls.
 
 **Features:**
 - Tests all major components and integrations
 - Verifies startup scripts functionality
-- Validates registry and auto-registration
-- Checks PostgreSQL integration
+- Validates registry and auto-registration via MCP protocol
+- Checks service discovery functionality
 - Runs complete workflow simulation
 - Provides detailed verification report
+- Uses only MCP-compliant communication methods
 
 **Usage:**
 ```bash
