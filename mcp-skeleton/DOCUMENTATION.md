@@ -1053,7 +1053,7 @@ Simulates how an AI agent would query the registry server using proper MCP proto
 ./query_registry.sh
 ```
 
-#### `query_registry_client.py` - Advanced Registry Client
+#### `query_registry_client_proper.py` - Advanced Registry Client
 Advanced Python client that properly implements the MCP HTTP/SSE protocol to query the registry.
 
 **Features:**
@@ -1066,13 +1066,38 @@ Advanced Python client that properly implements the MCP HTTP/SSE protocol to que
 **Usage:**
 ```bash
 # Query all registered services
-python query_registry_client.py
+python query_registry_client_proper.py
 
 # Query specific service by ID
-python query_registry_client.py --service-id "server-127.0.0.1-3030"
+python query_registry_client_proper.py --service-id "server-127.0.0.1-3030"
 
 # Use custom registry URL and timeout
-python query_registry_client.py --registry-url "http://localhost:3031" --timeout 20
+python query_registry_client_proper.py --registry-url "http://localhost:3031" --timeout 20
+```
+
+#### `query_registry_sse.sh` - Shell Wrapper for Registry Client
+Shell script wrapper that provides a convenient interface to query the registry using the proper HTTP/SSE protocol.
+
+**Features:**
+- Simple shell interface to the Python registry client
+- Proper MCP HTTP/SSE protocol implementation
+- Automatic detection of Python client
+- Configurable registry URL and timeout
+- Complete service information display
+
+**Usage:**
+```bash
+# Query all registered services
+./query_registry_sse.sh
+
+# Query with custom registry URL
+./query_registry_sse.sh "http://localhost:3031"
+
+# Query specific service (if registry supports it)
+./query_registry_sse.sh "http://localhost:3031" "server-127.0.0.1-3030"
+
+# Query with custom timeout
+./query_registry_sse.sh "http://localhost:3031" "" 20
 ```
 
 #### `ai_agent_workflow.sh` - Complete AI Agent Simulation
