@@ -25,17 +25,26 @@ The server follows the MCP specification and consists of several key components:
 2. **Tools:**
    - `tools/list` - List available tools with optional pagination
    - `tools/call` - Execute a specific tool with parameters
+   - **Purpose**: Tools perform actions or operations that have side effects (execute calculations, trigger workflows, call external APIs)
 
 3. **Resources:**
    - `resources/list` - List available resources with optional pagination
    - `resources/read` - Read content from a specific resource by URI
+   - **Purpose**: Resources provide access to static or semi-static data/content (files, configurations, datasets)
 
 4. **Prompts:**
    - `prompts/list` - List available prompts with optional pagination
    - `prompts/get` - Get a specific prompt with resolved arguments
+   - **Purpose**: Prompts provide templated instructions or templates that can be customized with arguments (often used for LLM interactions)
 
 5. **Health Check:**
    - `ping` - Health check endpoint (returns timestamp and status)
+
+### Key Differences Between Tools, Resources, and Prompts:
+
+- **Tools**: Active operations that execute and return results (e.g., calculations, API calls, data transformations)
+- **Resources**: Passive data containers accessed by URI that return static content (e.g., files, configurations)
+- **Prompts**: Template-based instructions that can be customized with arguments (e.g., LLM prompt templates)
 
 ### Client Request Endpoints (Methods the server can call back to the client):
 

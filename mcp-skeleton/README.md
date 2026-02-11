@@ -8,10 +8,15 @@ This is a standard implementation of the Model Context Protocol (MCP) server in 
 - Support for stdio and HTTP/SSE transports
 - Implementation of all standard server methods:
   - `initialize`
-  - `tools/list`, `tools/call`
-  - `resources/list`, `resources/read`
-  - `prompts/list`, `prompts/get`
+  - `tools/list`, `tools/call` - Execute operations and actions
+  - `resources/list`, `resources/read` - Access static data/content
+  - `prompts/list`, `prompts/get` - Retrieve templated instructions
   - `shutdown`
+
+### Key Differences:
+- **Tools**: Active operations that execute and return results (e.g., calculations, API calls, data transformations)
+- **Resources**: Passive data containers accessed by URI that return static content (e.g., files, configurations)
+- **Prompts**: Template-based instructions that can be customized with arguments (e.g., LLM prompt templates)
 - Implementation of client methods that server can initiate:
   - `sampling/complete`
   - `elicitation/request`
