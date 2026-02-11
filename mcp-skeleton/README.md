@@ -333,6 +333,31 @@ pkill -f "python -m mcp_server.server"
 kill $(cat registry.pid)
 ```
 
+### Stopping Servers
+
+Three stop scripts are provided to terminate MCP and registry server instances:
+
+1. **Stop MCP Server Only**:
+```bash
+./stop_mcp_server.sh
+```
+
+2. **Stop Registry Server Only**:
+```bash
+./stop_registry_server.sh
+```
+
+3. **Stop All Servers (Recommended)**:
+```bash
+./stop_all_servers.sh
+```
+
+The `stop_all_servers.sh` script is the most comprehensive and will:
+- Terminate any registry server processes (those with `--enable-registry` flag or running on ports 3031/3032)
+- Terminate any remaining MCP server processes
+- Force kill any processes that don't respond to graceful termination
+- Clean up any leftover PID files
+
 ## Extending the Server
 
 The server is designed to be easily extensible. See `example.py` for examples of:
