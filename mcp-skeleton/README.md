@@ -28,6 +28,7 @@ This is a standard implementation of the Model Context Protocol (MCP) server in 
   - `resources/list`, `resources/read` - Access static data/content
   - `prompts/list`, `prompts/get` - Retrieve templated instructions
   - `shutdown`
+  - `ping` - Health check endpoint (returns timestamp and status)
 
 ### Key Differences:
 - **Tools**: Active operations that execute and return results (e.g., calculations, API calls, data transformations)
@@ -42,6 +43,8 @@ This is a standard implementation of the Model Context Protocol (MCP) server in 
   - `notifications/resources/list_changed`
   - `notifications/prompts/list_changed`
 - Optional registry functionality for service discovery (see below)
+- Advanced concurrency control with request limiting and monitoring
+- Comprehensive metrics and monitoring endpoints
 
 ## Installation
 
@@ -73,6 +76,7 @@ python -m mcp_server.server --transport http --port 3030 --enable-registry
 ### Registry Endpoints (when enabled):
 - `registry/register` - Register a service with the registry
 - `registry/list` - List all registered services
+- `registry/unregister` - Remove a service from the registry
 
 ### Registry Architecture:
 1. **Registry Server** - Central server that tracks available services
@@ -83,24 +87,29 @@ python -m mcp_server.server --transport http --port 3030 --enable-registry
 1. Start the registry server with `--enable-registry` flag
 2. Other MCP servers can register with the registry via the `/send` endpoint
 3. AI agents can discover services by querying the registry's `registry/list` method
+4. Services can deregister via the `registry/unregister` method
 
 ### Auto-Registration and Heartbeat Monitoring:
 - Servers can auto-register with a registry using `--register-with-registry` flag
 - Registered services send periodic heartbeats (every 30 seconds) to maintain registration
 - Services not seen within 10 minutes are automatically removed from the registry
 - Services automatically deregister when shutting down cleanly
+- Remote heartbeat manager maintains registration status for auto-registered services
 
 ## Architecture
 
 The server is organized into several modules:
 
-- `utils/json_rpc.py`: JSON-RPC 2.0 message handling
+- `utils/json_rpc.py`: JSON-RPC 2.0 message handling with concurrency control
 - `transports/stdio.py`: Stdio transport implementation
-- `transports/http_sse.py`: HTTP/SSE transport implementation
+- `transports/http_sse.py`: HTTP/SSE transport implementation with session correlation
 - `handlers/server_handlers.py`: Standard server method handlers
 - `handlers/client_handlers.py`: Client method handlers
 - `utils/notifications.py`: Notification management
 - `utils/service_registry_db.py`: Optional database integration for registry functionality
+- `utils/postgres_registry_db.py`: PostgreSQL database integration for registry functionality
+- `utils/heartbeat_manager.py`: Service heartbeat and health monitoring
+- `utils/concurrency_monitor.py`: Concurrency and performance monitoring
 - `server.py`: Main server implementation
 
 ## Configuration
@@ -114,6 +123,12 @@ The server can be configured via command-line arguments:
 - `--register-with-registry`: Register this server with a registry server (requires --registry-host and --registry-port)
 - `--registry-host`: Registry server host to register with (default: 127.0.0.1)
 - `--registry-port`: Registry server port to register with (default: 3031)
+- `--use-postgres`: Use PostgreSQL for registry storage instead of SQLite (optional)
+- `--postgres-host`: PostgreSQL host (default: 127.0.0.1)
+- `--postgres-port`: PostgreSQL port (default: 5432)
+- `--postgres-db`: PostgreSQL database name (default: mcp_registry)
+- `--postgres-user`: PostgreSQL username (default: postgres)
+- `--postgres-password`: PostgreSQL password (default: empty)
 
 ## Example Usage
 
@@ -125,6 +140,32 @@ echo '{"jsonrpc": "2.0", "id": "1", "method": "initialize", "params": {"clientIn
 For HTTP/SSE transport, the server provides:
 1. An SSE endpoint at `/sse` for server messages
 2. An HTTP POST endpoint at `/send` for client messages
+3. A metrics endpoint at `/metrics` for performance monitoring
+
+## Advanced Features
+
+### Concurrency Control
+The server implements sophisticated concurrency control to limit the number of simultaneous requests:
+- Configurable maximum concurrent requests (default: 10)
+- Semaphore-based request limiting
+- Performance monitoring and metrics tracking
+
+### Session Correlation (HTTP/SSE)
+The HTTP/SSE transport supports session correlation for proper request/response routing:
+- X-MCP-Session-ID header for client identification
+- Request-to-client mapping for accurate response delivery
+- Automatic session management
+
+### Health Monitoring
+- Built-in `ping` endpoint for health checks
+- `/metrics` endpoint for detailed performance metrics
+- Concurrency monitoring with request tracking
+- Detailed logging and error reporting
+
+### Signal Handling
+- Graceful shutdown on SIGINT and SIGTERM signals
+- Proper cleanup of resources and connections
+- Automatic deregistration from registries during shutdown
 
 ## Starting the Server
 
@@ -138,6 +179,12 @@ python -m mcp_server.server --transport http --port 9000
 
 # Start registry server
 python -m mcp_server.server --transport http --port 3030 --enable-registry
+
+# Start with concurrency limits
+python -m mcp_server.server --transport http --max-concurrent-requests 20
+
+# Start with PostgreSQL registry backend
+python -m mcp_server.server --transport http --port 3030 --enable-registry --use-postgres
 ```
 
 ### Using Startup Scripts
@@ -233,11 +280,14 @@ The MCP server includes support for multiple database backends:
 - Built-in support for registry functionality
 - Stores data in `mcp_registry.db` file
 - No configuration required - ready to use out of the box
+- Automatic table creation and schema management
 
 #### PostgreSQL (Optional)
 - Production-ready database solution
 - High availability and scalability
 - Requires PostgreSQL installation and configuration
+- Connection pooling and reconnection logic
+- Advanced error handling and transaction management
 
 **PostgreSQL Usage:**
 ```bash
@@ -375,6 +425,8 @@ The server architecture promotes code reuse when building additional servers:
 - **Configuration Management**: Command-line parsing and configuration loading
 - **Lifecycle Management**: Startup/shutdown procedures and signal handling
 - **Logging Infrastructure**: Comprehensive logging setup and debug utilities
+- **Concurrency Control**: Request limiting and performance monitoring systems
+- **Session Management**: HTTP/SSE session correlation and request routing
 
 This modular design allows you to build new servers by inheriting from base classes and reusing existing components with minimal duplication.
 

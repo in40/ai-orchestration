@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a complete implementation of the Model Context Protocol (MCP) server in Python. It provides a fully compliant implementation of the MCP specification with support for both stdio and HTTP/SSE transports, plus an optional registry functionality for service discovery.
+This is a complete implementation of the Model Context Protocol (MCP) server in Python. It provides a fully compliant implementation of the MCP specification with support for both stdio and HTTP/SSE transports, plus an optional registry functionality for service discovery. The implementation includes advanced features such as concurrency control, performance monitoring, and sophisticated transport management.
 
 ## Compliance Requirements
 
@@ -33,11 +33,13 @@ This is a complete implementation of the Model Context Protocol (MCP) server in 
 
 The server follows the MCP specification and consists of several key components:
 
-- **JSON-RPC 2.0 Message Handler**: Handles parsing, validation, and routing of JSON-RPC messages
-- **Transport Layer**: Supports both stdio and HTTP/SSE transports
+- **JSON-RPC 2.0 Message Handler**: Handles parsing, validation, and routing of JSON-RPC messages with concurrency control
+- **Transport Layer**: Supports both stdio and HTTP/SSE transports with session correlation
 - **Request Handlers**: Implements all standard MCP methods
 - **Notification Manager**: Handles dynamic updates and notifications
 - **Registry System**: Optional service discovery and registration system
+- **Concurrency Monitor**: Tracks concurrent requests and performance metrics
+- **Heartbeat Manager**: Manages service health and registration maintenance
 
 ## Standard MCP Endpoints
 
@@ -96,9 +98,15 @@ The server follows the MCP specification and consists of several key components:
 1. **SSE Endpoint:**
    - `/sse` - Server-Sent Events endpoint for receiving server messages
    - Returns an "endpoint" event with the URI for message sending
+   - Includes session ID correlation for proper request/response routing
 
 2. **HTTP POST Endpoint:**
    - `/send` - HTTP POST endpoint for sending messages to the server
+   - Supports session correlation via `X-MCP-Session-ID` header
+
+3. **Metrics Endpoint:**
+   - `/metrics` - HTTP GET endpoint for performance and concurrency metrics
+   - Returns detailed statistics about request processing, concurrency, and performance
 
 ## Registry Endpoints (When `--enable-registry` is used)
 
@@ -108,6 +116,7 @@ The server follows the MCP specification and consists of several key components:
    - `registry/register` - Register a service with the registry
      - Parameters: service ID, name, description, endpoint, capabilities
      - Allows other MCP servers to register themselves with the registry server
+     - Also serves as a heartbeat mechanism to update last_seen timestamp
 
 2. **Service Discovery:**
    - `registry/list` - List all registered services in the registry
@@ -256,6 +265,12 @@ python -m mcp_server.server --transport http --port 3032 --register-with-registr
 - `--register-with-registry`: Register this server with a registry server (requires --registry-host and --registry-port)
 - `--registry-host`: Registry server host to register with (default: 127.0.0.1)
 - `--registry-port`: Registry server port to register with (default: 3031)
+- `--use-postgres`: Use PostgreSQL for registry storage instead of SQLite (optional)
+- `--postgres-host`: PostgreSQL host (default: 127.0.0.1)
+- `--postgres-port`: PostgreSQL port (default: 5432)
+- `--postgres-db`: PostgreSQL database name (default: mcp_registry)
+- `--postgres-user`: PostgreSQL username (default: postgres)
+- `--postgres-password`: PostgreSQL password (default: empty)
 
 ## Example Usage
 
@@ -269,8 +284,38 @@ echo '{"jsonrpc": "2.0", "id": "1", "method": "initialize", "params": {"clientIn
 The server provides:
 1. An SSE endpoint at `/sse` for server messages
 2. An HTTP POST endpoint at `/send` for client messages
+3. A metrics endpoint at `/metrics` for performance monitoring
 
-## Heartbeat and Service Health Configuration
+## Advanced Features
+
+### Concurrency Control
+The server implements sophisticated concurrency control to limit the number of simultaneous requests:
+- Configurable maximum concurrent requests (default: 10)
+- Semaphore-based request limiting to prevent overload
+- Performance monitoring and metrics tracking
+- Request queuing and processing management
+
+### Session Correlation (HTTP/SSE)
+The HTTP/SSE transport supports session correlation for proper request/response routing:
+- X-MCP-Session-ID header for client identification
+- Request-to-client mapping for accurate response delivery
+- Automatic session management and correlation
+- Proper handling of multiple concurrent client connections
+
+### Health Monitoring
+- Built-in `ping` endpoint for health checks
+- `/metrics` endpoint for detailed performance metrics
+- Concurrency monitoring with request tracking
+- Detailed logging and error reporting
+- Automatic heartbeat and service health monitoring
+
+### Signal Handling
+- Graceful shutdown on SIGINT and SIGTERM signals
+- Proper cleanup of resources and connections
+- Automatic deregistration from registries during shutdown
+- Thread-safe resource management
+
+### Heartbeat and Service Health Configuration
 
 When using registry functionality, the server includes automatic heartbeat and service health monitoring:
 
@@ -282,6 +327,7 @@ When using registry functionality, the server includes automatic heartbeat and s
 ### Service Lifecycle:
 - Auto-registration: Services automatically register when using `--register-with-registry`
 - Periodic heartbeats: Registered services send periodic updates to maintain registration
+- Remote heartbeat management: Auto-registered services maintain registration status with remote registry
 - Graceful deregistration: Services automatically deregister when shutting down cleanly
 
 ## Extending the Server
@@ -318,12 +364,14 @@ When a server registers with a registry, it automatically begins sending periodi
 - Stale service cleanup: Services not seen within 10 minutes are automatically removed
 - Each heartbeat updates the `last_seen` timestamp for the service
 - This ensures the registry only lists currently active services
+- Remote heartbeat manager maintains registration status for auto-registered services
 
 ### Graceful Deregistration
 When a server shuts down gracefully, it automatically deregisters itself from the registry:
 - SIGTERM or SIGINT triggers graceful shutdown sequence
 - Server sends deregistration request to registry before terminating
 - Registry removes the service from its active list
+- Remote heartbeat manager handles deregistration for auto-registered services
 
 ### Auto-Registration Example:
 ```bash
@@ -361,7 +409,7 @@ from mcp_server.handlers.server_handlers import McpServerHandlers
 class CustomMcpServerHandlers(McpServerHandlers):
     def __init__(self):
         super().__init__()
-        
+
         # Add custom tools
         self.tools.extend([
             {
@@ -376,7 +424,7 @@ class CustomMcpServerHandlers(McpServerHandlers):
                 }
             }
         ])
-        
+
         # Add custom resources
         self.resources.extend([
             {
@@ -385,7 +433,7 @@ class CustomMcpServerHandlers(McpServerHandlers):
                 "description": "Database connection configuration"
             }
         ])
-        
+
         # Add custom prompts
         self.prompts.extend([
             {
@@ -400,7 +448,7 @@ class CustomMcpServerHandlers(McpServerHandlers):
                 ]
             }
         ])
-    
+
     def handle_custom_database_query(self, params, request_id):
         """Handle custom database query tool"""
         query = params.get("query")
@@ -421,12 +469,12 @@ class DatabaseIntegration:
     def __init__(self, db_config: Dict[str, Any]):
         self.db_config = db_config
         self.connection = None
-    
+
     def connect(self):
         """Establish database connection"""
         # Implementation depends on database type
         pass
-    
+
     def execute_query(self, query: str, params=None):
         """Execute a database query"""
         # Implementation
@@ -454,11 +502,11 @@ class SecureMcpServerHandlers(McpServerHandlers):
     def __init__(self):
         super().__init__()
         self.auth_tokens = set()  # Valid tokens
-    
+
     def validate_token(self, token: str) -> bool:
         """Validate authentication token"""
         return token in self.auth_tokens
-    
+
     @require_auth
     def handle_secure_tool(self, params, request_id):
         """Secure tool that requires authentication"""
@@ -477,16 +525,16 @@ class CachedMcpServerHandlers(McpServerHandlers):
     def __init__(self):
         super().__init__()
         self.cache = redis.Redis(host='localhost', port=6379, db=0)
-    
+
     def handle_resource_read(self, params, request_id):
         """Override to add caching"""
         uri = params.get('uri')
-        
+
         # Check cache first
         cached_content = self.cache.get(uri)
         if cached_content:
             return {"uri": uri, "contents": cached_content.decode()}
-        
+
         # If not in cache, call parent method and cache result
         result = super().handle_resource_read(params, request_id)
         self.cache.setex(uri, 3600, str(result))  # Cache for 1 hour
@@ -506,33 +554,33 @@ class MonitoredMcpServerHandlers(McpServerHandlers):
         super().__init__()
         self.logger = logging.getLogger(__name__)
         self.metrics = {}
-    
+
     def handle_tools_call(self, params, request_id):
         """Monitor tool calls"""
         start_time = datetime.now()
         tool_name = params.get('name')
-        
+
         try:
             result = super().handle_tools_call(params, request_id)
-            
+
             # Log successful call
             duration = (datetime.now() - start_time).total_seconds()
             self.logger.info(f"Tool '{tool_name}' executed successfully in {duration}s")
-            
+
             # Update metrics
             self.update_metrics(tool_name, duration, success=True)
-            
+
             return result
         except Exception as e:
             # Log error
             duration = (datetime.now() - start_time).total_seconds()
             self.logger.error(f"Tool '{tool_name}' failed after {duration}s: {str(e)}")
-            
+
             # Update metrics
             self.update_metrics(tool_name, duration, success=False)
-            
+
             raise
-    
+
     def update_metrics(self, tool_name, duration, success):
         """Update performance metrics"""
         if tool_name not in self.metrics:
@@ -541,7 +589,7 @@ class MonitoredMcpServerHandlers(McpServerHandlers):
                 "errors": 0,
                 "avg_duration": 0
             }
-        
+
         stats = self.metrics[tool_name]
         stats["calls"] += 1
         if not success:
@@ -563,11 +611,11 @@ class Plugin(ABC):
     @abstractmethod
     def get_tools(self) -> list:
         pass
-    
+
     @abstractmethod
     def get_resources(self) -> list:
         pass
-    
+
     @abstractmethod
     def handle_custom_method(self, params, request_id):
         pass
@@ -575,14 +623,14 @@ class Plugin(ABC):
 class PluginManager:
     def __init__(self):
         self.plugins = []
-    
+
     def load_plugin(self, module_name: str):
         """Load a plugin from a module"""
         module = importlib.import_module(module_name)
         plugin_class = getattr(module, 'PluginImpl')  # Assuming PluginImpl is the class name
         plugin = plugin_class()
         self.plugins.append(plugin)
-    
+
     def get_all_tools(self) -> list:
         """Aggregate tools from all plugins"""
         tools = []
@@ -615,13 +663,13 @@ class Event:
 class EventEmitter:
     def __init__(self):
         self.listeners: dict[EventType, List[Callable]] = {}
-    
+
     def on(self, event_type: EventType, callback: Callable):
         """Register an event listener"""
         if event_type not in self.listeners:
             self.listeners[event_type] = []
         self.listeners[event_type].append(callback)
-    
+
     def emit(self, event: Event):
         """Emit an event to all listeners"""
         if event.type in self.listeners:
@@ -635,14 +683,14 @@ class EventDrivenMcpServerHandlers(McpServerHandlers):
     def __init__(self):
         super().__init__()
         self.event_emitter = EventEmitter()
-        
+
         # Register event handlers
         self.event_emitter.on(EventType.TOOL_CALLED, self.on_tool_called)
-    
+
     def handle_tools_call(self, params, request_id):
         """Emit event when tool is called"""
         result = super().handle_tools_call(params, request_id)
-        
+
         # Emit event
         event = Event(
             type=EventType.TOOL_CALLED,
@@ -654,9 +702,9 @@ class EventDrivenMcpServerHandlers(McpServerHandlers):
             timestamp=datetime.now().timestamp()
         )
         self.event_emitter.emit(event)
-        
+
         return result
-    
+
     def on_tool_called(self, event: Event):
         """Handle tool called event"""
         print(f"Tool {event.data['tool_name']} was called")
@@ -675,7 +723,7 @@ class ConfigManager:
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = Path(config_path)
         self.config = self.load_config()
-    
+
     def load_config(self):
         """Load configuration from file"""
         if self.config_path.exists():
@@ -685,30 +733,30 @@ class ConfigManager:
                 else:
                     return json.load(f)
         return {}
-    
+
     def get(self, key: str, default=None):
         """Get configuration value with dot notation"""
         keys = key.split('.')
         value = self.config
-        
+
         for k in keys:
             if isinstance(value, dict) and k in value:
                 value = value[k]
             else:
                 return default
-        
+
         return value
 
 # Usage in server
 class ConfigurableMcpServer(McpServer):
     def __init__(self, config_path="config.yaml", **kwargs):
         self.config_manager = ConfigManager(config_path)
-        
+
         # Override defaults with config values
         transport_type = self.config_manager.get("server.transport", kwargs.get("transport_type", "stdio"))
         host = self.config_manager.get("server.host", kwargs.get("host", "127.0.0.1"))
         port = self.config_manager.get("server.port", kwargs.get("port", 3030))
-        
+
         # Include max_concurrent_requests parameter for concurrent request handling
         max_concurrent_requests = self.config_manager.get("server.max_concurrent_requests", kwargs.get("max_concurrent_requests", 10))
         super().__init__(transport_type=transport_type, host=host, port=port, max_concurrent_requests=max_concurrent_requests, **kwargs)
@@ -726,11 +774,11 @@ from datetime import datetime
 class HealthCheckMixin:
     def __init__(self):
         self.start_time = time.time()
-    
+
     def handle_health_check(self, params, request_id):
         """Provide system health information"""
         uptime = time.time() - self.start_time
-        
+
         return {
             "status": "healthy",
             "uptime": uptime,
@@ -739,14 +787,11 @@ class HealthCheckMixin:
                 "cpu_percent": psutil.cpu_percent(),
                 "memory_percent": psutil.virtual_memory().percent,
                 "disk_usage": psutil.disk_usage('/').percent,
-                "active_connections": self.get_active_connections_count()
+                "active_connections": self.get_active_connections_count(),
+                "concurrent_requests": self.get_current_concurrent_requests(),
+                "max_concurrent_requests": self.get_max_concurrent_requests()
             }
         }
-    
-    def get_active_connections_count(self):
-        """Get count of active connections"""
-        # Implementation depends on transport
-        return 0
 ```
 
 ## Best Practices for Extensions:
@@ -772,6 +817,7 @@ The MCP server is built with reusability in mind, allowing components to be leve
 - JSON-RPC request/response handling
 - Error handling and validation utilities
 - Request routing mechanisms
+- Session correlation and request-to-client mapping
 
 #### Database Abstraction Layer
 - PostgreSQL connection management
@@ -784,6 +830,7 @@ The MCP server is built with reusability in mind, allowing components to be leve
 - Health check implementations
 - Service metadata storage and retrieval
 - Service lifecycle management
+- Heartbeat and remote heartbeat management
 
 #### Configuration Management
 - Command-line argument parsing
@@ -802,6 +849,12 @@ The MCP server is built with reusability in mind, allowing components to be leve
 - Signal handling
 - Resource cleanup routines
 - Health check endpoints
+
+#### Concurrency Control
+- Request limiting with semaphores
+- Performance monitoring and metrics tracking
+- Request queuing and processing management
+- Thread-safe resource access
 
 ### 2. **Reusability Patterns**
 
@@ -858,12 +911,15 @@ The MCP server includes support for multiple database backends:
 - **File-based**: Stores data in `mcp_registry.db`
 - **No configuration**: Ready to use out of the box
 - **Use case**: Development, testing, lightweight deployments
+- **Automatic schema management**: Creates tables and manages schema automatically
 
 ### 2. PostgreSQL (Optional)
 - **Production-ready**: Robust, scalable database solution
 - **Configuration required**: Connection parameters needed
 - **High availability**: Supports clustering and replication
 - **Use case**: Production deployments, high-concurrency scenarios
+- **Connection pooling**: Sophisticated connection management with reconnection logic
+- **Advanced error handling**: Transaction management and error recovery
 
 **PostgreSQL Configuration:**
 ```bash
@@ -983,6 +1039,9 @@ The primary script for starting MCP servers with various configurations.
 # Start registry server with PostgreSQL backend
 ./start_mcp_server.sh --port 3031 --enable-registry --use-postgres
 
+# Start with concurrency limits
+./start_mcp_server.sh --max-concurrent-requests 20
+
 # Show help
 ./start_mcp_server.sh --help
 ```
@@ -1005,6 +1064,7 @@ The primary script for starting MCP servers with various configurations.
 - `--log-to-file`: Redirect all output to log file instead of console
 - `--log-file`: Specify log file name (default: mcp_server_YYYYMMDD_HHMMSS.log)
 - `--background`: Run server in background (implies --log-to-file)
+- `--max-concurrent-requests`: Maximum number of concurrent requests (default: 10)
 
 #### `start_mcp_default.sh` - Simple Startup Script
 A simplified script that starts the server with default settings.
