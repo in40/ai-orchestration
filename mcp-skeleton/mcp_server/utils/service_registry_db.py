@@ -203,27 +203,67 @@ class ServiceRegistryDB:
     def update_last_seen(self, service_id: str) -> bool:
         """
         Update the last seen timestamp for a service.
-        
+
         Args:
             service_id: ID of the service to update
-        
+
         Returns:
             True if update was successful, False otherwise
         """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
+            current_time = datetime.now().isoformat()
             cursor.execute("""
-                UPDATE services 
-                SET last_seen = ? 
+                UPDATE services
+                SET last_seen = ?
                 WHERE id = ?
-            """, (datetime.now().isoformat(), service_id))
-            
+            """, (current_time, service_id))
+
             conn.commit()
             conn.close()
-            
-            return cursor.rowcount > 0
+
+            success = cursor.rowcount > 0
+            if success:
+                print(f"⏱️  Updated last_seen for service {service_id} to {current_time}")
+            else:
+                print(f"⚠️  Service {service_id} not found for heartbeat update")
+            return success
         except Exception as e:
-            print(f"Error updating last seen: {e}")
-            return False
+            print(f"❌ Error updating last seen: {e}")
+
+    def cleanup_stale_services(self, max_age_minutes: int = 10) -> int:
+        """
+        Remove services that haven't been seen within the specified time window.
+
+        Args:
+            max_age_minutes: Maximum age in minutes before a service is considered stale
+
+        Returns:
+            Number of stale services removed
+        """
+        try:
+            from datetime import timedelta
+            cutoff_time = datetime.now() - timedelta(minutes=max_age_minutes)
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                DELETE FROM services
+                WHERE last_seen < ?
+            """, (cutoff_time.isoformat(),))
+
+            deleted_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+
+            if deleted_count > 0:
+                print(f"🧹 Removed {deleted_count} stale services (not seen in last {max_age_minutes} minutes)")
+            else:
+                print(f"✅ No stale services to remove (all services seen in last {max_age_minutes} minutes)")
+            return deleted_count
+        except Exception as e:
+            print(f"❌ Error cleaning up stale services: {e}")
+            return 0

@@ -8,10 +8,15 @@ This is a standard implementation of the Model Context Protocol (MCP) server in 
 - Support for stdio and HTTP/SSE transports
 - Implementation of all standard server methods:
   - `initialize`
-  - `tools/list`, `tools/call`
-  - `resources/list`, `resources/read`
-  - `prompts/list`, `prompts/get`
+  - `tools/list`, `tools/call` - Execute operations and actions
+  - `resources/list`, `resources/read` - Access static data/content
+  - `prompts/list`, `prompts/get` - Retrieve templated instructions
   - `shutdown`
+
+### Key Differences:
+- **Tools**: Active operations that execute and return results (e.g., calculations, API calls, data transformations)
+- **Resources**: Passive data containers accessed by URI that return static content (e.g., files, configurations)
+- **Prompts**: Template-based instructions that can be customized with arguments (e.g., LLM prompt templates)
 - Implementation of client methods that server can initiate:
   - `sampling/complete`
   - `elicitation/request`
@@ -63,6 +68,12 @@ python -m mcp_server.server --transport http --port 3030 --enable-registry
 2. Other MCP servers can register with the registry via the `/send` endpoint
 3. AI agents can discover services by querying the registry's `registry/list` method
 
+### Auto-Registration and Heartbeat Monitoring:
+- Servers can auto-register with a registry using `--register-with-registry` flag
+- Registered services send periodic heartbeats (every 30 seconds) to maintain registration
+- Services not seen within 10 minutes are automatically removed from the registry
+- Services automatically deregister when shutting down cleanly
+
 ## Architecture
 
 The server is organized into several modules:
@@ -83,6 +94,9 @@ The server can be configured via command-line arguments:
 - `--host`: Host for HTTP transport (default: 127.0.0.1)
 - `--port`: Port for HTTP transport (default: 3030)
 - `--enable-registry`: Enable registry functionality to track multiple MCP services (optional)
+- `--register-with-registry`: Register this server with a registry server (requires --registry-host and --registry-port)
+- `--registry-host`: Registry server host to register with (default: 127.0.0.1)
+- `--registry-port`: Registry server port to register with (default: 3031)
 
 ## Example Usage
 
@@ -339,6 +353,8 @@ The MCP server project includes multiple shell scripts for different purposes:
 - `./test_postgres_integration.sh` - PostgreSQL integration test
 
 ### Utility Scripts
-- `./query_registry.sh` - Query registered services from registry
-- `./ai_agent_workflow.sh` - Complete AI agent workflow simulation
-- `./final_verification.sh` - Complete system verification
+- `./query_registry.sh` - Query registered services from registry using MCP protocol
+- `./query_registry_client_proper.py` - Advanced registry client with full service details via HTTP/SSE
+- `./query_registry_sse.sh` - Shell wrapper for registry client with full service details
+- `./ai_agent_workflow.sh` - Complete AI agent workflow simulation using MCP protocol
+- `./final_verification.sh` - Complete system verification using MCP protocol

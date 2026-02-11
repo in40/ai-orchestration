@@ -371,20 +371,17 @@ class McpServerHandlers:
              }
            }
         """
-        print(f"DEBUG: handle_register_service called with params: {params.get('id', 'unknown')}")
-        print(f"DEBUG: enable_registry: {getattr(self, 'enable_registry', False)}")
-        print(f"DEBUG: service_registry exists: {hasattr(self, 'service_registry')}")
+        service_id = params.get("id", "unknown")
+        print(f"📝 Service registration request received for: {service_id}")
         
         if not hasattr(self, 'enable_registry') or not self.enable_registry:
-            print("DEBUG: Registry functionality is not enabled")
+            print("❌ Registry functionality is not enabled")
             raise ValueError("Registry functionality is not enabled")
 
         if not hasattr(self, 'service_registry'):
-            print("DEBUG: Service registry is not initialized")
+            print("❌ Service registry is not initialized")
             raise ValueError("Service registry is not initialized")
 
-        print(f"DEBUG: Service registry type: {type(self.service_registry).__name__}")
-        
         service_info = {
             "id": params.get("id"),
             "name": params.get("name"),
@@ -392,36 +389,48 @@ class McpServerHandlers:
             "endpoint": params.get("endpoint"),
             "capabilities": params.get("capabilities", {})
         }
-        
-        print(f"DEBUG: Processing service registration: {service_info['id']}")
 
         # Validate required fields
         if not service_info["id"] or not service_info["name"] or not service_info["endpoint"]:
-            print(f"DEBUG: Missing required fields in service_info: id={bool(service_info['id'])}, name={bool(service_info['name'])}, endpoint={bool(service_info['endpoint'])}")
+            print(f"❌ Missing required fields for service {service_info['id']}")
             raise ValueError("Service registration requires 'id', 'name', and 'endpoint' parameters")
 
-        print(f"DEBUG: Calling service_registry.register_service with id: {service_info['id']}")
+        # Check if this is a new registration or a heartbeat update
+        existing_services = self.service_registry.list_services()
+        is_update = any(s['id'] == service_info['id'] for s in existing_services)
+        
+        if is_update:
+            print(f"💓 Heartbeat received from service: {service_info['id']}")
+        else:
+            print(f"🆕 New service registration: {service_info['id']} - {service_info['name']}")
+        
         success = self.service_registry.register_service(service_info)
-        print(f"DEBUG: register_service returned: {success}")
 
         result = {
             "success": success,
             "service_id": service_info["id"],
             "message": "Service registered successfully" if success else "Failed to register service"
         }
-        print(f"DEBUG: Returning registration result: {result}")
-        
+
+        if success:
+            if is_update:
+                print(f"✅ Heartbeat processed successfully for service: {service_info['id']}")
+            else:
+                print(f"✅ Service registered successfully: {service_info['id']}")
+        else:
+            print(f"❌ Failed to register/update service: {service_info['id']}")
+
         return result
 
     def handle_list_services(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """
         Handle registry/list request.
-        
+
         This method returns all registered services in the registry.
-        
+
         Expected parameters:
         - filter: Optional filter string to search in service names/descriptions
-        
+
         Discovery Protocol:
         1. AI agent sends a JSON-RPC request to registry's /send endpoint:
            {
@@ -432,7 +441,7 @@ class McpServerHandlers:
                "filter": "database"  // optional
              }
            }
-        
+
         2. Registry responds with list of services:
            {
              "jsonrpc": "2.0",
@@ -456,48 +465,39 @@ class McpServerHandlers:
              }
            }
         """
-        print(f"DEBUG: handle_list_services called with params: {params}")
-        print(f"DEBUG: enable_registry: {getattr(self, 'enable_registry', False)}")
-        print(f"DEBUG: service_registry exists: {hasattr(self, 'service_registry')}")
+        print(f"📋 Registry list request received")
         
         if not hasattr(self, 'enable_registry') or not self.enable_registry:
-            print("DEBUG: Registry functionality is not enabled")
+            print("❌ Registry functionality is not enabled")
             raise ValueError("Registry functionality is not enabled")
-        
+
         if not hasattr(self, 'service_registry'):
-            print("DEBUG: Service registry is not initialized")
+            print("❌ Service registry is not initialized")
             raise ValueError("Service registry is not initialized")
 
-        print(f"DEBUG: Service registry type: {type(self.service_registry).__name__}")
-        
         filter_param = params.get("filter")
-        print(f"DEBUG: Getting services from registry, filter: {filter_param}")
         services = self.service_registry.list_services()
-        print(f"DEBUG: Retrieved {len(services)} services from registry")
-
-        # Apply filter if provided
+        
+        # Log the service count
+        print(f"📊 Returning {len(services)} services from registry")
         if filter_param:
-            print(f"DEBUG: Applying filter: {filter_param}")
-            services = [s for s in services if filter_param.lower() in s["name"].lower() or 
-                        filter_param.lower() in s["description"].lower()]
-            print(f"DEBUG: After filtering: {len(services)} services")
+            print(f"🔍 Filter applied: {filter_param}")
 
         result = {
             "services": services,
             "total_count": len(services)
         }
-        print(f"DEBUG: Returning list result with {len(services)} services")
         return result
         
     def handle_unregister_service(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """
         Handle registry/unregister request.
-        
+
         This method allows services to deregister themselves from the registry.
-        
+
         Expected parameters:
         - id: Unique identifier of the service to unregister
-        
+
         Deregistration Protocol:
         1. Service sends a JSON-RPC request to registry's /send endpoint:
            {
@@ -508,7 +508,7 @@ class McpServerHandlers:
                "id": "service-unique-id"
              }
            }
-        
+
         2. Registry responds with success/failure:
            {
              "jsonrpc": "2.0",
@@ -521,7 +521,7 @@ class McpServerHandlers:
         """
         if not hasattr(self, 'enable_registry') or not self.enable_registry:
             raise ValueError("Registry functionality is not enabled")
-        
+
         if not hasattr(self, 'service_registry'):
             raise ValueError("Service registry is not initialized")
 
@@ -529,7 +529,13 @@ class McpServerHandlers:
         if not service_id:
             raise ValueError("Service unregistration requires 'id' parameter")
 
+        print(f"📤 Deregistration request received for service: {service_id}")
         success = self.service_registry.unregister_service(service_id)
+
+        if success:
+            print(f"✅ Service deregistered successfully: {service_id}")
+        else:
+            print(f"❌ Failed to deregister service: {service_id}")
 
         return {
             "success": success,

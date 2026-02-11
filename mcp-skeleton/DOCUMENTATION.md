@@ -25,17 +25,26 @@ The server follows the MCP specification and consists of several key components:
 2. **Tools:**
    - `tools/list` - List available tools with optional pagination
    - `tools/call` - Execute a specific tool with parameters
+   - **Purpose**: Tools perform actions or operations that have side effects (execute calculations, trigger workflows, call external APIs)
 
 3. **Resources:**
    - `resources/list` - List available resources with optional pagination
    - `resources/read` - Read content from a specific resource by URI
+   - **Purpose**: Resources provide access to static or semi-static data/content (files, configurations, datasets)
 
 4. **Prompts:**
    - `prompts/list` - List available prompts with optional pagination
    - `prompts/get` - Get a specific prompt with resolved arguments
+   - **Purpose**: Prompts provide templated instructions or templates that can be customized with arguments (often used for LLM interactions)
 
 5. **Health Check:**
    - `ping` - Health check endpoint (returns timestamp and status)
+
+### Key Differences Between Tools, Resources, and Prompts:
+
+- **Tools**: Active operations that execute and return results (e.g., calculations, API calls, data transformations)
+- **Resources**: Passive data containers accessed by URI that return static content (e.g., files, configurations)
+- **Prompts**: Template-based instructions that can be customized with arguments (e.g., LLM prompt templates)
 
 ### Client Request Endpoints (Methods the server can call back to the client):
 
@@ -235,6 +244,20 @@ The server provides:
 1. An SSE endpoint at `/sse` for server messages
 2. An HTTP POST endpoint at `/send` for client messages
 
+## Heartbeat and Service Health Configuration
+
+When using registry functionality, the server includes automatic heartbeat and service health monitoring:
+
+### Heartbeat Settings (Not directly configurable via command line, but hardcoded):
+- Heartbeat interval: 30 seconds (frequency of heartbeat updates)
+- Stale service threshold: 10 minutes (services not seen within this time are removed)
+- These settings ensure registry only lists currently active services
+
+### Service Lifecycle:
+- Auto-registration: Services automatically register when using `--register-with-registry`
+- Periodic heartbeats: Registered services send periodic updates to maintain registration
+- Graceful deregistration: Services automatically deregister when shutting down cleanly
+
 ## Extending the Server
 
 The server is designed to be easily extensible. See `example.py` for examples of:
@@ -262,6 +285,19 @@ The server includes an auto-registration feature that allows servers to automati
 3. Server sends its capabilities (tools, resources, prompts) to the registry
 4. Registry stores the server information in its database
 5. AI agents can discover the server through the registry
+
+### Heartbeat and Service Health Monitoring
+When a server registers with a registry, it automatically begins sending periodic heartbeats to maintain its registration status:
+- Heartbeat interval: Every 30 seconds by default
+- Stale service cleanup: Services not seen within 10 minutes are automatically removed
+- Each heartbeat updates the `last_seen` timestamp for the service
+- This ensures the registry only lists currently active services
+
+### Graceful Deregistration
+When a server shuts down gracefully, it automatically deregisters itself from the registry:
+- SIGTERM or SIGINT triggers graceful shutdown sequence
+- Server sends deregistration request to registry before terminating
+- Registry removes the service from its active list
 
 ### Auto-Registration Example:
 ```bash
@@ -1039,13 +1075,13 @@ Tests the registry functionality and provides detailed output.
 ```
 
 #### `query_registry.sh` - Registry Query Test
-Simulates how an AI agent would query the registry server.
+Simulates how an AI agent would query the registry server using proper MCP protocol.
 
 **Features:**
-- Sends `registry/list` requests to registry
-- Verifies registered services in database
+- Sends `registry/list` requests to registry via MCP protocol
+- Parses service information from registry response
 - Simulates AI agent discovery workflow
-- Shows detailed verification results
+- Uses only MCP-compliant communication methods
 
 **Usage:**
 ```bash
@@ -1053,15 +1089,62 @@ Simulates how an AI agent would query the registry server.
 ./query_registry.sh
 ```
 
+#### `query_registry_client_proper.py` - Advanced Registry Client
+Advanced Python client that properly implements the MCP HTTP/SSE protocol to query the registry.
+
+**Features:**
+- Opens SSE connection first, then sends requests (proper MCP pattern)
+- Retrieves complete service information including capabilities
+- Shows detailed service metadata (ID, name, endpoint, description)
+- Supports querying specific services by ID (if supported by registry)
+- Real-time response handling through SSE
+
+**Usage:**
+```bash
+# Query all registered services
+python query_registry_client_proper.py
+
+# Query specific service by ID
+python query_registry_client_proper.py --service-id "server-127.0.0.1-3030"
+
+# Use custom registry URL and timeout
+python query_registry_client_proper.py --registry-url "http://localhost:3031" --timeout 20
+```
+
+#### `query_registry_sse.sh` - Shell Wrapper for Registry Client
+Shell script wrapper that provides a convenient interface to query the registry using the proper HTTP/SSE protocol.
+
+**Features:**
+- Simple shell interface to the Python registry client
+- Proper MCP HTTP/SSE protocol implementation
+- Automatic detection of Python client
+- Configurable registry URL and timeout
+- Complete service information display
+
+**Usage:**
+```bash
+# Query all registered services
+./query_registry_sse.sh
+
+# Query with custom registry URL
+./query_registry_sse.sh "http://localhost:3031"
+
+# Query specific service (if registry supports it)
+./query_registry_sse.sh "http://localhost:3031" "server-127.0.0.1-3030"
+
+# Query with custom timeout
+./query_registry_sse.sh "http://localhost:3031" "" 20
+```
+
 #### `ai_agent_workflow.sh` - Complete AI Agent Simulation
-Runs a complete simulation of the AI agent service discovery workflow.
+Runs a complete simulation of the AI agent service discovery workflow using MCP protocol calls.
 
 **Features:**
 - Complete 4-step workflow simulation
-- Queries registry for services
-- Verifies auto-registered servers
-- Shows service selection process
-- Comprehensive verification
+- Queries registry for services via MCP protocol
+- Uses only MCP-compliant communication methods
+- Shows service selection process based on capabilities
+- Comprehensive verification via proper channels
 
 **Usage:**
 ```bash
@@ -1112,15 +1195,16 @@ Tests the PostgreSQL database integration functionality.
 ```
 
 #### `final_verification.sh` - Complete System Verification
-Performs a comprehensive verification of all MCP server functionality.
+Performs a comprehensive verification of all MCP server functionality using MCP protocol calls.
 
 **Features:**
 - Tests all major components and integrations
 - Verifies startup scripts functionality
-- Validates registry and auto-registration
-- Checks PostgreSQL integration
+- Validates registry and auto-registration via MCP protocol
+- Checks service discovery functionality
 - Runs complete workflow simulation
 - Provides detailed verification report
+- Uses only MCP-compliant communication methods
 
 **Usage:**
 ```bash
