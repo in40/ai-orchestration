@@ -10,9 +10,9 @@ from mcp_server.utils.notifications import NotificationManager
 
 class CustomMcpServer(McpServer):
     """Example of extending the MCP server with custom functionality"""
-    
-    def __init__(self, transport_type="stdio", host="127.0.0.1", port=3030, enable_registry=False):
-        super().__init__(transport_type, host, port, enable_registry)
+
+    def __init__(self, transport_type="stdio", host="127.0.0.1", port=3030, enable_registry=False, max_concurrent_requests=10):
+        super().__init__(transport_type, host, port, enable_registry, max_concurrent_requests=max_concurrent_requests)
         
         # Add custom tools, resources, or prompts
         self._add_custom_endpoints()
@@ -62,14 +62,14 @@ class CustomMcpServer(McpServer):
 class RegistryMcpServer(CustomMcpServer):
     """
     Example of an MCP server configured as a registry.
-    
+
     This server can track multiple MCP services and allow AI agents to discover
     available services and their capabilities.
-    
+
     HOW TO USE REGISTRY FUNCTIONALITY:
     1. Run the registry server with --enable-registry flag:
        python example.py --transport http --port 3030 --enable-registry
-       
+
     2. Other MCP servers can register with this registry by calling:
        POST /send with JSON-RPC message:
        {
@@ -87,7 +87,7 @@ class RegistryMcpServer(CustomMcpServer):
            }
          }
        }
-       
+
     3. AI agents can discover services by calling:
        POST /send with JSON-RPC message:
        {
@@ -97,69 +97,73 @@ class RegistryMcpServer(CustomMcpServer):
          "params": {}
        }
     """
-    
-    def __init__(self, transport_type="http", host="127.0.0.1", port=3030):
+
+    def __init__(self, transport_type="http", host="127.0.0.1", port=3030, max_concurrent_requests=10):
         # Enable registry functionality
-        super().__init__(transport_type, host, port, enable_registry=True)
+        super().__init__(transport_type, host, port, enable_registry=True, max_concurrent_requests=max_concurrent_requests)
         
         print(f"Registry server initialized at http://{host}:{port}")
         print("Other MCP services can register with this server")
         print("AI agents can discover available services through this server")
 
 
-def run_example_stdio():
+def run_example_stdio(max_concurrent_requests=10):
     """Example of running the server with stdio transport"""
     print("Starting MCP Server with stdio transport...")
     print("Try sending a message like:")
     print('{"jsonrpc": "2.0", "id": "1", "method": "initialize", "params": {"clientInfo": {"name": "example-client", "version": "1.0"}}}')
     print("")
-    
-    server = CustomMcpServer(transport_type="stdio")
+
+    server = CustomMcpServer(transport_type="stdio", max_concurrent_requests=max_concurrent_requests)
     server.start()
 
 
-def run_example_http():
+def run_example_http(max_concurrent_requests=10):
     """Example of running the server with HTTP transport"""
     print("Starting MCP Server with HTTP/SSE transport...")
     print(f"Server will be available at http://127.0.0.1:3030")
     print("SSE endpoint: /sse")
     print("Message endpoint: /send")
     print("")
-    
-    server = CustomMcpServer(transport_type="http", host="127.0.0.1", port=3030)
+
+    server = CustomMcpServer(transport_type="http", host="127.0.0.1", port=3030, max_concurrent_requests=max_concurrent_requests)
     server.start()
 
 
-def run_example_registry():
+def run_example_registry(max_concurrent_requests=10):
     """Example of running the server as a registry"""
     print("Starting MCP Registry Server...")
     print("This server can track multiple MCP services")
     print("Other services can register with this server")
     print("AI agents can discover available services through this server")
     print("")
-    
-    server = RegistryMcpServer(transport_type="http", host="127.0.0.1", port=3030)
+
+    server = RegistryMcpServer(transport_type="http", host="127.0.0.1", port=3030, max_concurrent_requests=max_concurrent_requests)
     server.start()
 
 
 if __name__ == "__main__":
     import sys
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='MCP Server Examples')
-    parser.add_argument('--transport', 
-                       choices=['stdio', 'http'], 
+    parser.add_argument('--transport',
+                       choices=['stdio', 'http'],
                        default='stdio',
                        help='Transport mechanism to use (default: stdio)')
-    parser.add_argument('--enable-registry', 
+    parser.add_argument('--enable-registry',
                        action='store_true',
                        help='Run as a registry server')
-    
+    parser.add_argument('--max-concurrent-requests',
+                       type=int,
+                       default=10,
+                       help='Maximum number of concurrent requests (default: 10)')
+
     args = parser.parse_args()
-    
+
     if args.enable_registry:
-        run_example_registry()
+        run_example_registry(args.max_concurrent_requests)
     elif args.transport == "http":
-        run_example_http()
+        run_example_http(args.max_concurrent_requests)
     else:
-        run_example_stdio()
+        run_example_stdio(args.max_concurrent_requests)

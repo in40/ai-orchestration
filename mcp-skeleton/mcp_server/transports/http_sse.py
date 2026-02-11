@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 from ..utils.json_rpc import JsonRpcHandler, JsonRpcMessage
+from ..utils.concurrency_monitor import get_monitor
 
 
 class HttpSseTransport:
@@ -53,6 +54,16 @@ class HttpSseTransport:
                 }
             )
 
+        # HTTP GET endpoint for monitoring and diagnostics
+        @self.app.get("/metrics")
+        async def get_metrics(request: Request):
+            try:
+                monitor = get_monitor()
+                metrics = monitor.get_detailed_metrics()
+                return metrics
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error retrieving metrics: {str(e)}")
+
         # HTTP POST endpoint for client messages
         @self.app.post("/send")
         async def send_message(request: Request):
@@ -67,7 +78,7 @@ class HttpSseTransport:
                     if hasattr(message, 'get_id') and message.get_id():
                         # Check if the client provided a session ID in the request headers
                         client_session_id = request.headers.get('X-MCP-Session-ID')
-                        
+
                         # If no session ID provided, try to determine the most likely client
                         if not client_session_id and len(self.active_connections) == 1:
                             # If only one client is connected, assume it's that client
@@ -80,15 +91,19 @@ class HttpSseTransport:
                             # Sort connections by connection time and pick the most recent
                             if self.sse_sessions:
                                 # Get the most recently connected client
-                                most_recent = max(self.sse_sessions.items(), 
+                                most_recent = max(self.sse_sessions.items(),
                                                 key=lambda x: x[1].get('connected_at', 0))
                                 client_session_id = most_recent[0]
-                        
+
                         # Map the request ID to the client session ID if we have one
                         if client_session_id and client_session_id in self.active_connections:
                             self.request_to_client_map[message.get_id()] = client_session_id
-                    
-                    self.message_callback(message)
+
+                    # Handle async message callback if needed
+                    if asyncio.iscoroutinefunction(self.message_callback):
+                        await self.message_callback(message)
+                    else:
+                        self.message_callback(message)
 
                 return {"status": "received"}
             except Exception as e:
