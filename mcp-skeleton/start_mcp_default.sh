@@ -9,6 +9,7 @@ set -e  # Exit on any error
 TRANSPORT="http"
 HOST="127.0.0.1"
 PORT="3030"
+MAX_CONCURRENT_REQUESTS="10"
 REGISTER_WITH_REGISTRY=true
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT="3031"
@@ -30,11 +31,12 @@ echo "Starting MCP Server with default settings..."
 echo "Transport: $TRANSPORT"
 echo "Host: $HOST"
 echo "Port: $PORT"
+echo "Max Concurrent Requests: $MAX_CONCURRENT_REQUESTS"
 echo "Register with registry: $(if [[ $REGISTER_WITH_REGISTRY == true ]]; then echo "yes ($REGISTRY_HOST:$REGISTRY_PORT)"; else echo "no"; fi)"
 echo ""
 
 # Build the command
-CMD="python -m mcp_server.server --transport $TRANSPORT --host $HOST --port $PORT"
+CMD="python -m mcp_server.server --transport $TRANSPORT --host $HOST --port $PORT --max-concurrent-requests $MAX_CONCURRENT_REQUESTS"
 
 if [[ "$REGISTER_WITH_REGISTRY" == true ]]; then
     CMD="$CMD --register-with-registry --registry-host $REGISTRY_HOST --registry-port $REGISTRY_PORT"

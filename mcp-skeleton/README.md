@@ -109,6 +109,7 @@ The server can be configured via command-line arguments:
 - `--transport`: Select transport mechanism ('stdio' or 'http')
 - `--host`: Host for HTTP transport (default: 127.0.0.1)
 - `--port`: Port for HTTP transport (default: 3030)
+- `--max-concurrent-requests`: Maximum number of concurrent requests (default: 10)
 - `--enable-registry`: Enable registry functionality to track multiple MCP services (optional)
 - `--register-with-registry`: Register this server with a registry server (requires --registry-host and --registry-port)
 - `--registry-host`: Registry server host to register with (default: 127.0.0.1)

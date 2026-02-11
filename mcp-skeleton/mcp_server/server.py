@@ -24,10 +24,11 @@ from .utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
 class McpServer:
     """Main MCP Server implementation that combines all components"""
     
-    def __init__(self, transport_type: str = "stdio", host: str = "127.0.0.1", port: int = 3030, enable_registry: bool = False, 
+    def __init__(self, transport_type: str = "stdio", host: str = "127.0.0.1", port: int = 3030, enable_registry: bool = False,
                  register_with_registry: bool = False, registry_host: str = "127.0.0.1", registry_port: int = 3031,
                  use_postgres: bool = False, postgres_host: str = "localhost", postgres_port: int = 5432,
-                 postgres_db: str = "mcp_registry", postgres_user: str = "postgres", postgres_password: str = ""):
+                 postgres_db: str = "mcp_registry", postgres_user: str = "postgres", postgres_password: str = "", 
+                 max_concurrent_requests: int = 10):
         self.transport_type = transport_type
         self.host = host
         self.port = port
@@ -42,9 +43,10 @@ class McpServer:
         self.postgres_db = postgres_db
         self.postgres_user = postgres_user
         self.postgres_password = postgres_password
-        
+        self.max_concurrent_requests = max_concurrent_requests
+
         # Initialize components
-        self.rpc_handler = JsonRpcHandler()
+        self.rpc_handler = JsonRpcHandler(max_concurrent_requests=max_concurrent_requests)
         
         # Prepare PostgreSQL configuration if needed
         postgres_config = {}
@@ -113,9 +115,14 @@ class McpServer:
         # Register all handlers
         self._register_handlers()
         
-        # Set up signal handling for graceful shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        # Set up signal handling for graceful shutdown (only in main thread/process)
+        try:
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except ValueError:
+            # If running in a thread, signal handling won't work - that's OK
+            # The server can still be stopped programmatically
+            pass
     
     def _register_with_registry(self):
         """Register this server with a registry server"""
@@ -201,8 +208,10 @@ class McpServer:
     
     def _message_callback(self, message):
         """Callback to handle incoming messages"""
+        # Use the synchronous version of handle_message for stdio transport
         try:
-            response = self.rpc_handler.handle_message(message)
+            response = self.rpc_handler.handle_message_sync(message)
+            
             if response:
                 self._send_response(response)
         except Exception as e:
@@ -338,10 +347,14 @@ def main():
     parser.add_argument('--postgres-user', 
                        default='postgres',
                        help='PostgreSQL username (default: postgres)')
-    parser.add_argument('--postgres-password', 
+    parser.add_argument('--postgres-password',
                        default='',
                        help='PostgreSQL password (default: empty)')
-    
+    parser.add_argument('--max-concurrent-requests',
+                       type=int,
+                       default=10,
+                       help='Maximum number of concurrent requests (default: 10)')
+
     args = parser.parse_args()
     
     # Convert localhost to 127.0.0.1 to avoid IPv6 resolution issues
@@ -352,8 +365,8 @@ def main():
         postgres_host = "127.0.0.1"
     
     server = McpServer(
-        transport_type=args.transport, 
-        host=args.host, 
+        transport_type=args.transport,
+        host=args.host,
         port=args.port,
         enable_registry=args.enable_registry,
         register_with_registry=args.register_with_registry,
@@ -364,7 +377,8 @@ def main():
         postgres_port=args.postgres_port,
         postgres_db=args.postgres_db,
         postgres_user=args.postgres_user,
-        postgres_password=args.postgres_password
+        postgres_password=args.postgres_password,
+        max_concurrent_requests=args.max_concurrent_requests
     )
     server.start()
 

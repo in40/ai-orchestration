@@ -10,6 +10,7 @@ set -e  # Exit on any error
 TRANSPORT="http"
 HOST="127.0.0.1"
 PORT="3031"  # Default registry port
+MAX_CONCURRENT_REQUESTS="10"
 ENABLE_REGISTRY=true
 REGISTER_WITH_REGISTRY=false
 REGISTRY_HOST="127.0.0.1"
@@ -34,6 +35,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  -p, --port PORT         Port to listen on (default: 3031)"
+    echo "  -c, --concurrent-reqs N Maximum number of concurrent requests (default: 10)"
     echo "  --use-postgres          Use PostgreSQL for registry storage instead of SQLite"
     echo "  --postgres-host HOST    PostgreSQL host (default: 127.0.0.1)"
     echo "  --postgres-port PORT    PostgreSQL port (default: 5432)"
@@ -61,6 +63,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--port)
             PORT="$2"
+            shift 2
+            ;;
+        -c|--concurrent-reqs)
+            MAX_CONCURRENT_REQUESTS="$2"
             shift 2
             ;;
         --use-postgres)
@@ -126,6 +132,12 @@ if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; th
     exit 1
 fi
 
+# Validate max concurrent requests
+if ! [[ "$MAX_CONCURRENT_REQUESTS" =~ ^[0-9]+$ ]] || [ "$MAX_CONCURRENT_REQUESTS" -lt 1 ]; then
+    echo "Error: Max concurrent requests must be a positive number"
+    exit 1
+fi
+
 # Check if Python command exists
 if ! command -v "$PYTHON_CMD" &> /dev/null; then
     echo "Error: Python command '$PYTHON_CMD' not found"
@@ -140,7 +152,7 @@ if [[ ! -f "mcp_server/server.py" ]]; then
 fi
 
 # Build the command
-CMD="$PYTHON_CMD -m mcp_server.server --transport $TRANSPORT --host $HOST --port $PORT --enable-registry"
+CMD="$PYTHON_CMD -m mcp_server.server --transport $TRANSPORT --host $HOST --port $PORT --max-concurrent-requests $MAX_CONCURRENT_REQUESTS --enable-registry"
 
 if [[ "$USE_POSTGRES" == true ]]; then
     CMD="$CMD --use-postgres --postgres-host $POSTGRES_HOST --postgres-port $POSTGRES_PORT --postgres-db $POSTGRES_DB --postgres-user $POSTGRES_USER --postgres-password $POSTGRES_PASSWORD"
@@ -152,6 +164,7 @@ echo "Configuration:"
 echo "  Transport: $TRANSPORT"
 echo "  Host: $HOST"
 echo "  Port: $PORT"
+echo "  Max Concurrent Requests: $MAX_CONCURRENT_REQUESTS"
 echo "  Registry: enabled"
 echo "  Register with registry: no"
 echo "  Use PostgreSQL: $(if [[ $USE_POSTGRES == true ]]; then echo "yes ($POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB)"; else echo "no (using SQLite)"; fi)"

@@ -251,6 +251,7 @@ python -m mcp_server.server --transport http --port 3032 --register-with-registr
 - `--transport`: Select transport mechanism ('stdio' or 'http')
 - `--host`: Host for HTTP transport (default: 127.0.0.1)
 - `--port`: Port for HTTP transport (default: 3030)
+- `--max-concurrent-requests`: Maximum number of concurrent requests (default: 10)
 - `--enable-registry`: Enable registry functionality to track multiple MCP services (optional)
 - `--register-with-registry`: Register this server with a registry server (requires --registry-host and --registry-port)
 - `--registry-host`: Registry server host to register with (default: 127.0.0.1)
@@ -708,7 +709,9 @@ class ConfigurableMcpServer(McpServer):
         host = self.config_manager.get("server.host", kwargs.get("host", "127.0.0.1"))
         port = self.config_manager.get("server.port", kwargs.get("port", 3030))
         
-        super().__init__(transport_type=transport_type, host=host, port=port, **kwargs)
+        # Include max_concurrent_requests parameter for concurrent request handling
+        max_concurrent_requests = self.config_manager.get("server.max_concurrent_requests", kwargs.get("max_concurrent_requests", 10))
+        super().__init__(transport_type=transport_type, host=host, port=port, max_concurrent_requests=max_concurrent_requests, **kwargs)
 ```
 
 ### 9. Health Checks and Diagnostics

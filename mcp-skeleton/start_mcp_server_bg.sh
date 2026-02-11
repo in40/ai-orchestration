@@ -9,6 +9,7 @@ set -e  # Exit on any error
 TRANSPORT="http"
 HOST="127.0.0.1"
 PORT="3030"
+MAX_CONCURRENT_REQUESTS="10"
 ENABLE_REGISTRY=false
 REGISTER_WITH_REGISTRY=false
 REGISTRY_HOST="127.0.0.1"
@@ -32,6 +33,7 @@ usage() {
     echo "  -t, --transport TYPE    Transport type: 'stdio' or 'http' (default: http)"
     echo "  -h, --host HOST         Host to bind to (default: 127.0.0.1)"
     echo "  -p, --port PORT         Port to listen on (default: 3030)"
+    echo "  -c, --concurrent-reqs N Maximum number of concurrent requests (default: 10)"
     echo "  -r, --enable-registry   Enable registry functionality"
     echo "  -R, --register-with-reg Register with a registry server"
     echo "  --registry-host HOST    Registry host to register with (default: 127.0.0.1)"
@@ -70,6 +72,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -p|--port)
             PORT="$2"
+            shift 2
+            ;;
+        -c|--concurrent-reqs)
+            MAX_CONCURRENT_REQUESTS="$2"
             shift 2
             ;;
         -r|--enable-registry)
@@ -146,6 +152,12 @@ if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; th
     exit 1
 fi
 
+# Validate max concurrent requests
+if ! [[ "$MAX_CONCURRENT_REQUESTS" =~ ^[0-9]+$ ]] || [ "$MAX_CONCURRENT_REQUESTS" -lt 1 ]; then
+    echo "Error: Max concurrent requests must be a positive number"
+    exit 1
+fi
+
 # Check if Python command exists
 if ! command -v "$PYTHON_CMD" &> /dev/null; then
     echo "Error: Python command '$PYTHON_CMD' not found"
@@ -160,7 +172,7 @@ if [[ ! -f "mcp_server/server.py" ]]; then
 fi
 
 # Build the command
-CMD="$PYTHON_CMD -m mcp_server.server --transport $TRANSPORT --host $HOST --port $PORT"
+CMD="$PYTHON_CMD -m mcp_server.server --transport $TRANSPORT --host $HOST --port $PORT --max-concurrent-requests $MAX_CONCURRENT_REQUESTS"
 
 if [[ "$ENABLE_REGISTRY" == true ]]; then
     CMD="$CMD --enable-registry"
@@ -179,6 +191,7 @@ echo "Configuration:"
 echo "  Transport: $TRANSPORT"
 echo "  Host: $HOST"
 echo "  Port: $PORT"
+echo "  Max Concurrent Requests: $MAX_CONCURRENT_REQUESTS"
 echo "  Registry (local): $(if [[ $ENABLE_REGISTRY == true ]]; then echo "enabled"; else echo "disabled"; fi)"
 echo "  Register with registry: $(if [[ $REGISTER_WITH_REGISTRY == true ]]; then echo "yes ($REGISTRY_HOST:$REGISTRY_PORT)"; else echo "no"; fi)"
 echo "  Use PostgreSQL: $(if [[ $USE_POSTGRES == true ]]; then echo "yes ($POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB)"; else echo "no (using SQLite)"; fi)"
