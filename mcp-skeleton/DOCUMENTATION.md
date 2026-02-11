@@ -25,6 +25,7 @@ This is a complete implementation of the Model Context Protocol (MCP) server in 
 - All testing suites must reuse the current MCP client implementations provided in this skeleton (such as query_registry_client_proper.py and query_registry_client_proper_fixed.py) to ensure consistent testing methodology
 - All tests must be implemented as `.sh` shell scripts and must only verify functionality of already running server instances (never start or stop servers)
 - Each server implementation must provide its own stop/kill script to ensure no instances of that particular server are running
+- Any additional packages/libraries required for the implementation must be added to requirements.txt following the format: `package-name>=version`
 
 **Failure to comply with these requirements means the implementation is not a valid MCP server based on this skeleton.**
 

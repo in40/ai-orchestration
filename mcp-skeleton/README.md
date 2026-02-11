@@ -14,6 +14,7 @@ This is a standard implementation of the Model Context Protocol (MCP) server in 
 4. **Registry Protocol**: If implementing registry functionality, it must follow the documented protocols
 5. **Documentation Adherence**: All implementations must maintain compatibility with the documented interfaces and behaviors
 6. **Extension Points**: When extending functionality, ensure that core MCP interfaces remain unchanged and compliant
+7. **Dependencies Management**: Any additional packages/libraries required for the implementation must be added to requirements.txt following the format: `package-name>=version`
 
 **Failure to comply with these requirements means the implementation is not a valid MCP server based on this skeleton.**
 
