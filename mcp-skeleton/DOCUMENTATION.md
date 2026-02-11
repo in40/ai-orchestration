@@ -4,6 +4,30 @@
 
 This is a complete implementation of the Model Context Protocol (MCP) server in Python. It provides a fully compliant implementation of the MCP specification with support for both stdio and HTTP/SSE transports, plus an optional registry functionality for service discovery.
 
+## Compliance Requirements
+
+**IMPORTANT: All implementations based on this skeleton must 100% comply with the specifications documented in this file and the accompanying README.md.**
+
+### Mandatory Compliance Rules:
+
+1. **MCP Specification Compliance**: All implementations must fully comply with the official MCP specification
+2. **Interface Compatibility**: All standard MCP methods (initialize, tools/list, tools/call, resources/list, resources/read, prompts/list, prompts/get, shutdown) must be implemented as documented
+3. **Transport Standards**: Both stdio and HTTP/SSE transports must follow MCP specification exactly
+4. **Registry Protocol**: If implementing registry functionality, it must follow the documented registration, discovery, and deregistration protocols
+5. **Documentation Adherence**: All implementations must maintain compatibility with the documented interfaces and behaviors described in README.md and DOCUMENTATION.md
+6. **Extension Points**: When extending functionality, ensure that core MCP interfaces remain unchanged and compliant
+
+### Quality Assurance:
+- All implementations must pass the verification scripts included with this skeleton
+- Registry functionality (if implemented) must work with the provided registry clients
+- HTTP/SSE transport must properly implement the Server-Sent Events pattern as documented
+- Heartbeat and service health monitoring must function as specified
+- All testing suites must reuse the current MCP client implementations provided in this skeleton (such as query_registry_client_proper.py and query_registry_client_proper_fixed.py) to ensure consistent testing methodology
+- All tests must be implemented as `.sh` shell scripts and must only verify functionality of already running server instances (never start or stop servers)
+- Each server implementation must provide its own stop/kill script to ensure no instances of that particular server are running
+
+**Failure to comply with these requirements means the implementation is not a valid MCP server based on this skeleton.**
+
 ## Architecture
 
 The server follows the MCP specification and consists of several key components:
@@ -803,8 +827,23 @@ The architecture allows you to build new servers by:
 - Extending registry functionality
 - Leveraging existing configuration and logging
 - Building on the proven error handling patterns
+- Providing a dedicated stop/kill script for each server implementation to ensure proper cleanup and prevent conflicting instances
 
 This makes the codebase a robust foundation for multiple server implementations with minimal duplication.
+
+### 4. **Server Lifecycle Management**
+
+Each server implementation must include proper lifecycle management:
+- Startup scripts that configure and launch the server appropriately
+- Dedicated stop/kill scripts that terminate all instances of that specific server
+- Process identification mechanisms to distinguish server instances
+- Cleanup procedures that remove any temporary files or registry entries
+
+**Required Server Components:**
+- Main server implementation following MCP specification
+- Startup script (e.g., `start_myserver.sh`)
+- Stop/kill script (e.g., `stop_myserver.sh`) that ensures no instances of that particular server remain running
+- Configuration management for different deployment scenarios
 
 ## Database Support
 
@@ -1136,6 +1175,52 @@ Shell script wrapper that provides a convenient interface to query the registry 
 ./query_registry_sse.sh "http://localhost:3031" "" 20
 ```
 
+#### `query_registry_client_proper_fixed.py` - Improved Registry Client
+An improved version of the registry client that addresses intermittent failures by implementing better synchronization and error handling.
+
+**Improvements:**
+- Fixed race condition where SSE connection wasn't fully established before sending requests
+- Added connection verification to ensure SSE connection is ready
+- Improved threading synchronization between SSE listener and request sending
+- Proper session ID handling for better request/response correlation
+- Enhanced error handling and connection management
+
+**Usage:**
+```bash
+# Query all registered services
+python query_registry_client_proper_fixed.py
+
+# Query specific service by ID
+python query_registry_client_proper_fixed.py --service-id "server-127.0.0.1-3030"
+
+# Use custom registry URL and timeout
+python query_registry_client_proper_fixed.py --registry-url "http://localhost:3031" --timeout 20
+```
+
+#### `query_registry_sse_improved.sh` - Improved Shell Wrapper for Registry Client
+An improved shell script wrapper that uses the fixed Python registry client for more reliable operation.
+
+**Features:**
+- Uses the improved Python registry client with better synchronization
+- Maintains all the functionality of the original wrapper
+- More reliable operation with reduced intermittent failures
+- Automatic fallback to original client if improved version is not available
+
+**Usage:**
+```bash
+# Query all registered services
+./query_registry_sse_improved.sh
+
+# Query with custom registry URL
+./query_registry_sse_improved.sh "http://localhost:3031"
+
+# Query specific service (if registry supports it)
+./query_registry_sse_improved.sh "http://localhost:3031" "server-127.0.0.1-3030"
+
+# Query with custom timeout
+./query_registry_sse_improved.sh "http://localhost:3031" "" 20
+```
+
 #### `ai_agent_workflow.sh` - Complete AI Agent Simulation
 Runs a complete simulation of the AI agent service discovery workflow using MCP protocol calls.
 
@@ -1151,6 +1236,86 @@ Runs a complete simulation of the AI agent service discovery workflow using MCP 
 # Run complete AI agent workflow simulation
 ./ai_agent_workflow.sh
 ```
+
+## AI Agent Simulation Testing Framework
+
+The MCP server skeleton provides a comprehensive framework for creating AI agent simulation tests using the standardized client implementations. This ensures consistent and reliable testing of the service discovery and interaction patterns that real AI agents would use.
+
+### Standard AI Agent Workflow Pattern
+
+All AI agent simulation tests should follow this standardized pattern:
+
+1. **Service Discovery Phase**:
+   - Use `query_registry_client_proper.py` or `query_registry_client_proper_fixed.py` to discover available services
+   - Follow the proper MCP HTTP/SSE protocol: open SSE connection first, then send requests
+   - Query the registry for services using the `registry/list` method
+
+2. **Service Selection Phase**:
+   - Analyze service capabilities returned by the registry
+   - Select appropriate services based on required functionality
+   - Verify service endpoints are accessible
+
+3. **Interaction Phase**:
+   - Establish direct connection to selected services
+   - Perform MCP operations (tools/call, resources/read, prompts/get, etc.)
+   - Validate responses and functionality
+
+### Creating Custom AI Agent Tests
+
+When creating custom AI agent simulation tests, follow these guidelines:
+
+**Using the Standard Client**:
+```python
+from query_registry_client_proper_fixed import RegistryQueryClient
+
+# Create a registry client
+client = RegistryQueryClient(registry_url="http://localhost:3031", timeout=15)
+
+# Query for services
+response = client.query_registry()
+
+# Process the response and select services based on capabilities
+if 'result' in response and 'services' in response['result']:
+    services = response['result']['services']
+    # Select appropriate service based on your test criteria
+```
+
+**Best Practices for AI Agent Tests**:
+- Always use the provided client implementations to ensure consistency
+- Follow the proper MCP protocol sequence (SSE connection first, then send requests)
+- Include proper error handling and timeout management
+- Verify both successful operations and error conditions
+- Test service discovery, selection, and interaction phases
+- Include heartbeat and service health verification in long-running tests
+
+### Example AI Agent Test Structure
+
+```bash
+#!/bin/bash
+# Example AI agent simulation test
+
+# 1. Discover services using standard client
+python query_registry_client_proper_fixed.py --registry-url "http://localhost:3031" --timeout 10
+
+# 2. Parse response and select service based on capabilities
+# (Implementation would parse the output and make selections)
+
+# 3. Interact with selected service using standard MCP methods
+# (Implementation would use appropriate MCP client for service interaction)
+
+# 4. Validate results and report outcome
+```
+
+### Testing Considerations
+
+- **Consistency**: All tests should use the same client implementations to ensure consistent behavior
+- **Reliability**: Use the improved client (`query_registry_client_proper_fixed.py`) for better reliability
+- **Protocol Compliance**: Ensure all interactions follow MCP specification exactly
+- **Error Handling**: Test both successful operations and failure scenarios
+- **Timing**: Account for service registration delays and heartbeat intervals in automated tests
+- **Test Format**: All tests must be implemented as `.sh` shell scripts for consistency and ease of execution
+- **Server Independence**: Tests must only verify functionality of already running server instances; tests should never start or stop servers themselves
+- **Environment Assumption**: Tests should assume prerequisite servers are already running and accessible
 
 #### `test_auto_registration.sh` - Auto-Registration Test
 Tests the auto-registration functionality.

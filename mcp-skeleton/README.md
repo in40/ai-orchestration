@@ -2,6 +2,21 @@
 
 This is a standard implementation of the Model Context Protocol (MCP) server in Python. It provides a complete, compliant implementation of the MCP specification with support for both stdio and HTTP/SSE transports.
 
+## Compliance Requirements
+
+**IMPORTANT: All implementations based on this skeleton must 100% comply with the specifications documented in README.md and DOCUMENTATION.md.**
+
+### Mandatory Compliance Rules:
+
+1. **MCP Specification Compliance**: All implementations must fully comply with the official MCP specification
+2. **Interface Compatibility**: All standard MCP methods must be implemented as documented
+3. **Transport Standards**: Both stdio and HTTP/SSE transports must follow MCP specification exactly
+4. **Registry Protocol**: If implementing registry functionality, it must follow the documented protocols
+5. **Documentation Adherence**: All implementations must maintain compatibility with the documented interfaces and behaviors
+6. **Extension Points**: When extending functionality, ensure that core MCP interfaces remain unchanged and compliant
+
+**Failure to comply with these requirements means the implementation is not a valid MCP server based on this skeleton.**
+
 ## Features
 
 - Full compliance with MCP specification
@@ -355,6 +370,9 @@ The MCP server project includes multiple shell scripts for different purposes:
 ### Utility Scripts
 - `./query_registry.sh` - Query registered services from registry using MCP protocol
 - `./query_registry_client_proper.py` - Advanced registry client with full service details via HTTP/SSE
+- `./query_registry_client_proper_fixed.py` - Improved registry client with better reliability and synchronization
 - `./query_registry_sse.sh` - Shell wrapper for registry client with full service details
+- `./query_registry_sse_improved.sh` - Improved shell wrapper using the fixed Python client for better reliability
+- `./test_registry_client_reliability.sh` - Test script to compare original vs improved client reliability
 - `./ai_agent_workflow.sh` - Complete AI agent workflow simulation using MCP protocol
 - `./final_verification.sh` - Complete system verification using MCP protocol
