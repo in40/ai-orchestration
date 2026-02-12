@@ -1,6 +1,6 @@
 """Read-only TUI for MCP Explorer using textual library."""
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
 from textual.widgets import (
     Header, Footer, Tree, DataTable, Static,
     Button, Input, Label, Checkbox, Select
@@ -79,7 +79,17 @@ class ReadOnlyToolFormScreen(ModalScreen):
                     yield Static(f"Required fields: {required_fields}", id="required-fields")
             
             with Container(id="results-container-wrapper"):
-                yield Static("This is a read-only view. Tool execution is disabled.", id="readonly-note")
+                with ScrollableContainer(id="results-container"):
+                    # Use a DataTable widget for better results display (even though it's read-only)
+                    self.results_display = DataTable(id="results-display")
+                    self.results_display.can_focus = True
+                    self.results_display.expand = True
+                    self.results_display.shrink = True
+                    # Add a simple message to the table
+                    self.results_display.add_columns("Information")
+                    self.results_display.add_row("This is a read-only view. Tool execution is disabled.")
+                    
+                    yield self.results_display
 
             with Horizontal(id="form-buttons"):
                 yield Static("F7 Call Tool (DISABLED)", id="call-tool-disabled", variant="warning")

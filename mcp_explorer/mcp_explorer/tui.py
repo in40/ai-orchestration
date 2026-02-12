@@ -1,12 +1,13 @@
 """TUI for MCP Explorer using textual library."""
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
 from textual.widgets import (
-    Header, Footer, Tree, DataTable, Static, 
+    Header, Footer, Tree, DataTable, Static,
     Button, Input, Label, Checkbox, Select
 )
 from textual.screen import ModalScreen, Screen
 from textual import on
+from textual.events import Paste
 from textual.message import Message
 from .registry_adapters import RegistryManager
 from .streamable_http import StreamableHTTPClient
@@ -122,13 +123,16 @@ class ToolFormScreen(ModalScreen):
                 yield Static(f"[red]Error generating form: {str(e)}[/red]", id="form-error")
 
             # Add a scrollable area for displaying results
-            with Container(id="results-container-wrapper"):
-                with ScrollableContainer(id="results-container"):
-                    # Use a Static widget for results display, with scrolling container
-                    self.results_display = Static("", id="results-display", markup=False)
+            with Container(id="results-container-wrapper", classes="results-container"):
+                # Add a label for the results section
+                yield Static("Results:", id="results-label")
+                # Use a larger scrollable container for results
+                with ScrollableContainer(id="results-container", classes="results-scrollable"):
+                    # Use a DataTable widget for better results display
+                    self.results_display = DataTable(id="results-display")
                     self.results_display.can_focus = True
                     self.results_display.expand = True
-                    self.results_display.shrink = True
+                    self.results_display.shrink = False  # Don't shrink the table
                     yield self.results_display
 
             with Horizontal(id="form-buttons"):
@@ -161,7 +165,9 @@ class ToolFormScreen(ModalScreen):
         elif event.button.id == "clear-results-btn":
             # Clear the results display
             if self.results_display:
-                self.results_display.update("")
+                self.results_display.clear()
+                self.results_display.add_columns("Cleared")
+                self.results_display.add_row("Results cleared. Run tool again to see output.")
         elif event.button.id == "close-btn":
             # Close the modal
             self.app.pop_screen()
@@ -174,6 +180,66 @@ class ToolFormScreen(ModalScreen):
         elif event.key == "escape":
             # Close the modal when Escape is pressed
             self.app.pop_screen()
+        elif event.key == "ctrl+c":
+            # Copy selected cell content to clipboard
+            await self.copy_selected_cell()
+    
+    async def copy_selected_cell(self):
+        """Copy the currently selected cell to clipboard."""
+        try:
+            if self.results_display.cursor_row is not None and self.results_display.cursor_column is not None:
+                # Get the value from the currently selected cell
+                row_index = self.results_display.cursor_row
+                col_index = self.results_display.cursor_column
+                
+                # Get the column key from the index
+                column_keys = list(self.results_display.columns.keys())
+                if col_index < len(column_keys):
+                    column_key = column_keys[col_index]
+                    
+                    # Get the row key from the index
+                    row_keys = list(self.results_display.rows.keys())
+                    if row_index < len(row_keys):
+                        row_key = row_keys[row_index]
+                        
+                        # Get the value from the table
+                        value = self.results_display.get_cell(row_key, column_key)
+                        
+                        # Copy to clipboard - using pyperclip or similar
+                        try:
+                            import pyperclip
+                            pyperclip.copy(str(value))
+                        except ImportError:
+                            # If pyperclip is not available, try using tkinter
+                            try:
+                                import tkinter as tk
+                                root = tk.Tk()
+                                root.withdraw()
+                                root.clipboard_clear()
+                                root.clipboard_append(str(value))
+                                root.destroy()
+                            except ImportError:
+                                # If neither is available, just store in a variable
+                                self.app.clipboard_content = str(value)
+                        self.app.notify(f"Copied to clipboard: {str(value)[:50]}{'...' if len(str(value)) > 50 else ''}", 
+                                      severity="information")
+                    else:
+                        self.app.notify("No row selected", severity="warning")
+                else:
+                    self.app.notify("No column selected", severity="warning")
+            else:
+                self.app.notify("No cell selected", severity="warning")
+        except Exception as e:
+            self.app.notify(f"Error copying to clipboard: {str(e)}", severity="error")
+    
+    def on_paste(self, event: "Paste") -> None:
+        """Handle paste events in the form screen."""
+        # Forward paste events to focused input if any
+        if self.focus_chain:
+            focused_widget = self.focused
+            if focused_widget and hasattr(focused_widget, 'on_paste'):
+                # Call the widget's paste handler directly
+                focused_widget.on_paste(event)
 
     async def call_tool_action(self):
         """Execute the tool call action."""
@@ -201,6 +267,9 @@ class ToolFormScreen(ModalScreen):
     async def call_tool_with_args(self, arguments: Dict[str, Any]):
         """Call the tool with collected arguments."""
         try:
+            # Notify user that tool is being called
+            self.app.notify("Calling tool...", severity="information")
+            
             # Use the app's centralized method to call the capability
             result = await self.app.call_capability_on_server("tool", self.tool_schema, self.server_url, arguments)
 
@@ -208,12 +277,36 @@ class ToolFormScreen(ModalScreen):
             if "error" not in result:
                 # Pass the actual result object to preserve structure
                 self.display_result(result, is_error=False)
+                
+                # Always notify the user that the tool was executed, regardless of result content
+                # Extract important information from the result if available
+                result_summary = "Tool executed successfully"
+                
+                # Look for common result indicators like task IDs
+                if isinstance(result, dict):
+                    if 'result' in result and isinstance(result['result'], dict):
+                        # Check for task ID or similar identifier
+                        task_id = result['result'].get('id') or result['result'].get('taskId') or result['result'].get('jobId')
+                        if task_id:
+                            result_summary = f"Tool executed successfully. Task ID: {task_id}"
+                    elif 'result' in result and isinstance(result['result'], list) and len(result['result']) > 0:
+                        result_summary = f"Tool executed successfully. Returned {len(result['result'])} items."
+                    elif result != {}:
+                        result_summary = "Tool executed successfully. See results below."
+                
+                self.app.notify(result_summary, severity="success")
+                
+                # Ensure the results area is scrolled to show the new content
+                # and bring attention to it
+                self.results_display.scroll_visible(top=True)
             else:
                 error_text = f"Tool execution failed:\n{result['error']}"
                 self.display_result(error_text, is_error=True)
+                self.app.notify(f"Tool execution failed: {result['error']}", severity="error")
         except Exception as e:
             error_text = f"Error calling tool:\n{str(e)}"
             self.display_result(error_text, is_error=True)
+            self.app.notify(f"Error calling tool: {str(e)}", severity="error")
 
         # Keep the form open for additional submissions
         # self.app.pop_screen() - removed this line
@@ -223,29 +316,117 @@ class ToolFormScreen(ModalScreen):
         if self.results_display:
             try:
                 import json
-                
+
+                # Clear the existing table
+                self.results_display.clear()
+
                 # Handle different types of result data
                 if isinstance(result_data, dict):
                     # If it's an error response
                     if is_error:
-                        plain_text = json.dumps(result_data, indent=2)
-                        self.results_display.update(plain_text)
+                        self.results_display.add_columns("Error")
+                        self.results_display.add_row(json.dumps(result_data, indent=2))
+                        # Force refresh of the widget
+                        self.results_display.refresh()
                         return
-                    
+
                     # Check if it's a structured response with a 'result' field
                     if 'result' in result_data:
                         actual_result = result_data['result']
+
+                        # Check if there are other important fields alongside 'result' (like task ID)
+                        additional_fields = {k: v for k, v in result_data.items() if k != 'result'}
                         
-                        if isinstance(actual_result, list):
-                            # If it's a list (like tasks), render as a table
-                            self.render_list_as_table(actual_result)
-                        elif isinstance(actual_result, dict):
-                            # If it's a dict, render as a table with key-value pairs
-                            self.render_dict_as_table(actual_result)
+                        # If there are additional fields, display them first
+                        if additional_fields:
+                            # Add columns if none exist
+                            if len(self.results_display.columns) == 0:
+                                self.results_display.add_columns("Field", "Value")
+                            
+                            for key, value in additional_fields.items():
+                                if isinstance(value, (dict, list)):
+                                    value = json.dumps(value, indent=2)
+                                self.results_display.add_row(str(key), str(value))
+
+                            # Add a separator
+                            self.results_display.add_row("---", "---")
+
+                            # Then add the main result
+                            if isinstance(actual_result, list):
+                                # If it's a list (like tasks), render as a table
+                                self.render_list_as_table(actual_result)
+                            elif isinstance(actual_result, dict):
+                                # If it's a dict, check for special cases first
+                                if 'tasks' in actual_result:
+                                    # Special handling for tasks list
+                                    tasks = actual_result['tasks']
+                                    if isinstance(tasks, list):
+                                        self.render_list_as_table(tasks)
+                                    else:
+                                        # If tasks is not a list, render as dict
+                                        self.render_dict_as_table(actual_result)
+                                elif 'tools' in actual_result:
+                                    # Special handling for tools list
+                                    tools = actual_result['tools']
+                                    if isinstance(tools, list):
+                                        self.render_list_as_table(tools)
+                                    else:
+                                        # If tools is not a list, render as dict
+                                        self.render_dict_as_table(actual_result)
+                                elif 'resources' in actual_result:
+                                    # Special handling for resources list
+                                    resources = actual_result['resources']
+                                    if isinstance(resources, list):
+                                        self.render_list_as_table(resources)
+                                    else:
+                                        # If resources is not a list, render as dict
+                                        self.render_dict_as_table(actual_result)
+                                else:
+                                    # If it's a dict without special keys, render as key-value table
+                                    self.render_dict_as_table(actual_result)
+                            else:
+                                # For other types, add as a row
+                                if isinstance(actual_result, (dict, list)):
+                                    actual_result = json.dumps(actual_result, indent=2)
+                                self.results_display.add_row("Result", str(actual_result))
                         else:
-                            # For other types, display as formatted text
-                            plain_text = json.dumps(actual_result, indent=2)
-                            self.results_display.update(plain_text)
+                            # No additional fields, just process the result normally
+                            if isinstance(actual_result, list):
+                                # If it's a list (like tasks), render as a table
+                                self.render_list_as_table(actual_result)
+                            elif isinstance(actual_result, dict):
+                                # If it's a dict, check for special cases first
+                                if 'tasks' in actual_result:
+                                    # Special handling for tasks list
+                                    tasks = actual_result['tasks']
+                                    if isinstance(tasks, list):
+                                        self.render_list_as_table(tasks)
+                                    else:
+                                        # If tasks is not a list, render as dict
+                                        self.render_dict_as_table(actual_result)
+                                elif 'tools' in actual_result:
+                                    # Special handling for tools list
+                                    tools = actual_result['tools']
+                                    if isinstance(tools, list):
+                                        self.render_list_as_table(tools)
+                                    else:
+                                        # If tools is not a list, render as dict
+                                        self.render_dict_as_table(actual_result)
+                                elif 'resources' in actual_result:
+                                    # Special handling for resources list
+                                    resources = actual_result['resources']
+                                    if isinstance(resources, list):
+                                        self.render_list_as_table(resources)
+                                    else:
+                                        # If resources is not a list, render as dict
+                                        self.render_dict_as_table(actual_result)
+                                else:
+                                    # If it's a dict without special keys, render as key-value table
+                                    self.render_dict_as_table(actual_result)
+                            else:
+                                # For other types, display as formatted text
+                                self.results_display.add_columns("Result")
+                                self.results_display.add_row(json.dumps(actual_result, indent=2))
                     else:
                         # If it's a dict without a 'result' field, render as key-value table
                         self.render_dict_as_table(result_data)
@@ -257,7 +438,7 @@ class ToolFormScreen(ModalScreen):
                     if result_data.startswith("Tool Result:\n"):
                         # Extract the actual result part after the prefix
                         actual_result_str = result_data[len("Tool Result:\n"):].strip()
-                        
+
                         # Try to parse the actual result as JSON
                         try:
                             parsed_result = json.loads(actual_result_str)
@@ -272,40 +453,50 @@ class ToolFormScreen(ModalScreen):
                                     elif isinstance(actual_result, dict):
                                         self.render_dict_as_table(actual_result)
                                     else:
-                                        plain_text = json.dumps(actual_result, indent=2)
-                                        self.results_display.update(plain_text)
+                                        self.results_display.add_columns("Result")
+                                        self.results_display.add_row(json.dumps(actual_result, indent=2))
                                 else:
                                     self.render_dict_as_table(parsed_result)
                             else:
                                 # For other types, display as formatted text
-                                plain_text = json.dumps(parsed_result, indent=2)
-                                self.results_display.update(plain_text)
+                                self.results_display.add_columns("Result")
+                                self.results_display.add_row(json.dumps(parsed_result, indent=2))
                         except json.JSONDecodeError:
                             # If it's not JSON, display as plain text
-                            self.results_display.update(result_data)
+                            self.results_display.add_columns("Result")
+                            self.results_display.add_row(result_data)
                     else:
                         # If it's a plain string, display as formatted text
-                        self.results_display.update(result_data)
+                        self.results_display.add_columns("Result")
+                        self.results_display.add_row(result_data)
                 else:
                     # For other types, display as formatted text
-                    plain_text = json.dumps(result_data, indent=2)
-                    self.results_display.update(plain_text)
-                    
+                    self.results_display.add_columns("Result")
+                    self.results_display.add_row(json.dumps(result_data, indent=2))
+
+                # Force refresh of the widget to ensure it's visible
+                self.results_display.refresh()
+
             except Exception as e:
                 # If anything goes wrong, fall back to the original behavior
                 import json
-                plain_text = json.dumps(result_data, indent=2)
-                self.results_display.update(plain_text)
+                self.results_display.clear()
+                self.results_display.add_columns("Error")
+                self.results_display.add_row(f"Error displaying result: {str(e)}\n{json.dumps(result_data, indent=2)}")
+                # Force refresh of the widget
+                self.results_display.refresh()
 
     def render_list_as_table(self, data_list):
         """Render a list of items as a user-friendly table."""
         import json
-        
+
         if not data_list:
             # Update the existing display with a message
-            self.results_display.update("No items found in the list.")
+            self.results_display.clear()
+            self.results_display.add_columns("Message")
+            self.results_display.add_row("No items found in the list.")
             return
-            
+
         # Check if this looks like a job/task list (has common fields like taskId, status, etc.)
         # First, make sure data_list[0] exists and is a dict before accessing it
         if data_list and isinstance(data_list[0], dict):
@@ -313,16 +504,104 @@ class ToolFormScreen(ModalScreen):
             first_item = data_list[0]
             if any(field in first_item for field in ['taskId', 'jobId', 'id', 'task_id', 'job_id']):
                 try:
-                    # This looks like a job/task list, create a user-friendly display
-                    result_text = self.format_job_list(data_list)
-                    self.results_display.update(result_text)
+                    # This looks like a job/task list, create a DataTable
+                    self.render_job_list_as_table(data_list)
                     return
                 except Exception as e:
                     # If there's an error in formatting, fall back to JSON
                     pass
+
+        # For other types of lists, create a generic table
+        self.create_generic_list_table(data_list)
+    
+    def render_job_list_as_table(self, job_list):
+        """Render a job/task list as a DataTable."""
+        # Determine the columns based on the first item
+        if not job_list or not isinstance(job_list[0], dict):
+            self.results_display.clear()
+            self.results_display.add_columns("Data")
+            self.results_display.add_row(str(job_list))
+            return
         
-        # For other types of lists, just display as formatted JSON
-        self.results_display.update(json.dumps(data_list, indent=2))
+        # Define priority columns that should appear first for tasks/jobs
+        priority_cols = ['id', 'taskId', 'task_id', 'jobId', 'job_id', 'status', 'name', 'description', 'state']
+        
+        # Collect all unique keys from all items to create columns
+        all_keys = set()
+        for job in job_list:
+            if isinstance(job, dict):
+                all_keys.update(job.keys())
+        
+        # Separate priority columns from others
+        priority_keys = []
+        other_keys = []
+        for key in sorted(list(all_keys)):
+            if key.lower() in [col.lower() for col in priority_cols]:
+                priority_keys.append(key)
+            else:
+                other_keys.append(key)
+        
+        # Combine priority keys first, then others
+        sorted_keys = priority_keys + other_keys
+        
+        # Add columns to the table
+        self.results_display.clear()
+        self.results_display.add_columns(*sorted_keys)
+        
+        # Add rows to the table
+        for job in job_list:
+            if isinstance(job, dict):
+                # Create a row with values for each column
+                row = []
+                for key in sorted_keys:
+                    value = job.get(key, "")
+                    # Convert complex objects to JSON strings for display
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value, indent=2)
+                    row.append(str(value))
+                self.results_display.add_row(*row)
+            else:
+                # If the item is not a dict, just add it as a single cell
+                self.results_display.add_row(str(job))
+    
+    
+    def create_generic_list_table(self, data_list):
+        """Create a generic table for any list data."""
+        import json
+        
+        # If the list contains dictionaries, try to make a nice table
+        if data_list and all(isinstance(item, dict) for item in data_list):
+            # Collect all unique keys from all items to create columns
+            all_keys = set()
+            for item in data_list:
+                all_keys.update(item.keys())
+            
+            # Sort keys to have consistent column ordering
+            sorted_keys = sorted(list(all_keys))
+            
+            # Add columns to the table
+            self.results_display.clear()
+            self.results_display.add_columns(*sorted_keys)
+            
+            # Add rows to the table
+            for item in data_list:
+                row = []
+                for key in sorted_keys:
+                    value = item.get(key, "")
+                    # Convert complex objects to JSON strings for display
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value, indent=2)
+                    row.append(str(value))
+                self.results_display.add_row(*row)
+        else:
+            # For mixed or non-dict lists, create a simple index/value table
+            self.results_display.clear()
+            self.results_display.add_columns("Index", "Value")
+            for i, item in enumerate(data_list):
+                value = item
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, indent=2)
+                self.results_display.add_row(str(i), str(value))
     
     def format_job_list(self, job_list):
         """Format a job list in a user-friendly way."""
@@ -353,30 +632,39 @@ class ToolFormScreen(ModalScreen):
     def render_dict_as_table(self, data_dict):
         """Render a dictionary as a key-value table."""
         import json
-        
+
         if not data_dict:
             # Update the existing display with a message
-            self.results_display.update("Dictionary is empty.")
+            self.results_display.clear()
+            self.results_display.add_columns("Message")
+            self.results_display.add_row("Dictionary is empty.")
             return
-            
-        # Just display as formatted JSON since we're using Static widget
-        # but at least the text will be viewable
-        self.results_display.update(json.dumps(data_dict, indent=2))
 
-    def copy_cell_to_clipboard(self, event):
+        # Create a key-value table for the dictionary
+        self.results_display.clear()
+        self.results_display.add_columns("Key", "Value")
+        
+        for key, value in data_dict.items():
+            # Convert complex objects to JSON strings for display
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, indent=2)
+            self.results_display.add_row(str(key), str(value))
+
+    async def copy_cell_to_clipboard(self, event):
         """Copy the content of the selected cell to clipboard."""
         try:
             # Get the selected row and column
             row_key = event.row_key.value
             column_key = event.column_key.value
-            
+
             # Get the value from the table
             table = event.sender
             value = table.get_cell_at(row_key, column_key)
-            
-            # For now, just show a notification since we can't directly access system clipboard in this context
-            self.app.notify(f"Copied to clipboard: {value}", severity="information")
-            
+
+            # Use Textual's built-in clipboard functionality
+            await self.app.copy_to_clipboard(str(value))
+            self.app.notify(f"Copied to clipboard: {str(value)[:50]}{'...' if len(str(value)) > 50 else ''}", severity="information")
+
         except Exception as e:
             self.app.notify(f"Error copying to clipboard: {str(e)}", severity="error")
 
@@ -553,17 +841,22 @@ class MCPExplorerApp(App):
     async def call_capability_on_server(self, capability: str, item: Dict[str, Any], server_url: str, arguments: Dict[str, Any] = None) -> Dict[str, Any]:
         """Call a capability on a server."""
         try:
+            # Notify about starting the connection
+            self.notify(f"Connecting to server: {server_url}", severity="information")
+            
             client = StreamableHTTPClient(server_url)
             await client.connect()
 
             # Initialize the connection if not already done
             if not hasattr(self, '_initialized_servers'):
                 self._initialized_servers = set()
-            
+
             if server_url not in self._initialized_servers:
+                self.notify("Initializing connection...", severity="information")
                 init_response = await client.initialize()
                 await client.initialized(init_response.get("result", {}))
                 self._initialized_servers.add(server_url)
+                self.notify("Connection initialized", severity="information")
 
             result = None
             if capability == "tool":
@@ -574,8 +867,10 @@ class MCPExplorerApp(App):
                 if not tool_name and hasattr(item, 'get'):
                     # If item is the schema dictionary, get name from it
                     tool_name = item.get("name", "")
-                
+
+                self.notify(f"Calling tool: {tool_name}", severity="information")
                 result = await client.call_tool(tool_name, arguments or {})
+                self.notify(f"Tool call completed, received result: {type(result).__name__}", severity="information")
             elif capability == "resource":
                 # Read the resource
                 resource_uri = item.get("uri", "")
@@ -586,6 +881,7 @@ class MCPExplorerApp(App):
                 result = {"error": "Prompt execution not yet implemented"}
 
             await client.close()
+            self.notify("Server connection closed", severity="information")
             return result
 
         except Exception as e:

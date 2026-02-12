@@ -3,8 +3,6 @@ Server Handlers for MCP Server
 Implements all standard MCP server methods and functionality
 """
 import time
-import os
-import json
 from typing import Dict, Any, List, Optional
 from ..utils.json_rpc import JsonRpcHandler, JsonRpcMessage
 
@@ -13,7 +11,7 @@ class McpServerHandlers:
     """Handles all standard MCP server methods"""
 
     def __init__(self, enable_registry: bool = False, use_postgres: bool = False,
-                 postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None, notification_manager=None):
+                 postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None):
         # Standard MCP tools, resources, and prompts
         self.tools: List[Dict[str, Any]] = [
             {
@@ -28,7 +26,7 @@ class McpServerHandlers:
                 }
             }
         ]
-
+        
         self.resources: List[Dict[str, Any]] = [
             {
                 "uri": "example://resource/data",
@@ -36,38 +34,28 @@ class McpServerHandlers:
                 "description": "An example resource that returns sample data"
             }
         ]
-
-        # Initialize prompts directory
-        self.prompts_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompts")
-        os.makedirs(self.prompts_dir, exist_ok=True)
-
-        # Load existing prompts from files
-        self.prompts: List[Dict[str, Any]] = self._load_prompts_from_files()
         
-        # Add example prompt if no prompts exist
-        if not self.prompts:
-            self.prompts = [
-                {
-                    "name": "example_prompt",
-                    "description": "An example prompt template",
-                    "arguments": [
-                        {
-                            "name": "subject",
-                            "type": "string",
-                            "description": "Subject for the prompt"
-                        }
-                    ]
-                }
-            ]
+        self.prompts: List[Dict[str, Any]] = [
+            {
+                "name": "example_prompt",
+                "description": "An example prompt template",
+                "arguments": [
+                    {
+                        "name": "subject",
+                        "type": "string",
+                        "description": "Subject for the prompt"
+                    }
+                ]
+            }
+        ]
 
         # Optional registry functionality
         self.enable_registry = enable_registry
         self.service_registry = None
         self.postgres_config = postgres_config or {}
         
-        # Store references to client handlers and notification manager
+        # Client handlers for server-initiated requests
         self.client_handlers = client_handlers
-        self.notification_manager = notification_manager
 
         if self.enable_registry:
             self._initialize_registry(use_postgres)
@@ -159,23 +147,20 @@ class McpServerHandlers:
         rpc_handler.register_request_handler('resources/read', self.handle_resources_read)
         rpc_handler.register_request_handler('prompts/list', self.handle_prompts_list)
         rpc_handler.register_request_handler('prompts/get', self.handle_prompts_get)
-        # Additional prompt handlers
-        rpc_handler.register_request_handler('prompts/submit', self.handle_prompts_submit)
-        rpc_handler.register_request_handler('prompts/update', self.handle_prompts_update)
-        rpc_handler.register_request_handler('prompts/delete', self.handle_prompts_delete)
-        rpc_handler.register_request_handler('prompts/search', self.handle_prompts_search)
-        rpc_handler.register_request_handler('prompts/export', self.handle_prompts_export)
         rpc_handler.register_request_handler('shutdown', self.handle_shutdown)
         rpc_handler.register_request_handler('ping', self.handle_ping)
-
+        
         # Registry handlers - available when registry is enabled
         if self.enable_registry:
             rpc_handler.register_request_handler('registry/register', self.handle_register_service)
             rpc_handler.register_request_handler('registry/list', self.handle_list_services)
             rpc_handler.register_request_handler('registry/unregister', self.handle_unregister_service)
-
+        
         # Register the initialized request handler (acknowledges receipt of initialization)
         rpc_handler.register_request_handler('initialized', self.handle_initialized_request)
+        
+        # Client-initiated methods that the server can call
+        # These are registered as request handlers so the server can call them internally
 
     def handle_initialize(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle initialize request"""
@@ -402,8 +387,7 @@ class McpServerHandlers:
     def _resolve_prompt(self, prompt: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Resolve a prompt with given arguments"""
         prompt_name = prompt["name"]
-        prompt_content = prompt.get("content", "")
-
+        
         # Example implementation for the built-in example prompt
         if prompt_name == "example_prompt":
             subject = arguments.get("subject", "default subject")
@@ -414,273 +398,16 @@ class McpServerHandlers:
                     "text": resolved_text
                 }]
             }
-
-        # For prompts with content field, substitute arguments in the content
-        if prompt_content:
-            # Simple argument substitution - replace {{arg_name}} with actual values
-            resolved_content = prompt_content
-            for arg_name, arg_value in arguments.items():
-                placeholder = f"{{{{{arg_name}}}}}"  # Creates {{arg_name}}
-                resolved_content = resolved_content.replace(placeholder, str(arg_value))
-            
-            return {
-                "contents": [{
-                    "type": "text",
-                    "text": resolved_content
-                }]
-            }
-
+        
         # Add more prompt implementations here as needed
         # This is where you'd add custom prompt logic
-
+        
         # For now, return a generic response
         return {
             "contents": [{
                 "type": "text",
                 "text": f"Resolved prompt '{prompt_name}' with arguments: {arguments}"
             }]
-        }
-
-    def _load_prompts_from_files(self) -> List[Dict[str, Any]]:
-        """Load prompts from JSON files in the prompts directory"""
-        prompts = []
-        for filename in os.listdir(self.prompts_dir):
-            if filename.endswith('.json'):
-                filepath = os.path.join(self.prompts_dir, filename)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        prompt_data = json.load(f)
-                        # Validate that it has required fields
-                        if isinstance(prompt_data, dict) and 'name' in prompt_data:
-                            prompts.append(prompt_data)
-                except (json.JSONDecodeError, IOError) as e:
-                    print(f"Error loading prompt from {filepath}: {e}")
-        return prompts
-
-    def _save_prompt_to_file(self, prompt: Dict[str, Any]) -> bool:
-        """Save a prompt to a JSON file in the prompts directory"""
-        try:
-            filename = f"{prompt['name']}.json"
-            filepath = os.path.join(self.prompts_dir, filename)
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(prompt, f, indent=2, ensure_ascii=False)
-            return True
-        except IOError as e:
-            print(f"Error saving prompt to {filepath}: {e}")
-            return False
-
-    def _delete_prompt_file(self, prompt_name: str) -> bool:
-        """Delete a prompt file from the prompts directory"""
-        try:
-            filename = f"{prompt_name}.json"
-            filepath = os.path.join(self.prompts_dir, filename)
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                return True
-            return False
-        except IOError as e:
-            print(f"Error deleting prompt file {filepath}: {e}")
-            return False
-
-    def handle_prompts_submit(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
-        """Handle prompts/submit request - submit a new prompt from text content"""
-        if params is None:
-            params = {}
-
-        # Extract prompt data from parameters
-        prompt_name = params.get("name")
-        prompt_content = params.get("content", "")  # Raw text content of the prompt
-        prompt_description = params.get("description", "Submitted prompt")
-        prompt_arguments = params.get("arguments", [])
-        prompt_tags = params.get("tags", [])
-
-        if not prompt_name:
-            raise ValueError("Prompt name is required for submission")
-
-        # Check if prompt already exists
-        existing_prompt_idx = None
-        for i, p in enumerate(self.prompts):
-            if p["name"] == prompt_name:
-                existing_prompt_idx = i
-                break
-
-        # Create new prompt object
-        new_prompt = {
-            "name": prompt_name,
-            "description": prompt_description,
-            "content": prompt_content,  # Store the raw content
-            "arguments": prompt_arguments,
-            "tags": prompt_tags,
-            "created_at": time.time(),
-            "updated_at": time.time()
-        }
-
-        # Save to file
-        if self._save_prompt_to_file(new_prompt):
-            if existing_prompt_idx is not None:
-                # Update existing prompt
-                self.prompts[existing_prompt_idx] = new_prompt
-            else:
-                # Add new prompt
-                self.prompts.append(new_prompt)
-            
-            # Notify that prompts list has changed
-            if hasattr(self, 'notification_manager'):
-                self.notification_manager.mark_prompts_changed()
-                
-            return {
-                "result": "success",
-                "message": f"Prompt '{prompt_name}' {'updated' if existing_prompt_idx is not None else 'submitted'} successfully",
-                "prompt": new_prompt
-            }
-        else:
-            raise ValueError(f"Failed to save prompt '{prompt_name}' to file")
-
-    def handle_prompts_update(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
-        """Handle prompts/update request - update an existing prompt"""
-        if params is None:
-            params = {}
-
-        prompt_name = params.get("name")
-        if not prompt_name:
-            raise ValueError("Prompt name is required for update")
-
-        # Find the existing prompt
-        prompt_idx = None
-        for i, p in enumerate(self.prompts):
-            if p["name"] == prompt_name:
-                prompt_idx = i
-                break
-
-        if prompt_idx is None:
-            raise ValueError(f"Prompt '{prompt_name}' not found for update")
-
-        # Get update data
-        update_data = {k: v for k, v in params.items() if k != "name"}  # Exclude name from update
-        
-        # Update the prompt
-        updated_prompt = self.prompts[prompt_idx].copy()
-        for key, value in update_data.items():
-            if key in ["content", "description", "arguments", "tags"]:
-                updated_prompt[key] = value
-        updated_prompt["updated_at"] = time.time()
-
-        # Save to file
-        if self._save_prompt_to_file(updated_prompt):
-            self.prompts[prompt_idx] = updated_prompt
-            
-            # Notify that prompts list has changed
-            if hasattr(self, 'notification_manager'):
-                self.notification_manager.mark_prompts_changed()
-                
-            return {
-                "result": "success",
-                "message": f"Prompt '{prompt_name}' updated successfully",
-                "prompt": updated_prompt
-            }
-        else:
-            raise ValueError(f"Failed to update prompt '{prompt_name}'")
-
-    def handle_prompts_delete(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
-        """Handle prompts/delete request - delete an existing prompt"""
-        if params is None:
-            params = {}
-
-        prompt_name = params.get("name")
-        if not prompt_name:
-            raise ValueError("Prompt name is required for deletion")
-
-        # Find the prompt
-        prompt_idx = None
-        for i, p in enumerate(self.prompts):
-            if p["name"] == prompt_name:
-                prompt_idx = i
-                break
-
-        if prompt_idx is None:
-            raise ValueError(f"Prompt '{prompt_name}' not found for deletion")
-
-        # Remove from in-memory list
-        deleted_prompt = self.prompts.pop(prompt_idx)
-
-        # Delete from file system
-        if self._delete_prompt_file(prompt_name):
-            # Notify that prompts list has changed
-            if hasattr(self, 'notification_manager'):
-                self.notification_manager.mark_prompts_changed()
-                
-            return {
-                "result": "success",
-                "message": f"Prompt '{prompt_name}' deleted successfully",
-                "deleted_prompt": deleted_prompt
-            }
-        else:
-            # If file deletion failed, restore the prompt in memory
-            self.prompts.insert(prompt_idx, deleted_prompt)
-            raise ValueError(f"Failed to delete prompt file for '{prompt_name}'")
-
-    def handle_prompts_search(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
-        """Handle prompts/search request - search for prompts by name or content"""
-        if params is None:
-            params = {}
-
-        query = params.get("query", "").lower()
-        tags = params.get("tags", [])  # Search by tags
-        limit = min(params.get("limit", 100), 100)  # Cap at 100
-
-        if not query and not tags:
-            raise ValueError("Either query or tags must be provided for search")
-
-        # Filter prompts based on query and tags
-        matching_prompts = []
-        for prompt in self.prompts:
-            # Check if query matches in name, description, content, or tags
-            matches_query = (
-                query and (
-                    query in prompt.get("name", "").lower() or
-                    query in prompt.get("description", "").lower() or
-                    query in prompt.get("content", "").lower() or
-                    query in " ".join(prompt.get("tags", [])).lower()
-                )
-            ) if query else True
-            
-            # Check if all specified tags are present
-            matches_tags = all(tag in prompt.get("tags", []) for tag in tags) if tags else True
-            
-            if matches_query and matches_tags:
-                matching_prompts.append(prompt)
-                
-            # Limit results
-            if len(matching_prompts) >= limit:
-                break
-
-        return {
-            "prompts": matching_prompts[:limit],
-            "total_matches": len(matching_prompts),
-            "query": query,
-            "tags": tags
-        }
-
-    def handle_prompts_export(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
-        """Handle prompts/export request - export prompts to a file or return content"""
-        if params is None:
-            params = {}
-
-        prompt_names = params.get("names", [])  # List of prompt names to export
-        all_prompts = params.get("all", False)  # Export all prompts if True
-
-        if all_prompts:
-            prompts_to_export = self.prompts
-        elif prompt_names:
-            prompts_to_export = [p for p in self.prompts if p["name"] in prompt_names]
-        else:
-            raise ValueError("Either 'names' or 'all' parameter must be provided for export")
-
-        # Return the prompts data
-        return {
-            "prompts": prompts_to_export,
-            "exported_count": len(prompts_to_export),
-            "format": "json"
         }
 
     def handle_shutdown(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
@@ -894,7 +621,7 @@ class McpServerHandlers:
         # Handle case where params is None (when no params are provided in the request)
         if params is None:
             params = {}
-            
+
         if not hasattr(self, 'enable_registry') or not self.enable_registry:
             raise ValueError("Registry functionality is not enabled")
 

@@ -2,18 +2,15 @@
 
 # Script to start the MCP server with various options
 # Usage: ./start_mcp_server.sh [options]
-# Set PostgreSQL password - uncomment and update the line below with your actual password
-export POSTGRES_PASSWORD="postgres"
-export PGPASSWORD="postgres"
 
-echo "Starting Vibe Coding MCP Server..."
+echo "Starting MCP Server..."
 
-# Default values for our vibe coding server
+# Default values
 TRANSPORT="streamable-http"
 HOST="127.0.0.1"
-PORT=3060  # Changed to 3060 as requested
-ENABLE_REGISTRY=false   # Disabled - we are not a registry server
-REGISTER_WITH_REGISTRY=true  # Enabled as required - we register with external registry
+PORT=3030
+ENABLE_REGISTRY=false
+REGISTER_WITH_REGISTRY=true
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT=3031
 USE_POSTGRES=false
@@ -64,7 +61,7 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --transport TYPE          Transport type (stdio, http, streamable-http) [default: streamable-http]"
       echo "  --host HOST               Host for HTTP transport [default: 127.0.0.1]"
-      echo "  --port PORT               Port for HTTP transport [default: 3060 for vibe coding server]"
+      echo "  --port PORT               Port for HTTP transport [default: 3030]"
       echo "  --enable-registry         Enable registry functionality"
       echo "  --register-with-registry  Register this server with a registry server"
       echo "  --registry-host HOST      Registry server host [default: 127.0.0.1]"
@@ -82,19 +79,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-
-# If you want to use an environment variable instead, set it before running this script:
-if [ -z "$POSTGRES_PASSWORD" ]; then
-  echo "POSTGRES_PASSWORD environment variable not set. Using empty password."
-  echo "To set it, uncomment and update the export line in this script, or run:"
-  echo "  export POSTGRES_PASSWORD='your_actual_password_here'"
-else
-  echo "Using PostgreSQL password from environment variable."
-fi
-
-# Enable PostgreSQL by default for persistent task storage
-USE_POSTGRES=true
-
 # Build the command
 CMD="python -m mcp_std_server.server"
 
@@ -106,7 +90,9 @@ if [ "$HOST" != "127.0.0.1" ]; then
   CMD="$CMD --host $HOST"
 fi
 
-CMD="$CMD --port $PORT"
+if [ "$PORT" != "3030" ]; then
+  CMD="$CMD --port $PORT"
+fi
 
 if [ "$ENABLE_REGISTRY" = true ]; then
   CMD="$CMD --enable-registry"
@@ -124,13 +110,8 @@ if [ "$REGISTRY_PORT" != "3031" ]; then
   CMD="$CMD --registry-port $REGISTRY_PORT"
 fi
 
-# Always enable PostgreSQL for persistent task storage
 if [ "$USE_POSTGRES" = true ]; then
-  if [ -n "$POSTGRES_PASSWORD" ]; then
-    CMD="$CMD --use-postgres --postgres-password $POSTGRES_PASSWORD"
-  else
-    CMD="$CMD --use-postgres"
-  fi
+  CMD="$CMD --use-postgres"
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
@@ -138,6 +119,4 @@ if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
 fi
 
 echo "Executing: $CMD"
-# Ensure the PostgreSQL password environment variable is available to the Python process
-export POSTGRES_PASSWORD
 exec $CMD

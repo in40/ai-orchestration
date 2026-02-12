@@ -4,6 +4,32 @@ from pydantic import BaseModel, create_model
 from textual.widgets import Input, Label, Checkbox, Select
 from textual.containers import Vertical
 from textual import on
+from textual.events import Paste
+import pyperclip
+
+
+class PasteableInput(Input):
+    """An Input widget with proper text handling for terminal applications."""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def on_paste(self, event: "Paste") -> None:
+        """Handle paste events."""
+        # Insert the pasted text at the current cursor position
+        cursor_pos = self.cursor_position
+        current_value = self.value
+        new_value = current_value[:cursor_pos] + event.text + current_value[cursor_pos:]
+        self.value = new_value
+        # Move cursor to end of pasted text
+        self.cursor_position = cursor_pos + len(event.text)
+        # Stop the event from bubbling up
+        event.stop()
+    
+    def on_focus(self) -> None:
+        """Called when the widget gains focus."""
+        # Ensure the widget is ready to receive paste events
+        self.can_focus = True
 
 
 class SchemaFormGenerator:
@@ -43,7 +69,7 @@ class SchemaFormGenerator:
         if field_type == "boolean":
             return Checkbox(label="", id=widget_id)
         elif field_type == "integer" or field_type == "number":
-            input_widget = Input(
+            input_widget = PasteableInput(
                 placeholder=prop_details.get("description", ""),
                 id=widget_id,
                 type="integer" if field_type == "integer" else "number"
@@ -56,14 +82,14 @@ class SchemaFormGenerator:
             return input_widget
         elif field_type == "array":
             # For arrays, we'll create a text input expecting JSON
-            return Input(
+            return PasteableInput(
                 placeholder=f"Enter JSON array: {prop_details.get('description', '')}",
                 id=widget_id,
                 type="text"
             )
         elif field_type == "object":
             # For objects, we'll create a text input expecting JSON
-            return Input(
+            return PasteableInput(
                 placeholder=f"Enter JSON object: {prop_details.get('description', '')}",
                 id=widget_id,
                 type="text"
@@ -74,7 +100,7 @@ class SchemaFormGenerator:
                 options = [(str(val), str(val)) for val in prop_details["enum"]]
                 return Select(options, id=widget_id)
             else:
-                return Input(
+                return PasteableInput(
                     placeholder=prop_details.get("description", ""),
                     id=widget_id,
                     type="text"

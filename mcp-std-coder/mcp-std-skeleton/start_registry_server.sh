@@ -70,22 +70,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Set PostgreSQL password - uncomment and update the line below with your actual password
-export POSTGRES_PASSWORD="postgres"
-export PGPASSWORD="postgres"
-
-# If you want to use an environment variable instead, set it before running this script:
-if [ -z "$POSTGRES_PASSWORD" ]; then
-  echo "POSTGRES_PASSWORD environment variable not set. Using empty password."
-  echo "To set it, uncomment and update the export line in this script, or run:"
-  echo "  export POSTGRES_PASSWORD='your_actual_password_here'"
-else
-  echo "Using PostgreSQL password from environment variable."
-fi
-
-# Enable PostgreSQL by default for persistent storage
-USE_POSTGRES=true
-
 # Build the command
 CMD="python -m mcp_std_server.server --enable-registry"
 
@@ -99,10 +83,7 @@ fi
 
 CMD="$CMD --port $PORT"
 
-# Always enable PostgreSQL for persistent storage
-if [ -n "$POSTGRES_PASSWORD" ]; then
-  CMD="$CMD --use-postgres --postgres-password $POSTGRES_PASSWORD"
-else
+if [ "$USE_POSTGRES" = true ]; then
   CMD="$CMD --use-postgres"
 fi
 

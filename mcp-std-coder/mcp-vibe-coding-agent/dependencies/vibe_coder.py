@@ -71,8 +71,38 @@ executor = ThreadPoolExecutor(max_workers=10)
 
 def register_vibe_coding_tool(server_handlers):
     """Register the vibe coding tools with the server handlers."""
-    # Import the async task manager
-    from .async_task_manager import task_manager, TaskStatus
+    # Import the task manager (could be in-memory or PostgreSQL-based)
+    from .postgres_task_manager import create_task_manager, TaskStatus
+    
+    # Create task manager based on server configuration
+    # Check if PostgreSQL is configured for task storage (separate from registry)
+    # Prioritize server_handlers postgres_config if available, otherwise use settings
+    try:
+        # First check if server_handlers has postgres_config
+        server_postgres_config = getattr(server_handlers, 'postgres_config', {})
+        if server_postgres_config and server_postgres_config.get('host'):
+            # Use server's postgres configuration
+            task_postgres_config = server_postgres_config
+            use_postgres = True
+        else:
+            # Fall back to settings configuration
+            from ..config import settings
+            task_postgres_config = {
+                "host": settings.postgres_host,
+                "port": settings.postgres_port,
+                "database": settings.postgres_db,
+                "user": settings.postgres_user,
+                "password": settings.postgres_password
+            }
+            # Use PostgreSQL for tasks if it's configured and available
+            use_postgres = bool(settings.postgres_password and settings.postgres_password.strip())
+    except Exception as e:
+        # If config is not available, use in-memory storage
+        print(f"Error configuring PostgreSQL task storage: {e}")
+        task_postgres_config = {}
+        use_postgres = False
+    
+    task_manager = create_task_manager(use_postgres=use_postgres, **task_postgres_config)
     
     # Define the synchronous vibe_code tool
     vibe_code_tool = {
@@ -167,6 +197,10 @@ def register_vibe_coding_tool(server_handlers):
         tasks_result_tool,
         tasks_cancel_tool
     ]
+    
+    # Notify that tools have changed
+    if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:
+        server_handlers.notification_manager.mark_tools_changed()
     
     # Add the tool execution logic to the _execute_tool method by extending it
     original_execute_tool = server_handlers._execute_tool

@@ -17,7 +17,6 @@ from .handlers.server_handlers import McpServerHandlers
 from .handlers.client_handlers import ClientMethodsHandlers
 from .utils.notifications import NotificationManager
 from .utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
-from dependencies.vibe_coder import register_vibe_coding_tool
 
 
 class McpServer:
@@ -66,45 +65,38 @@ class McpServer:
             }
 
         self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
-        self.notification_manager = NotificationManager(self.rpc_handler)
         self.server_handlers = McpServerHandlers(
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
             postgres_config=postgres_config,
-            client_handlers=self.client_handlers,
-            notification_manager=self.notification_manager
+            client_handlers=self.client_handlers
         )
+        self.notification_manager = NotificationManager(self.rpc_handler)
 
         # Optional registry functionality
         if self.enable_registry:
             # Use the same registry as the handlers (either PostgreSQL or SQLite)
             self.service_registry = self.server_handlers.service_registry
             # Register this server with itself if it's acting as a registry
-            if self.service_registry is not None:  # Only proceed if registry initialization was successful
-                self.service_info = {
-                    "id": f"registry-{host}:{port}",
-                    "name": "MCP Service Registry",
-                    "description": "Central registry for MCP services",
-                    "endpoint": f"http://{host}:{port}",
-                    "capabilities": {
-                        "registry": True,
-                        "methods": ["registry/register", "registry/list", "registry/unregister"]
-                    }
+            self.service_info = {
+                "id": f"registry-{host}:{port}",
+                "name": "MCP Service Registry",
+                "description": "Central registry for MCP services",
+                "endpoint": f"http://{host}:{port}",
+                "capabilities": {
+                    "registry": True,
+                    "methods": ["registry/register", "registry/list", "registry/unregister"]
                 }
-                self.service_registry.register_service(self.service_info)
+            }
+            self.service_registry.register_service(self.service_info)
 
-                # Initialize heartbeat manager for the registry server
-                self.heartbeat_manager = HeartbeatManager(
-                    self.service_registry,
-                    self.service_info["id"],
-                    heartbeat_interval=30,  # Every 30 seconds
-                    max_age_minutes=10      # Remove services not seen in 10 minutes
-                )
-            else:
-                # Registry failed to initialize, disable registry functionality
-                print("❌ Registry functionality disabled due to initialization failure")
-                self.enable_registry = False
-                self.heartbeat_manager = None
+            # Initialize heartbeat manager for the registry server
+            self.heartbeat_manager = HeartbeatManager(
+                self.service_registry,
+                self.service_info["id"],
+                heartbeat_interval=30,  # Every 30 seconds
+                max_age_minutes=10      # Remove services not seen in 10 minutes
+            )
         else:
             self.heartbeat_manager = None
 
@@ -123,11 +115,11 @@ class McpServer:
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
 
+        # Connect the transport layer to the RPC handler for bidirectional communication
+        self.rpc_handler.set_transport_layer(self.transport)
+
         # Register all handlers
         self._register_handlers()
-        
-        # Register vibe coding tool after handlers are set up
-        self._register_vibe_coding_tool()
 
         # Set up signal handling for graceful shutdown (only in main thread/process)
         try:
@@ -229,10 +221,6 @@ class McpServer:
             self._send_notification
         )
 
-    def _register_vibe_coding_tool(self):
-        """Register the vibe coding tool with the server handlers"""
-        register_vibe_coding_tool(self.server_handlers)
-
     def _message_callback(self, message):
         """Callback to handle incoming messages"""
         # Check if this is a response to a server-initiated request
@@ -240,7 +228,7 @@ class McpServer:
             # This is a response to a server-initiated request to the client
             self.rpc_handler.handle_client_response(message)
             return  # Don't process further as this is handled by the pending request mechanism
-
+        
         # Use the synchronous version of handle_message for stdio transport
         try:
             response = self.rpc_handler.handle_message_sync(message)

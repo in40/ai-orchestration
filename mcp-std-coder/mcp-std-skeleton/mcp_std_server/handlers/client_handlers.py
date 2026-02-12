@@ -83,7 +83,7 @@ class ClientMethodsHandlers:
         if "timestamp" not in params:
             import datetime
             params["timestamp"] = datetime.datetime.utcnow().isoformat() + "Z"
-
+        
         # Send the log message to the client
         try:
             result = await self.rpc_handler.send_request_to_client(

@@ -148,7 +148,7 @@ class JsonRpcHandler:
         self.max_concurrent_requests = max_concurrent_requests
         self.monitor = ConcurrencyMonitor(max_concurrent_requests)
         set_monitor(self.monitor)
-
+        
         # For server-initiated requests to clients
         self.pending_client_requests: Dict[str, asyncio.Future] = {}
         self.transport_layer = None  # Will be set by the server
@@ -281,7 +281,7 @@ class JsonRpcHandler:
             handler = self.notification_handlers[method]
             handler(message.params)
     
-    def _create_error_response(self, request_id: Optional[Union[str, int]], 
+    def _create_error_response(self, request_id: Optional[Union[str, int]],
                               code: int, message: str) -> JsonRpcMessage:
         """Create an error response message"""
         return JsonRpcMessage(
@@ -304,10 +304,10 @@ class JsonRpcHandler:
         """
         if not self.transport_layer:
             raise RuntimeError("Transport layer not set. Cannot send request to client.")
-
+            
         # Generate a unique ID for this request
         request_id = str(uuid.uuid4())
-
+        
         # Create the request message
         request_message = JsonRpcMessage(
             message_type=MessageType.REQUEST,
@@ -315,19 +315,19 @@ class JsonRpcHandler:
             method=method,
             params=params
         )
-
+        
         # Create a Future to wait for the response
         future = asyncio.Future()
         self.pending_client_requests[request_id] = future
-
+        
         try:
             # Send the request to the client via the transport layer
             # Check if transport is available before sending
             if hasattr(self.transport_layer, 'running') and not self.transport_layer.running:
                 raise RuntimeError("Transport layer is not running. Cannot send request to client.")
-
+            
             self.transport_layer.send_message(request_message)
-
+            
             # Wait for the response with timeout
             response_data = await asyncio.wait_for(future, timeout=timeout)
             return response_data
@@ -349,14 +349,14 @@ class JsonRpcHandler:
         request_id = response_message.id
         if request_id in self.pending_client_requests:
             future = self.pending_client_requests[request_id]
-
+            
             if response_message.error:
                 # Complete the future with an error
                 future.set_exception(Exception(f"Client error: {response_message.error}"))
             else:
                 # Complete the future with the result
                 future.set_result(response_message.result)
-
+                
             # Remove the pending request
             del self.pending_client_requests[request_id]
 

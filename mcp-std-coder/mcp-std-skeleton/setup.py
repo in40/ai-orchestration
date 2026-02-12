@@ -31,10 +31,6 @@ setup(
         "sse-starlette>=1.8.2",
         "psycopg2-binary>=2.9.7",
         "requests>=2.31.0",
-        "openai>=2.20.0",
-        "pydantic-settings>=2.12.0",
-        "httpx>=0.28.1",
-        "aiohttp>=3.13.3",
     ],
     entry_points={
         "console_scripts": [
