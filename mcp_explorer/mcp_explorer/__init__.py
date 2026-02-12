@@ -1,0 +1,1 @@
+"""MCP Explorer - A TUI for exploring Model Context Protocol servers via Streamable HTTP."""

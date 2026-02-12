@@ -1,0 +1,84 @@
+/* MCP Explorer TUI Styles */
+Screen {
+    background: $surface;
+}
+
+#main-layout {
+    height: 1fr;
+    border: solid $primary;
+}
+
+#left-panel {
+    width: 1fr;
+    border-right: solid $primary;
+}
+
+#right-panel {
+    width: 2fr;
+}
+
+#registry-header, #tools-header {
+    background: $primary;
+    color: $text;
+    padding: 0 1;
+    text-style: bold;
+}
+
+Tree {
+    height: 1fr;
+    border: none;
+}
+
+DataTable {
+    height: 1fr;
+    border: none;
+}
+
+Footer {
+    dock: bottom;
+}
+
+/* Modal styles */
+#add-registry-modal, #tool-form-modal {
+    align: center middle;
+    width: 60%;
+    height: auto;
+    border: solid $primary;
+    background: $surface;
+    padding: 1;
+}
+
+#modal-title {
+    text-style: bold;
+    background: $primary;
+    color: $text;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+#connection-error-container {
+    align: center middle;
+    width: 100%;
+    height: 100%;
+    text-align: center;
+}
+
+#error-message {
+    text-align: center;
+    margin: 2 0;
+    color: $error;
+}
+
+#error-buttons {
+    align: center middle;
+    margin-top: 1;
+}
+
+#modal-buttons, #error-buttons, #form-buttons {
+    align: center middle;
+    margin-top: 1;
+}
+
+Button {
+    margin: 0 1;
+}

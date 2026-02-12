@@ -1,1 +1,0 @@
-"""LM Studio Client Package for AI Coding Agent MCP Server"""
