@@ -42,7 +42,7 @@ Footer {
 #add-registry-modal, #tool-form-modal {
     align: center middle;
     width: 60%;
-    height: auto;
+    height: 70%;
     border: solid $primary;
     background: $surface;
     padding: 1;
@@ -54,6 +54,63 @@ Footer {
     color: $text;
     padding: 0 1;
     margin-bottom: 1;
+}
+
+#results-container-wrapper {
+    height: 1fr;
+    max-height: 20;
+    border: solid $secondary;
+    background: $boost;
+    padding: 1;
+    margin: 1 0;
+    overflow-y: auto;
+}
+
+#results-container {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+}
+
+#results-display {
+    width: 100%;
+    height: 100%;
+    text-style: none;
+    text-opacity: 1;
+    border: solid $secondary;
+    background: $boost;
+    padding: 1;
+    overflow-y: auto;
+    height: 100%;
+    text-align: left;
+    align: center top;
+}
+
+Static#results-display {
+    width: 100%;
+    height: 100%;
+    text-style: none;
+    text-opacity: 1;
+    border: solid $secondary;
+    background: $boost;
+    padding: 1;
+    overflow-y: auto;
+    height: 100%;
+    text-align: left;
+    align: center top;
+}
+
+#results-display:focus {
+    border: tall $accent;
+}
+
+#results-table {
+    width: 100%;
+    height: 100%;
+}
+
+#form-buttons {
+    align-horizontal: center;
 }
 
 #connection-error-container {

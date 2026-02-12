@@ -6,7 +6,7 @@ from .tui import MCPExplorerApp
 
 def main():
     """Run the MCP Explorer TUI application."""
-    app = MCPExplorerApp()
+    app = MCPExplorerApp(expand_all_by_default=True)  # Set to True to expand all by default
     try:
         app.run()
     except KeyboardInterrupt:

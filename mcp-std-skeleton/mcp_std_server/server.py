@@ -9,7 +9,7 @@ import time
 from typing import Optional, Dict, Any
 import argparse
 
-from .utils.json_rpc import JsonRpcHandler
+from .utils.json_rpc import JsonRpcHandler, MessageType
 from .transports.stdio import StdioTransport
 from .transports.http_sse import HttpSseTransport
 from .transports.streamable_http import StreamableHttpTransport
@@ -64,12 +64,13 @@ class McpServer:
                 "password": self.postgres_password
             }
 
+        self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
         self.server_handlers = McpServerHandlers(
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
-            postgres_config=postgres_config
+            postgres_config=postgres_config,
+            client_handlers=self.client_handlers
         )
-        self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
         self.notification_manager = NotificationManager(self.rpc_handler)
 
         # Optional registry functionality
@@ -113,6 +114,9 @@ class McpServer:
             self.transport = StreamableHttpTransport(self.rpc_handler, host, port)
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
+
+        # Connect the transport layer to the RPC handler for bidirectional communication
+        self.rpc_handler.set_transport_layer(self.transport)
 
         # Register all handlers
         self._register_handlers()
@@ -219,6 +223,12 @@ class McpServer:
 
     def _message_callback(self, message):
         """Callback to handle incoming messages"""
+        # Check if this is a response to a server-initiated request
+        if message.message_type == MessageType.RESPONSE and message.id is not None:
+            # This is a response to a server-initiated request to the client
+            self.rpc_handler.handle_client_response(message)
+            return  # Don't process further as this is handled by the pending request mechanism
+        
         # Use the synchronous version of handle_message for stdio transport
         try:
             response = self.rpc_handler.handle_message_sync(message)

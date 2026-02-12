@@ -1,0 +1,1 @@
+"""Standard-compliant Model Context Protocol (MCP) Server"""
