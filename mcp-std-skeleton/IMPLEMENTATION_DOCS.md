@@ -14,7 +14,7 @@
 
 ## Overview
 
-The MCP Standard Server is a fully compliant implementation of the Model Context Protocol (MCP) server in Python. It provides complete support for the MCP specification with multiple transport mechanisms and optional registry functionality.
+The MCP Standard Server is a fully compliant implementation of the Model Context Protocol (MCP) server in Python. It provides complete support for the MCP specification with multiple transport mechanisms and mandatory registry functionality.
 
 ### Key Features
 - Full MCP specification compliance
@@ -22,7 +22,8 @@ The MCP Standard Server is a fully compliant implementation of the Model Context
 - Support for tools, resources, and prompts
 - Client-initiated methods support
 - Notification system for dynamic updates
-- Optional service registry with SQLite/PostgreSQL backends
+- Mandatory service registry with SQLite/PostgreSQL backends (should not be disabled by default)
+- Consistent shell script formatting following the standard provided in the skeleton
 - Concurrency control and performance monitoring
 - Comprehensive error handling
 
@@ -281,7 +282,7 @@ Sends log message to client.
 
 ## Registry Functionality
 
-When enabled with `--enable-registry`, the server supports service discovery.
+The server includes mandatory registry functionality that should not be disabled by default. When enabled with `--enable-registry`, the server supports service discovery.
 
 ### Registry Methods
 
@@ -485,7 +486,7 @@ class MyCustomMcpServer(McpServer):
 - `--max-concurrent-requests`: Max concurrent requests [default: 10]
 
 #### Registry Options
-- `--enable-registry`: Enable registry functionality
+- `--enable-registry`: Enable registry functionality (mandatory and enabled by default)
 - `--register-with-registry`: Register with a registry server
 - `--registry-host`: Registry server host [default: 127.0.0.1]
 - `--registry-port`: Registry server port [default: 3031]
@@ -500,6 +501,8 @@ class MyCustomMcpServer(McpServer):
 
 ### Startup Scripts
 
+All MCP server implementations should follow the same shell script format as provided in the skeleton for consistency:
+
 #### `start_mcp_server.sh`
 Comprehensive script with all configuration options.
 
@@ -508,6 +511,9 @@ Specifically configured for registry servers.
 
 #### `start_mcp_default.sh`
 Quick start with default settings.
+
+#### Script Format Standards
+All implementations must follow the same .sh script format as provided with the skeleton, ensuring consistency across different MCP server deployments.
 
 ### Environment Considerations
 
@@ -629,3 +635,7 @@ Start with basic tools/resources before implementing complex logic.
 - Test all custom methods thoroughly
 - Verify edge cases and error conditions
 - Use the provided test framework as a base
+
+### Implementation Standards
+- All MCP server implementations must include registry functionality as mandatory (not optional)
+- All implementations must follow the same .sh script format as provided with the skeleton for consistency
