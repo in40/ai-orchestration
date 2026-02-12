@@ -3,9 +3,12 @@ pyproject.toml
 mcp_explorer/__init__.py
 mcp_explorer/form_generator.py
 mcp_explorer/main.py
+mcp_explorer/main_readonly.py
 mcp_explorer/registry_adapters.py
+mcp_explorer/registry_adapters_readonly.py
 mcp_explorer/streamable_http.py
 mcp_explorer/tui.py
+mcp_explorer/tui_readonly.py
 mcp_explorer.egg-info/PKG-INFO
 mcp_explorer.egg-info/SOURCES.txt
 mcp_explorer.egg-info/dependency_links.txt

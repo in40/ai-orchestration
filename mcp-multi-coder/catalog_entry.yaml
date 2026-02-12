@@ -1,0 +1,31 @@
+id: vibe-coding-agent-qwen
+name: Vibe Coding AI Agent (LM Studio / qwen3-4b)
+category: Software Development
+description: Autonomous coding agent that plans, writes, debugs, and tests code using local LLM. Includes registry functionality for service discovery.
+auth_type: Open
+provider: Custom / LM Studio
+tags: [coding, agent, autonomous, local-llm, vibe-coding, registry]
+transport: STREAMABLEHTTP
+port: 3050
+documentation_url: http://localhost:3050/docs
+capabilities:
+  tools:
+    - accept_task
+    - get_plan_status
+    - analyze_code
+    - explain_code
+    - generate_code
+    - write_file_content
+    - read_file_content
+    - execute_code
+    - run_tests
+    - store_memory
+    - retrieve_memory
+    - debug_error
+    - health
+    - registry/register
+    - registry/list
+    - registry/unregister
+  resources: []
+  prompts: []
+  registry: true

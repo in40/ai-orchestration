@@ -18,7 +18,6 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.0.0",
     "httpx>=0.27.0",
     "textual>=0.70.0",
     "pydantic>=2.0.0",
@@ -37,6 +36,7 @@ dev = [
 
 [project.scripts]
 mcp-explorer = "mcp_explorer.main:main"
+mcp-explorer-readonly = "mcp_explorer.main_readonly:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

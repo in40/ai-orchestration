@@ -1,2 +1,3 @@
 [console_scripts]
 mcp-explorer = mcp_explorer.main:main
+mcp-explorer-readonly = mcp_explorer.main_readonly:main
