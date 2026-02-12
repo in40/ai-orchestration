@@ -32,29 +32,33 @@ class Task(BaseModel):
 class TaskManager:
     """
     Task management service with async queue and concurrent workers.
-    
+
     This service manages coding tasks submitted to the AI coding agent,
     processing them asynchronously with configurable concurrency.
     """
-    
-    def __init__(self, num_workers: int = 2):
+
+    def __init__(self, num_workers: int = 2, lmstudio_client=None, prompt_manager=None):
         # In-memory store for all tasks
         self.tasks: Dict[str, Task] = {}
-        
+
         # Async queue for pending tasks
         self.queue: asyncio.Queue = asyncio.Queue()
-        
+
         # Lock to protect shared dictionary access
         self.lock = asyncio.Lock()
-        
+
         # Number of concurrent workers
         self.num_workers = num_workers
-        
+
         # Set of cancelled tasks
         self.cancelled_tasks = set()
-        
+
         # Track worker tasks
         self.worker_tasks = []
+
+        # Dependencies
+        self.lmstudio_client = lmstudio_client
+        self.prompt_manager = prompt_manager
         
     async def start_workers(self):
         """Start the worker coroutines."""
@@ -148,26 +152,71 @@ class TaskManager:
     async def _process_task(self, task: Task) -> str:
         """
         Process a single task.
-        
-        In a real implementation, this would call the LM Studio client
-        to generate code or explanations based on the task description.
-        
+
+        This calls the LM Studio client to generate code or explanations
+        based on the task description.
+
         Args:
             task: The task to process
-            
+
         Returns:
             Result of the task processing
         """
-        # This is a placeholder implementation
-        # In a real implementation, this would call the LM Studio client
-        # with the appropriate prompt based on the task description
-        
-        # Simulate some processing time
-        await asyncio.sleep(1)
-        
-        # For demonstration, return a mock response
-        # In reality, this would call the LM Studio API
-        return f"Mock response for task: {task.task_description}"
+        # Use injected dependencies if available, otherwise create new instances
+        if self.lmstudio_client:
+            lmstudio_client = self.lmstudio_client
+        else:
+            from ..lmstudio_client.lmstudio_client import LMStudioClient
+            lmstudio_client = LMStudioClient()
+
+        if self.prompt_manager:
+            prompt_manager = self.prompt_manager
+        else:
+            from ..prompt_manager import PromptManager
+            prompt_manager = PromptManager()
+
+        try:
+            # Get the language and max_tokens from parameters
+            language = task.parameters.get('language', 'python')
+            max_tokens = task.parameters.get('max_tokens', 512)
+
+            # Try to render the coding task prompt template
+            try:
+                prompt = prompt_manager.render_prompt(
+                    "coding_task",
+                    {
+                        "task_description": task.task_description,
+                        "language": language
+                    }
+                )
+            except Exception:
+                # If template doesn't exist, use a default prompt
+                prompt = f"Write code in {language} to: {task.task_description}\n\nProvide a complete, working solution with appropriate comments."
+
+            # Call the LM Studio client to generate the response
+            result = await lmstudio_client.generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=0.7
+            )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error processing task {task.id}: {str(e)}")
+            raise e
+        finally:
+            # Only close the LM Studio client if we created it ourselves
+            # Don't close the injected client as the server owns it
+            if not self.lmstudio_client and lmstudio_client:
+                try:
+                    await lmstudio_client.close()
+                except RuntimeError as e:
+                    if "Event loop is closed" in str(e):
+                        # The event loop is already closed, which is fine
+                        logger.debug(f"Event loop already closed when trying to close LM Studio client: {e}")
+                    else:
+                        raise
     
     async def create_task(self, task_description: str, parameters: Dict[str, Any] = None) -> str:
         """

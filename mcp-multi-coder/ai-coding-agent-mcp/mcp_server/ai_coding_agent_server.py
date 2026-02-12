@@ -90,9 +90,13 @@ class AiCodingAgentMcpServer:
         self.notification_manager = NotificationManager(self.rpc_handler)
 
         # Initialize custom components
-        self.task_manager = TaskManager(num_workers=self.concurrent_workers)
         self.lmstudio_client = LMStudioClient()
         self.prompt_manager = PromptManager()
+        self.task_manager = TaskManager(
+            num_workers=self.concurrent_workers,
+            lmstudio_client=self.lmstudio_client,
+            prompt_manager=self.prompt_manager
+        )
 
         # Clear default tools, resources, and prompts from skeleton
         self.server_handlers.tools = []
