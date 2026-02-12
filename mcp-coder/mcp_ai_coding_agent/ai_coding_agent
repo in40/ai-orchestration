@@ -1,0 +1,9 @@
+#!/bin/bash
+# Quick launcher for AI Coding Agent Client
+# This script provides a quick way to run the AI Coding Agent Client
+
+# Set the script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Run the main client script with all arguments passed through
+python3 "$SCRIPT_DIR/ai_coding_agent_client.py" "$@"

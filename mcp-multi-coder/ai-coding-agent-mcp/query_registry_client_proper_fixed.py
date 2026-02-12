@@ -187,7 +187,7 @@ class RegistryQueryClient:
             return None
 
     def query_single_service(self, service_id):
-        """Query for a specific service by getting all services and filtering"""
+        """Query for a specific service"""
         print(f"📡 Connecting to registry at {self.registry_url}")
 
         # Start SSE listener FIRST
@@ -202,52 +202,26 @@ class RegistryQueryClient:
         # Small delay to ensure connection is fully ready
         time.sleep(0.2)
 
-        # Send registry/list request to get all services
+        # Send registry/get request
         request_id = str(uuid.uuid4())
-        print(f"🔍 Querying registry for all services to find '{service_id}' (Request ID: {request_id})...")
+        print(f"🔍 Querying registry for service '{service_id}' (Request ID: {request_id})...")
 
-        req_id = self.send_request("registry/list", {}, request_id)
+        params = {"id": service_id}
+        req_id = self.send_request("registry/get", params, request_id)
         if not req_id:
-            print("❌ Failed to send registry query")
+            print("❌ Failed to send service query")
             self.stop_event.set()
             return None
 
         # Wait for response
-        print("⏳ Waiting for registry response...")
+        print("⏳ Waiting for service details...")
         response = self.wait_for_response(request_id, self.timeout)
 
         # Stop the SSE listener
         self.stop_event.set()
 
-        if response and 'result' in response and 'services' in response['result']:
-            # Filter to find the specific service
-            services = response['result']['services']
-            target_service = None
-            
-            for service in services:
-                if service.get('id') == service_id:
-                    target_service = service
-                    break
-            
-            if target_service:
-                # Return a response formatted like a single service response
-                return {
-                    'id': response.get('id'),
-                    'jsonrpc': response.get('jsonrpc', '2.0'),
-                    'result': {
-                        'service': target_service
-                    }
-                }
-            else:
-                print(f"❌ Service with ID '{service_id}' not found in registry")
-                return {
-                    'id': response.get('id'),
-                    'jsonrpc': response.get('jsonrpc', '2.0'),
-                    'error': {
-                        'code': -32000,
-                        'message': f'Service with ID "{service_id}" not found'
-                    }
-                }
+        if response:
+            return response
         else:
             print("❌ No response received from registry within timeout period")
             # Print any pending requests for debugging

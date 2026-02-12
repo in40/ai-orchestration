@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Improved Registry Query Client for MCP Server - Proper MCP Implementation
-Follows the correct MCP pattern: open SSE connection first, then send requests
-with better synchronization and error handling
+Registry Query Client for MCP Server
+Act as an HTTP/SSE client to query the registry and show registered servers
 """
 
 import json
@@ -13,85 +12,78 @@ from threading import Thread, Event
 from queue import Queue
 import argparse
 import sys
-import re
 
 
 class RegistryQueryClient:
-    def __init__(self, registry_url="http://localhost:3031", timeout=15):
+    def __init__(self, registry_url="http://localhost:3031", timeout=10):
         self.registry_url = registry_url.rstrip('/')
         self.timeout = timeout
         self.response_queue = Queue()
         self.stop_event = Event()
         self.session = requests.Session()
         self.sse_thread = None
-        self.request_responses = {}  # Store responses by request ID
-        self.pending_requests = {}   # Track pending requests
-        self.sse_connected = Event()  # Event to signal when SSE is connected
-        self.session_id = None  # Store the session ID from the endpoint event
-
+        
     def start_sse_listener(self):
         """Start listening to SSE stream in a separate thread"""
+        self.session_id = None  # Store the session ID from the endpoint event
+        self.session_id_received = False  # Flag to indicate if session ID has been received
+        
         def listen():
             try:
                 # Open SSE connection
                 sse_url = f"{self.registry_url}/sse"
-                print(f"🔌 Opening SSE connection to {sse_url}")
-
                 response = self.session.get(sse_url, stream=True, timeout=self.timeout)
 
-                print("✅ SSE connection established")
-                
-                # Signal that we're connected
-                self.sse_connected.set()
-                
                 for line in response.iter_lines(decode_unicode=True):
                     if self.stop_event.is_set():
                         break
 
                     line = line.strip()
-                    
-                    # Handle endpoint event which contains session ID
                     if line.startswith("event: endpoint"):
-                        # Look for the next data line which contains the session ID
+                        # This is the endpoint event that contains the session ID
+                        # Next line should contain the data
                         continue
                     elif line.startswith("data: "):
                         data = line[6:]  # Remove "data: " prefix
                         try:
                             json_data = json.loads(data)
                             
-                            # Check if this is an endpoint event (contains session ID)
-                            if json_data.get('event') == 'endpoint':
-                                session_uri = json_data.get('uri', '')
-                                # Extract session ID from the endpoint data if present
-                                if 'sessionId' in json_data:
-                                    self.session_id = json_data['sessionId']
-                                    print(f"🔑 Session ID received: {self.session_id}")
-                                
-                            # Check if this is a response to one of our requests
-                            req_id = json_data.get('id')
-                            if req_id and req_id in self.pending_requests:
-                                print(f"📥 Received response for request {req_id}")
-                                self.request_responses[req_id] = json_data
-                                # Remove from pending requests
-                                del self.pending_requests[req_id]
-
-                            # Also put in queue for general processing
-                            self.response_queue.put(json_data)
+                            # Check if this is an endpoint event with session ID
+                            if isinstance(json_data, dict) and 'sessionId' in json_data:
+                                self.session_id = json_data['sessionId']
+                                self.session_id_received = True
+                                print(f"📝 Got session ID from server: {self.session_id}")
+                            else:
+                                # This is a regular message, put it in the queue
+                                self.response_queue.put(json_data)
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
                 if not self.stop_event.is_set():
-                    print(f"❌ Error in SSE listener: {e}")
-                    self.sse_connected.set()  # Set the event to unblock the main thread in case of error
+                    print(f"Error in SSE listener: {e}")
 
         self.sse_thread = Thread(target=listen, daemon=True)
         self.sse_thread.start()
+        
+        # Wait briefly to allow session ID to be received
+        import time
+        time.sleep(0.5)
+        
         return self.sse_thread
 
     def send_request(self, method, params=None, request_id=None):
         """Send a request to the registry server"""
         if request_id is None:
             request_id = str(uuid.uuid4())
+
+        # Wait for session ID if not yet received
+        if hasattr(self, 'session_id_received') and not self.session_id_received:
+            print("⏳ Waiting for session ID from server...")
+            import time
+            wait_start = time.time()
+            while (not getattr(self, 'session_id_received', False) and 
+                   time.time() - wait_start < 5):  # Wait up to 5 seconds
+                time.sleep(0.1)
 
         payload = {
             "jsonrpc": "2.0",
@@ -101,158 +93,99 @@ class RegistryQueryClient:
         }
 
         send_url = f"{self.registry_url}/send"
+        headers = {}
         
-        # Prepare headers with session ID if available
-        headers = {"Content-Type": "application/json"}
-        if self.session_id:
-            headers["X-MCP-Session-ID"] = self.session_id
-
+        # Add session ID to headers if available
+        if hasattr(self, 'session_id') and self.session_id:
+            headers['X-MCP-Session-ID'] = self.session_id
+            print(f"📤 Using session ID for request: {self.session_id}")
+        
         try:
-            print(f"📤 Sending request '{method}' with ID: {request_id}")
             response = self.session.post(send_url, json=payload, headers=headers, timeout=5)
             if response.status_code == 200:
                 result = response.json()
                 if result.get("status") == "received":
-                    print(f"✅ Request '{method}' sent successfully (ID: {request_id})")
-                    # Mark this request as pending
-                    self.pending_requests[request_id] = {
-                        'method': method,
-                        'timestamp': time.time()
-                    }
+                    print(f"✓ Request '{method}' sent successfully (ID: {request_id})")
                     return request_id
                 else:
-                    print(f"Response received immediately: {result}")
+                    print(f"Response received: {result}")
                     return result
             else:
-                print(f"❌ Error sending request: {response.status_code} - {response.text}")
+                print(f"Error sending request: {response.status_code} - {response.text}")
                 return None
         except Exception as e:
-            print(f"❌ Error sending request: {e}")
+            print(f"Error sending request: {e}")
             return None
 
-    def wait_for_response(self, request_id, timeout=10):
+    def wait_for_response(self, expected_id, timeout=10):
         """Wait for a specific response by ID"""
         start_time = time.time()
         while time.time() - start_time < timeout:
-            if request_id in self.request_responses:
-                return self.request_responses[request_id]
-            time.sleep(0.1)
+            try:
+                response = self.response_queue.get(timeout=0.1)
+                if response.get("id") == expected_id:
+                    return response
+            except:
+                continue
         return None
-
-    def wait_for_sse_connection(self, timeout=5):
-        """Wait for SSE connection to be established"""
-        print("⏳ Waiting for SSE connection to be established...")
-        return self.sse_connected.wait(timeout=timeout)
 
     def query_registry(self):
         """Query the registry for all registered services"""
         print(f"📡 Connecting to registry at {self.registry_url}")
-
-        # Start SSE listener FIRST - this is the MCP way
+        
+        # Start SSE listener
         listener_thread = self.start_sse_listener()
-
-        # Wait for SSE connection to be established
-        if not self.wait_for_sse_connection():
-            print("❌ Timeout waiting for SSE connection")
-            self.stop_event.set()
-            return None
-
-        # Small delay to ensure connection is fully ready
-        time.sleep(0.2)
-
+        
         # Send registry/list request
         request_id = str(uuid.uuid4())
         print(f"🔍 Querying registry for services (Request ID: {request_id})...")
-
+        
         req_id = self.send_request("registry/list", {}, request_id)
         if not req_id:
             print("❌ Failed to send registry query")
-            self.stop_event.set()
             return None
-
+        
         # Wait for response
         print("⏳ Waiting for registry response...")
         response = self.wait_for_response(request_id, self.timeout)
-
+        
         # Stop the SSE listener
         self.stop_event.set()
-
+        
         if response:
             return response
         else:
             print("❌ No response received from registry within timeout period")
-            # Print any pending requests for debugging
-            if self.pending_requests:
-                print(f"Still waiting for responses to: {list(self.pending_requests.keys())}")
             return None
 
     def query_single_service(self, service_id):
-        """Query for a specific service by getting all services and filtering"""
+        """Query for a specific service"""
         print(f"📡 Connecting to registry at {self.registry_url}")
-
-        # Start SSE listener FIRST
+        
+        # Start SSE listener
         listener_thread = self.start_sse_listener()
-
-        # Wait for SSE connection to be established
-        if not self.wait_for_sse_connection():
-            print("❌ Timeout waiting for SSE connection")
-            self.stop_event.set()
-            return None
-
-        # Small delay to ensure connection is fully ready
-        time.sleep(0.2)
-
-        # Send registry/list request to get all services
+        
+        # Send registry/get request
         request_id = str(uuid.uuid4())
-        print(f"🔍 Querying registry for all services to find '{service_id}' (Request ID: {request_id})...")
-
-        req_id = self.send_request("registry/list", {}, request_id)
+        print(f"🔍 Querying registry for service '{service_id}' (Request ID: {request_id})...")
+        
+        params = {"id": service_id}
+        req_id = self.send_request("registry/get", params, request_id)
         if not req_id:
-            print("❌ Failed to send registry query")
-            self.stop_event.set()
+            print("❌ Failed to send service query")
             return None
-
+        
         # Wait for response
-        print("⏳ Waiting for registry response...")
+        print("⏳ Waiting for service details...")
         response = self.wait_for_response(request_id, self.timeout)
-
+        
         # Stop the SSE listener
         self.stop_event.set()
-
-        if response and 'result' in response and 'services' in response['result']:
-            # Filter to find the specific service
-            services = response['result']['services']
-            target_service = None
-            
-            for service in services:
-                if service.get('id') == service_id:
-                    target_service = service
-                    break
-            
-            if target_service:
-                # Return a response formatted like a single service response
-                return {
-                    'id': response.get('id'),
-                    'jsonrpc': response.get('jsonrpc', '2.0'),
-                    'result': {
-                        'service': target_service
-                    }
-                }
-            else:
-                print(f"❌ Service with ID '{service_id}' not found in registry")
-                return {
-                    'id': response.get('id'),
-                    'jsonrpc': response.get('jsonrpc', '2.0'),
-                    'error': {
-                        'code': -32000,
-                        'message': f'Service with ID "{service_id}" not found'
-                    }
-                }
+        
+        if response:
+            return response
         else:
             print("❌ No response received from registry within timeout period")
-            # Print any pending requests for debugging
-            if self.pending_requests:
-                print(f"Still waiting for responses to: {list(self.pending_requests.keys())}")
             return None
 
     def close(self):
@@ -268,7 +201,7 @@ def format_service_info(service):
     print(f"  🏷️  Name: {service.get('name', 'N/A')}")
     print(f"  📝 Description: {service.get('description', 'N/A')}")
     print(f"  🌐 Endpoint: {service.get('endpoint', 'N/A')}")
-
+    
     capabilities = service.get('capabilities', {})
     if capabilities:
         print(f"  ⚙️  Capabilities:")
@@ -286,15 +219,15 @@ def main():
     parser = argparse.ArgumentParser(description='Query MCP Registry for registered services')
     parser.add_argument('--registry-url', default='http://localhost:3031',
                         help='Registry server URL (default: http://localhost:3031)')
-    parser.add_argument('--service-id',
+    parser.add_argument('--service-id', 
                         help='Query specific service by ID (optional)')
-    parser.add_argument('--timeout', type=int, default=15,
-                        help='Timeout in seconds (default: 15)')
-
+    parser.add_argument('--timeout', type=int, default=10,
+                        help='Timeout in seconds (default: 10)')
+    
     args = parser.parse_args()
-
+    
     client = RegistryQueryClient(args.registry_url, args.timeout)
-
+    
     try:
         if args.service_id:
             # Query specific service
@@ -304,43 +237,43 @@ def main():
             # Query all services
             print("🔍 Querying all registered services")
             response = client.query_registry()
-
+        
         if response:
             print("\n" + "="*60)
             print("📋 REGISTRY RESPONSE")
             print("="*60)
             print(f"Response ID: {response.get('id', 'N/A')}")
-
+            
             if 'result' in response:
                 result = response['result']
                 if 'services' in result:
                     # List of services
                     services = result['services']
                     total_count = result.get('total_count', len(services))
-
+                    
                     print(f"Total Services Found: {total_count}")
                     print("-" * 60)
-
+                    
                     if services:
                         for i, service in enumerate(services, 1):
                             print(f"{i}. Service Details:")
                             format_service_info(service)
                     else:
                         print("No services registered in the registry.")
-
+                        
                 elif 'service' in result:
                     # Single service
                     service = result['service']
                     print("Service Details:")
                     format_service_info(service)
-
+                    
                 else:
                     print(f"Other result data: {json.dumps(result, indent=2)}")
             else:
                 print(f"Unexpected response format: {json.dumps(response, indent=2)}")
         else:
             print("❌ No response received from registry")
-
+            
     except KeyboardInterrupt:
         print("\n⚠️  Operation cancelled by user")
     except Exception as e:
