@@ -20,6 +20,8 @@ This implementation fully complies with the official MCP specification:
   - `prompts/list`, `prompts/get` - Retrieve templated instructions
   - `shutdown`
   - `ping` - Health check endpoint (returns timestamp and status)
+- Mandatory registry functionality for service discovery (enabled by default and should not be disabled)
+- Consistent shell script formatting following the standard provided in the skeleton
 
 ### Key Differences:
 - **Tools**: Active operations that execute and return results (e.g., calculations, API calls, data transformations)
@@ -60,9 +62,9 @@ python -m mcp_std_server.server --transport stdio
 python -m mcp_std_server.server --transport http --host 127.0.0.1 --port 3030
 ```
 
-## Optional Registry Functionality
+## Mandatory Registry Functionality
 
-The server includes optional registry functionality that enables a service discovery architecture:
+The server includes mandatory registry functionality that enables a service discovery architecture (this functionality should not be disabled by default):
 
 ### Enabling Registry Mode
 ```bash
@@ -115,7 +117,7 @@ The server can be configured via command-line arguments:
 - `--host`: Host for HTTP transport (default: 127.0.0.1)
 - `--port`: Port for HTTP transport (default: 3030)
 - `--max-concurrent-requests`: Maximum number of concurrent requests (default: 10)
-- `--enable-registry`: Enable registry functionality to track multiple MCP services (optional)
+- `--enable-registry`: Enable registry functionality to track multiple MCP services (mandatory and enabled by default)
 - `--register-with-registry`: Register this server with a registry server (requires --registry-host and --registry-port)
 - `--registry-host`: Registry server host to register with (default: 127.0.0.1)
 - `--registry-port`: Registry server port to register with (default: 3031)

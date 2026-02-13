@@ -56,3 +56,4 @@ coverage/
 # System files
 *.tmp
 *~mcp-std-skeleton/mcp_registry.db
+*/AGENTS.md

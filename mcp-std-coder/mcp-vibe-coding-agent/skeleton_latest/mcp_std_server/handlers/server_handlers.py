@@ -10,8 +10,8 @@ from ..utils.json_rpc import JsonRpcHandler, JsonRpcMessage
 class McpServerHandlers:
     """Handles all standard MCP server methods"""
 
-    def __init__(self, enable_registry: bool = False, use_postgres: bool = False, 
-                 postgres_config: Optional[Dict[str, Any]] = None):
+    def __init__(self, enable_registry: bool = False, use_postgres: bool = False,
+                 postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None):
         # Standard MCP tools, resources, and prompts
         self.tools: List[Dict[str, Any]] = [
             {
@@ -54,6 +54,9 @@ class McpServerHandlers:
         self.service_registry = None
         self.postgres_config = postgres_config or {}
         
+        # Client handlers for server-initiated requests
+        self.client_handlers = client_handlers
+
         if self.enable_registry:
             self._initialize_registry(use_postgres)
 
@@ -155,6 +158,9 @@ class McpServerHandlers:
         
         # Register the initialized request handler (acknowledges receipt of initialization)
         rpc_handler.register_request_handler('initialized', self.handle_initialized_request)
+        
+        # Client-initiated methods that the server can call
+        # These are registered as request handlers so the server can call them internally
 
     def handle_initialize(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle initialize request"""
@@ -615,7 +621,7 @@ class McpServerHandlers:
         # Handle case where params is None (when no params are provided in the request)
         if params is None:
             params = {}
-            
+
         if not hasattr(self, 'enable_registry') or not self.enable_registry:
             raise ValueError("Registry functionality is not enabled")
 
@@ -640,3 +646,40 @@ class McpServerHandlers:
                 "success": False,
                 "message": "Failed to unregister service or service not found"
             }
+
+    # Methods to allow the server to initiate requests to the client
+    async def request_sampling_completion(self, params: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        """Request sampling completion from the client"""
+        if self.client_handlers:
+            return await self.client_handlers.request_sampling_complete(params, timeout)
+        else:
+            return {
+                "error": {
+                    "type": "client_error",
+                    "message": "Client handlers not available"
+                }
+            }
+
+    async def request_user_input(self, params: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        """Request user input from the client"""
+        if self.client_handlers:
+            return await self.client_handlers.request_elicitation(params, timeout)
+        else:
+            return {
+                "error": {
+                    "type": "client_error",
+                    "message": "Client handlers not available"
+                }
+            }
+
+    async def send_log_to_client(self, params: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        """Send a log message to the client"""
+        if self.client_handlers:
+            return await self.client_handlers.send_logging_message(params, timeout)
+        else:
+            # If client handlers are not available, just log locally
+            level = params.get("level", "info")
+            message = params.get("message", "")
+            logger_name = params.get("logger", "mcp-server")
+            print(f"[{logger_name}] {level.upper()}: {message}")
+            return {}
