@@ -661,12 +661,23 @@ class ToolFormScreen(ModalScreen):
             table = event.sender
             value = table.get_cell_at(row_key, column_key)
 
-            # Use Textual's built-in clipboard functionality
+            # Use Textual's built-in clipboard functionality which uses OSC 52
             await self.app.copy_to_clipboard(str(value))
             self.app.notify(f"Copied to clipboard: {str(value)[:50]}{'...' if len(str(value)) > 50 else ''}", severity="information")
 
         except Exception as e:
-            self.app.notify(f"Error copying to clipboard: {str(e)}", severity="error")
+            # If OSC 52 fails, try alternative methods
+            try:
+                # Try using pyperclip as a fallback
+                import pyperclip
+                pyperclip.copy(str(value))
+                self.app.notify(f"Copied to clipboard (fallback): {str(value)[:50]}{'...' if len(str(value)) > 50 else ''}", severity="information")
+            except ImportError:
+                # If pyperclip is not available, just show the error from OSC 52
+                self.app.notify(f"Error copying to clipboard: {str(e)}", severity="error")
+            except Exception as pyperclip_error:
+                # If pyperclip fails, show the original error
+                self.app.notify(f"Error copying to clipboard: {str(e)}", severity="error")
 
 
 class MCPExplorerApp(App):

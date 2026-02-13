@@ -683,3 +683,255 @@ class McpServerHandlers:
             logger_name = params.get("logger", "mcp-server")
             print(f"[{logger_name}] {level.upper()}: {message}")
             return {}
+
+    # Methods for delegating tasks to other MCP servers
+    async def delegate_tool_call(self, tool_name: str, arguments: Dict[str, Any], 
+                                 target_server_endpoint: Optional[str] = None, 
+                                 timeout: float = 30.0) -> Dict[str, Any]:
+        """Delegate a tool call to another MCP server.
+        
+        Args:
+            tool_name: Name of the tool to call
+            arguments: Arguments to pass to the tool
+            target_server_endpoint: Specific server endpoint to use (if None, will use registry to find appropriate server)
+            timeout: Timeout for the operation
+            
+        Returns:
+            Result from the remote server
+        """
+        # If no specific target is provided, look up in registry
+        if not target_server_endpoint and self.enable_registry and self.service_registry:
+            # Find a server that supports this tool
+            matching_services = self.service_registry.find_services_by_capability("tools", tool_name)
+            if matching_services:
+                # Use the first matching service (in a real implementation, you might want to select based on load, etc.)
+                target_server_endpoint = matching_services[0]["endpoint"]
+        
+        if not target_server_endpoint:
+            return {
+                "error": {
+                    "type": "no_target_found",
+                    "message": f"No server found to handle tool '{tool_name}'"
+                }
+            }
+        
+        # Create a temporary client to connect to the target server
+        try:
+            from ..client import McpClient
+            import re
+            
+            # Parse the endpoint to determine transport and connection details
+            if target_server_endpoint.startswith("http://"):
+                # Determine if it's streamable HTTP or legacy HTTP/SSE based on path
+                if "/mcp" in target_server_endpoint:
+                    transport_type = "streamable-http"
+                else:
+                    transport_type = "http"  # legacy HTTP/SSE
+                
+                # Extract host and port from the endpoint
+                import urllib.parse
+                parsed = urllib.parse.urlparse(target_server_endpoint)
+                host = parsed.hostname or "127.0.0.1"
+                port = parsed.port or 3030
+                
+                client = McpClient(
+                    transport_type=transport_type,
+                    host=host,
+                    port=port,
+                    endpoint=target_server_endpoint
+                )
+                
+                # Connect to the remote server
+                client.connect()
+                
+                # Call the tool on the remote server
+                result = client.call_tool(tool_name, arguments, timeout)
+                
+                # Disconnect from the remote server
+                client.disconnect()
+                
+                return result
+            else:
+                # For other endpoint types (like stdio), we might need different handling
+                return {
+                    "error": {
+                        "type": "unsupported_endpoint",
+                        "message": f"Unsupported endpoint format: {target_server_endpoint}"
+                    }
+                }
+        except Exception as e:
+            return {
+                "error": {
+                    "type": "delegation_error",
+                    "message": f"Failed to delegate tool call to remote server: {str(e)}"
+                }
+            }
+
+    async def fetch_remote_resource(self, uri: str, 
+                                   target_server_endpoint: Optional[str] = None, 
+                                   timeout: float = 30.0) -> Dict[str, Any]:
+        """Fetch a resource from another MCP server.
+        
+        Args:
+            uri: URI of the resource to fetch
+            target_server_endpoint: Specific server endpoint to use (if None, will use registry to find appropriate server)
+            timeout: Timeout for the operation
+            
+        Returns:
+            Resource content from the remote server
+        """
+        # If no specific target is provided, look up in registry
+        if not target_server_endpoint and self.enable_registry and self.service_registry:
+            # Find a server that supports this resource (by checking if any resource URI contains the requested URI)
+            # This is a simplified approach - in practice, you might want more sophisticated matching
+            all_services = self.service_registry.list_services()
+            for service in all_services:
+                capabilities = service.get("capabilities", {})
+                resources = capabilities.get("resources", [])
+                # Check if any of the server's resources match or contain the requested URI
+                for res_uri in resources:
+                    if uri in res_uri or res_uri in uri:
+                        target_server_endpoint = service["endpoint"]
+                        break
+                if target_server_endpoint:
+                    break
+        
+        if not target_server_endpoint:
+            return {
+                "error": {
+                    "type": "no_target_found",
+                    "message": f"No server found to serve resource '{uri}'"
+                }
+            }
+        
+        # Create a temporary client to connect to the target server
+        try:
+            from ..client import McpClient
+            import urllib.parse
+            
+            # Parse the endpoint to determine transport and connection details
+            if target_server_endpoint.startswith("http://"):
+                # Determine if it's streamable HTTP or legacy HTTP/SSE based on path
+                if "/mcp" in target_server_endpoint:
+                    transport_type = "streamable-http"
+                else:
+                    transport_type = "http"  # legacy HTTP/SSE
+                
+                # Extract host and port from the endpoint
+                parsed = urllib.parse.urlparse(target_server_endpoint)
+                host = parsed.hostname or "127.0.0.1"
+                port = parsed.port or 3030
+                
+                client = McpClient(
+                    transport_type=transport_type,
+                    host=host,
+                    port=port,
+                    endpoint=target_server_endpoint
+                )
+                
+                # Connect to the remote server
+                client.connect()
+                
+                # Read the resource from the remote server
+                result = client.read_resource(uri, timeout)
+                
+                # Disconnect from the remote server
+                client.disconnect()
+                
+                return result
+            else:
+                # For other endpoint types (like stdio), we might need different handling
+                return {
+                    "error": {
+                        "type": "unsupported_endpoint",
+                        "message": f"Unsupported endpoint format: {target_server_endpoint}"
+                    }
+                }
+        except Exception as e:
+            return {
+                "error": {
+                    "type": "delegation_error",
+                    "message": f"Failed to fetch remote resource from server: {str(e)}"
+                }
+            }
+
+    async def resolve_remote_prompt(self, prompt_name: str, arguments: Dict[str, Any],
+                                   target_server_endpoint: Optional[str] = None,
+                                   timeout: float = 30.0) -> Dict[str, Any]:
+        """Resolve a prompt on another MCP server.
+        
+        Args:
+            prompt_name: Name of the prompt to resolve
+            arguments: Arguments to pass to the prompt
+            target_server_endpoint: Specific server endpoint to use (if None, will use registry to find appropriate server)
+            timeout: Timeout for the operation
+            
+        Returns:
+            Resolved prompt from the remote server
+        """
+        # If no specific target is provided, look up in registry
+        if not target_server_endpoint and self.enable_registry and self.service_registry:
+            # Find a server that supports this prompt
+            matching_services = self.service_registry.find_services_by_capability("prompts", prompt_name)
+            if matching_services:
+                # Use the first matching service (in a real implementation, you might want to select based on load, etc.)
+                target_server_endpoint = matching_services[0]["endpoint"]
+        
+        if not target_server_endpoint:
+            return {
+                "error": {
+                    "type": "no_target_found",
+                    "message": f"No server found to handle prompt '{prompt_name}'"
+                }
+            }
+        
+        # Create a temporary client to connect to the target server
+        try:
+            from ..client import McpClient
+            import urllib.parse
+            
+            # Parse the endpoint to determine transport and connection details
+            if target_server_endpoint.startswith("http://"):
+                # Determine if it's streamable HTTP or legacy HTTP/SSE based on path
+                if "/mcp" in target_server_endpoint:
+                    transport_type = "streamable-http"
+                else:
+                    transport_type = "http"  # legacy HTTP/SSE
+                
+                # Extract host and port from the endpoint
+                parsed = urllib.parse.urlparse(target_server_endpoint)
+                host = parsed.hostname or "127.0.0.1"
+                port = parsed.port or 3030
+                
+                client = McpClient(
+                    transport_type=transport_type,
+                    host=host,
+                    port=port,
+                    endpoint=target_server_endpoint
+                )
+                
+                # Connect to the remote server
+                client.connect()
+                
+                # Get the prompt from the remote server
+                result = client.get_prompt(prompt_name, arguments, timeout)
+                
+                # Disconnect from the remote server
+                client.disconnect()
+                
+                return result
+            else:
+                # For other endpoint types (like stdio), we might need different handling
+                return {
+                    "error": {
+                        "type": "unsupported_endpoint",
+                        "message": f"Unsupported endpoint format: {target_server_endpoint}"
+                    }
+                }
+        except Exception as e:
+            return {
+                "error": {
+                    "type": "delegation_error",
+                    "message": f"Failed to resolve remote prompt on server: {str(e)}"
+                }
+            }

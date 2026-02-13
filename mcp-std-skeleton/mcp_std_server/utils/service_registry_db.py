@@ -234,30 +234,121 @@ class ServiceRegistryDB:
 
     def cleanup_stale_services(self, max_age_minutes: int = 10) -> int:
         """Remove services that haven't been seen within the specified time.
-        
+
         Args:
             max_age_minutes: Maximum age in minutes for services to be considered active
-        
+
         Returns:
             Number of services removed
         """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             max_age_seconds = max_age_minutes * 60
             cutoff_time = time.time() - max_age_seconds
-            
+
             cursor.execute("""
-                DELETE FROM services 
+                DELETE FROM services
                 WHERE last_seen < ?
             """, (cutoff_time,))
-            
+
             removed_count = cursor.rowcount
             conn.commit()
             conn.close()
-            
+
             return removed_count
         except Exception as e:
             print(f"Error cleaning up stale services: {e}")
             return 0
+
+    def find_services_by_capability(self, capability_type: str, capability_name: str) -> List[Dict[str, Any]]:
+        """Find services that support a specific capability.
+
+        Args:
+            capability_type: Type of capability ('tools', 'resources', 'prompts')
+            capability_name: Name of the specific capability
+
+        Returns:
+            List of services that support the specified capability
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
+                FROM services
+            """)
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            matching_services = []
+            for row in rows:
+                service = {
+                    "id": row[0],
+                    "name": row[1],
+                    "description": row[2],
+                    "endpoint": row[3],
+                    "capabilities": json.loads(row[4]) if row[4] else {},
+                    "registered_at": row[5],
+                    "last_seen": row[6]
+                }
+
+                # Check if the service has the requested capability
+                capabilities = service.get("capabilities", {})
+                if capability_type in capabilities:
+                    cap_list = capabilities[capability_type]
+                    if isinstance(cap_list, list) and capability_name in cap_list:
+                        matching_services.append(service)
+                    elif isinstance(cap_list, dict) and capability_name in cap_list:
+                        matching_services.append(service)
+
+            return matching_services
+        except Exception as e:
+            print(f"Error finding services by capability: {e}")
+            return []
+
+    def find_services_by_capability_types(self, capability_types: List[str]) -> List[Dict[str, Any]]:
+        """Find services that support any of the specified capability types.
+
+        Args:
+            capability_types: List of capability types to search for
+
+        Returns:
+            List of services that support any of the specified capability types
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
+                FROM services
+            """)
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            matching_services = []
+            for row in rows:
+                service = {
+                    "id": row[0],
+                    "name": row[1],
+                    "description": row[2],
+                    "endpoint": row[3],
+                    "capabilities": json.loads(row[4]) if row[4] else {},
+                    "registered_at": row[5],
+                    "last_seen": row[6]
+                }
+
+                # Check if the service has any of the requested capability types
+                capabilities = service.get("capabilities", {})
+                if any(cap_type in capabilities for cap_type in capability_types):
+                    matching_services.append(service)
+
+            return matching_services
+        except Exception as e:
+            print(f"Error finding services by capability types: {e}")
+            return []

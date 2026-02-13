@@ -638,4 +638,27 @@ Start with basic tools/resources before implementing complex logic.
 
 ### Implementation Standards
 - All MCP server implementations must include registry functionality as mandatory (not optional)
-- All implementations must follow the same .sh script format as provided with the skeleton for consistency
+
+## Mixed-Mode Operation
+
+The server supports mixed-mode operation, functioning as both an MCP server (receiving tasks) and an MCP client (submitting tasks to other servers).
+
+### Mixed-Mode Architecture
+- **Dual Operation**: Server accepts inbound connections while maintaining outbound client connections
+- **Registry Integration**: Automatic service discovery for cross-server task delegation
+- **Task Delegation**: Ability to forward operations to other registered MCP servers
+- **Load Balancing**: Intelligent routing of requests to appropriate servers based on capabilities
+
+### Mixed-Mode Configuration
+The server can be configured for mixed-mode operation using the following command-line options:
+- `--enable-client-mode`: Enable client functionality to connect to other servers
+- `--client-transport`: Specify transport for client connections
+- `--client-host`, `--client-port`: Target server address for client connections
+- `--client-endpoint`: Direct endpoint specification for client connections
+
+### Cross-Server Operations
+When operating in mixed mode, the server provides these capabilities:
+- `delegate_tool_call()`: Forward tool execution to another server
+- `fetch_remote_resource()`: Retrieve resources from other servers
+- `resolve_remote_prompt()`: Get prompt results from other servers
+- Automatic service discovery through registry integration
