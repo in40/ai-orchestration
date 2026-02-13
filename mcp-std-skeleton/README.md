@@ -22,6 +22,8 @@ This implementation fully complies with the official MCP specification:
   - `ping` - Health check endpoint (returns timestamp and status)
 - Mandatory registry functionality for service discovery (enabled by default and should not be disabled)
 - Consistent shell script formatting following the standard provided in the skeleton
+- Mixed-mode operation support: server can also act as a client to connect to other MCP servers
+- Cross-server task delegation capabilities
 
 ### Key Differences:
 - **Tools**: Active operations that execute and return results (e.g., calculations, API calls, data transformations)
@@ -38,6 +40,8 @@ This implementation fully complies with the official MCP specification:
 - Optional registry functionality for service discovery (see below)
 - Advanced concurrency control with request limiting and monitoring
 - Comprehensive metrics and monitoring endpoints
+- Mixed-mode operation: server can also act as a client to connect to other MCP servers
+- Cross-server task delegation: ability to delegate tasks to other registered MCP servers
 
 ## Installation
 
@@ -60,6 +64,18 @@ python -m mcp_std_server.server --transport stdio
 ### Legacy HTTP/SSE Transport (For backward compatibility)
 ```bash
 python -m mcp_std_server.server --transport http --host 127.0.0.1 --port 3030
+```
+
+### Mixed-Mode Operation (Server and Client)
+Run the server in mixed-mode to act as both server and client:
+```bash
+python -m mcp_std_server.server --transport streamable-http --port 3030 --enable-client-mode --client-host 127.0.0.1 --client-port 3031
+```
+
+### Cross-Server Task Delegation
+When registry functionality is enabled, the server can automatically delegate tasks to other registered MCP servers:
+```bash
+python -m mcp_std_server.server --transport streamable-http --port 3030 --enable-registry --enable-client-mode
 ```
 
 ## Mandatory Registry Functionality
@@ -127,6 +143,11 @@ The server can be configured via command-line arguments:
 - `--postgres-db`: PostgreSQL database name (default: mcp_registry)
 - `--postgres-user`: PostgreSQL username (default: postgres)
 - `--postgres-password`: PostgreSQL password (default: empty)
+- `--enable-client-mode`: Enable client mode to connect to another MCP server (default: False)
+- `--client-transport`: Transport mechanism for client connection ('stdio', 'http', or 'streamable-http') (default: 'streamable-http')
+- `--client-host`: Host of the remote MCP server to connect to (default: 127.0.0.1)
+- `--client-port`: Port of the remote MCP server to connect to (default: 3030)
+- `--client-endpoint`: Specific endpoint of the remote MCP server (overrides host:port)
 
 ## Example Usage
 

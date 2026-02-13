@@ -141,13 +141,17 @@ def set_monitor(monitor: ConcurrencyMonitor):
 
 class JsonRpcHandler:
     """Handles JSON-RPC 2.0 messages with concurrency control"""
-    
+
     def __init__(self, max_concurrent_requests: int = 10):
         self.request_handlers: Dict[str, Callable] = {}
         self.notification_handlers: Dict[str, Callable] = {}
         self.max_concurrent_requests = max_concurrent_requests
         self.monitor = ConcurrencyMonitor(max_concurrent_requests)
         set_monitor(self.monitor)
+
+        # For server-initiated requests to clients
+        self.pending_client_requests: Dict[str, asyncio.Future] = {}
+        self.transport_layer = None  # Will be set by the server
     
     def register_request_handler(self, method: str, handler: Callable):
         """Register a handler for a specific request method"""
@@ -288,6 +292,73 @@ class JsonRpcHandler:
                 "message": message
             }
         )
+
+    def set_transport_layer(self, transport_layer):
+        """Set the transport layer for sending messages to clients"""
+        self.transport_layer = transport_layer
+
+    async def send_request_to_client(self, method: str, params: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        """
+        Send a request to the client and wait for a response.
+        This is for server-initiated requests to the client.
+        """
+        if not self.transport_layer:
+            raise RuntimeError("Transport layer not set. Cannot send request to client.")
+
+        # Generate a unique ID for this request
+        request_id = str(uuid.uuid4())
+
+        # Create the request message
+        request_message = JsonRpcMessage(
+            message_type=MessageType.REQUEST,
+            id=request_id,
+            method=method,
+            params=params
+        )
+
+        # Create a Future to wait for the response
+        future = asyncio.Future()
+        self.pending_client_requests[request_id] = future
+
+        try:
+            # Send the request to the client via the transport layer
+            # Check if transport is available before sending
+            if hasattr(self.transport_layer, 'running') and not self.transport_layer.running:
+                raise RuntimeError("Transport layer is not running. Cannot send request to client.")
+
+            self.transport_layer.send_message(request_message)
+
+            # Wait for the response with timeout
+            response_data = await asyncio.wait_for(future, timeout=timeout)
+            return response_data
+        except asyncio.TimeoutError:
+            # Clean up the pending request
+            if request_id in self.pending_client_requests:
+                del self.pending_client_requests[request_id]
+            raise TimeoutError(f"Timeout waiting for response to {method} request")
+        except Exception as e:
+            # Clean up the pending request
+            if request_id in self.pending_client_requests:
+                del self.pending_client_requests[request_id]
+            raise e
+
+    def handle_client_response(self, response_message: JsonRpcMessage):
+        """
+        Handle a response from the client to a server-initiated request.
+        """
+        request_id = response_message.id
+        if request_id in self.pending_client_requests:
+            future = self.pending_client_requests[request_id]
+
+            if response_message.error:
+                # Complete the future with an error
+                future.set_exception(Exception(f"Client error: {response_message.error}"))
+            else:
+                # Complete the future with the result
+                future.set_result(response_message.result)
+
+            # Remove the pending request
+            del self.pending_client_requests[request_id]
 
 
 # Standard error codes from JSON-RPC 2.0 specification

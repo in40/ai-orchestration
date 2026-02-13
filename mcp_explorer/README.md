@@ -35,6 +35,24 @@ mcp-explorer
 - `Ctrl+R`: Refresh current view
 - `F2`: Add custom registry
 - `F8`: Quit application
+- `Ctrl+C`: Copy selected cell content in results table
+
+## Copy/Paste Functionality
+
+The MCP Explorer supports copy and paste operations:
+
+### Copy
+- Navigate to any cell in the results table
+- Press `Ctrl+C` to copy the content to the clipboard
+
+### Paste
+In terminal applications, paste operations are typically handled by the terminal emulator:
+- **Linux terminals**: Usually `Shift+Insert` or right-click → paste
+- **macOS Terminal**: Right-click → paste or `Cmd+Shift+V`
+- **Windows Terminal**: Right-click → paste or `Ctrl+Shift+V`
+- Standard `Ctrl+V` may work in some terminal emulators
+
+The application provides full clipboard integration for seamless data transfer.
 
 ## Architecture
 

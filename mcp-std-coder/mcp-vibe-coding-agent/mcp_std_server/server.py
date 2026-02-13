@@ -9,7 +9,7 @@ import time
 from typing import Optional, Dict, Any
 import argparse
 
-from .utils.json_rpc import JsonRpcHandler
+from .utils.json_rpc import JsonRpcHandler, MessageType
 from .transports.stdio import StdioTransport
 from .transports.http_sse import HttpSseTransport
 from .transports.streamable_http import StreamableHttpTransport
@@ -65,39 +65,46 @@ class McpServer:
                 "password": self.postgres_password
             }
 
+        self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
         self.notification_manager = NotificationManager(self.rpc_handler)
         self.server_handlers = McpServerHandlers(
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
             postgres_config=postgres_config,
+            client_handlers=self.client_handlers,
             notification_manager=self.notification_manager
         )
-        self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
 
         # Optional registry functionality
         if self.enable_registry:
             # Use the same registry as the handlers (either PostgreSQL or SQLite)
             self.service_registry = self.server_handlers.service_registry
             # Register this server with itself if it's acting as a registry
-            self.service_info = {
-                "id": f"registry-{host}:{port}",
-                "name": "MCP Service Registry",
-                "description": "Central registry for MCP services",
-                "endpoint": f"http://{host}:{port}",
-                "capabilities": {
-                    "registry": True,
-                    "methods": ["registry/register", "registry/list", "registry/unregister"]
+            if self.service_registry is not None:  # Only proceed if registry initialization was successful
+                self.service_info = {
+                    "id": f"registry-{host}:{port}",
+                    "name": "MCP Service Registry",
+                    "description": "Central registry for MCP services",
+                    "endpoint": f"http://{host}:{port}",
+                    "capabilities": {
+                        "registry": True,
+                        "methods": ["registry/register", "registry/list", "registry/unregister"]
+                    }
                 }
-            }
-            self.service_registry.register_service(self.service_info)
+                self.service_registry.register_service(self.service_info)
 
-            # Initialize heartbeat manager for the registry server
-            self.heartbeat_manager = HeartbeatManager(
-                self.service_registry,
-                self.service_info["id"],
-                heartbeat_interval=30,  # Every 30 seconds
-                max_age_minutes=10      # Remove services not seen in 10 minutes
-            )
+                # Initialize heartbeat manager for the registry server
+                self.heartbeat_manager = HeartbeatManager(
+                    self.service_registry,
+                    self.service_info["id"],
+                    heartbeat_interval=30,  # Every 30 seconds
+                    max_age_minutes=10      # Remove services not seen in 10 minutes
+                )
+            else:
+                # Registry failed to initialize, disable registry functionality
+                print("❌ Registry functionality disabled due to initialization failure")
+                self.enable_registry = False
+                self.heartbeat_manager = None
         else:
             self.heartbeat_manager = None
 
@@ -228,6 +235,12 @@ class McpServer:
 
     def _message_callback(self, message):
         """Callback to handle incoming messages"""
+        # Check if this is a response to a server-initiated request
+        if message.message_type == MessageType.RESPONSE and message.id is not None:
+            # This is a response to a server-initiated request to the client
+            self.rpc_handler.handle_client_response(message)
+            return  # Don't process further as this is handled by the pending request mechanism
+
         # Use the synchronous version of handle_message for stdio transport
         try:
             response = self.rpc_handler.handle_message_sync(message)

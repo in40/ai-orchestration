@@ -28,6 +28,10 @@ class StreamableHttpTransport:
         # For Streamable HTTP, we don't maintain persistent connections like SSE
         # Instead, each POST request gets a direct response
         self.session_states: Dict[str, Dict] = {}  # Track session-specific state
+        
+        # For handling notifications in Streamable HTTP, we queue them to be sent
+        # as part of the next response to a client request
+        self.notification_queues: Dict[str, asyncio.Queue] = {}
 
         self._setup_routes()
 
@@ -51,20 +55,60 @@ class StreamableHttpTransport:
                     # Generate a new session ID if none provided
                     session_id = str(uuid.uuid4())
 
+                # Create notification queue for this session if it doesn't exist
+                if session_id not in self.notification_queues:
+                    self.notification_queues[session_id] = asyncio.Queue()
+
                 body = await request.json()
                 message = self.rpc_handler.parse_message(json.dumps(body))
 
                 # Process the message and get response directly
+                response = None
                 if self.message_callback:
                     # For Streamable HTTP, we handle the message and return the response directly
                     # Use sync handler for consistency
                     response = self.rpc_handler.handle_message_sync(message)
-                    if response:
-                        return Response(content=response.to_json(), media_type="application/json")
+
+                # Check if there are any queued notifications for this session
+                notifications = []
+                notification_queue = self.notification_queues.get(session_id, [])
+                
+                # Get all available notifications from the queue
+                import threading
+                with threading.Lock():
+                    if isinstance(notification_queue, list):
+                        # For list-based queue, get all items and clear the list
+                        notifications = notification_queue[:]
+                        self.notification_queues[session_id] = []  # Clear the list
                     else:
-                        return Response(content=json.dumps({"status": "processed"}), media_type="application/json")
+                        # For asyncio queue, get all available notifications
+                        try:
+                            while True:
+                                notification = notification_queue.get_nowait()
+                                notifications.append(notification)
+                        except:
+                            pass  # No more notifications in queue
+
+                # Prepare response
+                if response:
+                    response_content = response.to_json()
                 else:
-                    return Response(content=json.dumps({"status": "no callback"}), media_type="application/json")
+                    response_content = json.dumps({"status": "processed"})
+
+                # If there are notifications, we need to send them along with the response
+                if notifications:
+                    # For Streamable HTTP, we can return multiple responses or embed notifications
+                    # The proper way is to return the primary response, but also include any pending notifications
+                    # In practice, we'll return the main response and client should make additional requests for notifications
+                    response_obj = json.loads(response_content)
+                    
+                    # Add notifications to the response if there are any
+                    if notifications:
+                        response_obj["notifications"] = [n.to_json() for n in notifications]
+                    
+                    return Response(content=json.dumps(response_obj), media_type="application/json")
+                else:
+                    return Response(content=response_content, media_type="application/json")
 
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Invalid message: {str(e)}")
@@ -173,18 +217,40 @@ class StreamableHttpTransport:
             self.server_thread.join(timeout=1.0)
 
     def send_message_to_session(self, message: JsonRpcMessage, session_id: str):
-        """In Streamable HTTP, messages are sent as responses to requests, not separately"""
-        # In true Streamable HTTP, server-initiated messages are not supported in the same way
-        # as with SSE. Server messages are sent as responses to client requests.
-        # This method exists for interface compatibility but doesn't actively send messages.
-        print(f"[Streamable HTTP] Cannot send message to session {session_id} directly. "
-              f"Messages must be sent as responses to client requests.")
+        """Queue notification to be sent to a specific session when it makes its next request"""
+        # Create a simple queue-like structure using a list for thread safety
+        if session_id not in self.notification_queues:
+            # Use a simple list as a queue for thread safety
+            self.notification_queues[session_id] = []
+        
+        # Append the message to the session's queue
+        import threading
+        with threading.Lock():  # Use lock for thread safety
+            if isinstance(self.notification_queues[session_id], list):
+                self.notification_queues[session_id].append(message)
+            else:
+                # If it's an asyncio queue, try to add to it
+                try:
+                    self.notification_queues[session_id].put_nowait(message)
+                except:
+                    # Fallback to list
+                    self.notification_queues[session_id] = [message]
 
     def send_message(self, message: JsonRpcMessage):
-        """In Streamable HTTP, messages are sent as responses to requests, not separately"""
-        # Same as above - for compatibility only
-        print("[Streamable HTTP] Cannot send message directly. "
-              "Messages must be sent as responses to client requests.")
+        """Queue notification to be sent to all sessions when they make their next request"""
+        # Add the message to all active session queues
+        import threading
+        for session_id in list(self.notification_queues.keys()):  # Use list to avoid modification during iteration
+            with threading.Lock():
+                if isinstance(self.notification_queues[session_id], list):
+                    self.notification_queues[session_id].append(message)
+                else:
+                    # If it's an asyncio queue, try to add to it
+                    try:
+                        self.notification_queues[session_id].put_nowait(message)
+                    except:
+                        # Fallback to list
+                        self.notification_queues[session_id] = [message]
 
     def get_session_headers(self, session_id: str) -> Dict[str, str]:
         """Get headers that a client should include to identify itself"""

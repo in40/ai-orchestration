@@ -26,7 +26,9 @@ class McpServer:
                  register_with_registry: bool = False, registry_host: str = "127.0.0.1", registry_port: int = 3031,
                  use_postgres: bool = False, postgres_host: str = "localhost", postgres_port: int = 5432,
                  postgres_db: str = "mcp_registry", postgres_user: str = "postgres", postgres_password: str = "",
-                 max_concurrent_requests: int = 10):
+                 max_concurrent_requests: int = 10,
+                 enable_client_mode: bool = False, client_transport_type: str = "streamable-http",
+                 client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None):
         self.transport_type = transport_type
         self.host = host
         self.port = port
@@ -42,6 +44,13 @@ class McpServer:
         self.postgres_user = postgres_user
         self.postgres_password = postgres_password
         self.max_concurrent_requests = max_concurrent_requests
+
+        # Client mode configuration
+        self.enable_client_mode = enable_client_mode
+        self.client_transport_type = client_transport_type
+        self.client_host = client_host
+        self.client_port = client_port
+        self.client_endpoint = client_endpoint
 
         # Initialize components
         self.rpc_handler = JsonRpcHandler(max_concurrent_requests=max_concurrent_requests)
@@ -114,6 +123,18 @@ class McpServer:
             self.transport = StreamableHttpTransport(self.rpc_handler, host, port)
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
+
+        # Initialize client if client mode is enabled
+        self.client = None
+        if self.enable_client_mode:
+            from .client import McpClient
+            self.client = McpClient(
+                transport_type=self.client_transport_type,
+                host=self.client_host,
+                port=self.client_port,
+                endpoint=self.client_endpoint,
+                max_concurrent_requests=max_concurrent_requests
+            )
 
         # Connect the transport layer to the RPC handler for bidirectional communication
         self.rpc_handler.set_transport_layer(self.transport)
@@ -289,6 +310,11 @@ class McpServer:
 
         print(f"MCP server running with {self.transport_type} transport")
 
+        # Start client if client mode is enabled
+        if self.enable_client_mode and self.client:
+            print(f"Starting MCP client with {self.client_transport_type} transport to connect to remote server...")
+            self.client.connect()
+
         # Register with registry if configured to do so
         if self.register_with_registry:
             print(f"Registering with registry at {self.registry_host}:{self.registry_port}...")
@@ -319,6 +345,11 @@ class McpServer:
     def stop(self):
         """Stop the MCP server"""
         print("Stopping MCP server...")
+
+        # Stop client if client mode is enabled
+        if self.enable_client_mode and self.client:
+            print("Stopping MCP client...")
+            self.client.disconnect()
 
         # Stop heartbeat managers first
         if self.remote_heartbeat_manager:
@@ -380,6 +411,23 @@ def main():
     parser.add_argument('--postgres-password',
                        default='',
                        help='PostgreSQL password (default: empty)')
+    # Client mode arguments
+    parser.add_argument('--enable-client-mode',
+                       action='store_true',
+                       help='Enable client mode to connect to another MCP server (default: False)')
+    parser.add_argument('--client-transport',
+                       choices=['stdio', 'http', 'streamable-http'],
+                       default='streamable-http',
+                       help='Transport mechanism for client connection (default: streamable-http)')
+    parser.add_argument('--client-host',
+                       default='127.0.0.1',
+                       help='Host of the remote MCP server to connect to (default: 127.0.0.1)')
+    parser.add_argument('--client-port',
+                       type=int,
+                       default=3030,
+                       help='Port of the remote MCP server to connect to (default: 3030)')
+    parser.add_argument('--client-endpoint',
+                       help='Specific endpoint of the remote MCP server (overrides host:port)')
     parser.add_argument('--max-concurrent-requests',
                        type=int,
                        default=10,
@@ -408,7 +456,12 @@ def main():
         postgres_db=args.postgres_db,
         postgres_user=args.postgres_user,
         postgres_password=args.postgres_password,
-        max_concurrent_requests=args.max_concurrent_requests
+        max_concurrent_requests=args.max_concurrent_requests,
+        enable_client_mode=args.enable_client_mode,
+        client_transport_type=args.client_transport,
+        client_host=args.client_host,
+        client_port=args.client_port,
+        client_endpoint=args.client_endpoint
     )
     server.start()
 

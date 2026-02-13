@@ -1,7 +1,10 @@
 #!/bin/bash
 
-# Script to start the Vibe Coding MCP server
+# Script to start the MCP server with various options
 # Usage: ./start_mcp_server.sh [options]
+# Set PostgreSQL password - uncomment and update the line below with your actual password
+export POSTGRES_PASSWORD="postgres"
+export PGPASSWORD="postgres"
 
 echo "Starting Vibe Coding MCP Server..."
 
@@ -9,8 +12,8 @@ echo "Starting Vibe Coding MCP Server..."
 TRANSPORT="streamable-http"
 HOST="127.0.0.1"
 PORT=3060  # Changed to 3060 as requested
-ENABLE_REGISTRY=true  # Enabled as required
-REGISTER_WITH_REGISTRY=true  # Enabled as required
+ENABLE_REGISTRY=false   # Disabled - we are not a registry server
+REGISTER_WITH_REGISTRY=true  # Enabled as required - we register with external registry
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT=3031
 USE_POSTGRES=false
@@ -79,6 +82,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+
+# If you want to use an environment variable instead, set it before running this script:
+if [ -z "$POSTGRES_PASSWORD" ]; then
+  echo "POSTGRES_PASSWORD environment variable not set. Using empty password."
+  echo "To set it, uncomment and update the export line in this script, or run:"
+  echo "  export POSTGRES_PASSWORD='your_actual_password_here'"
+else
+  echo "Using PostgreSQL password from environment variable."
+fi
+
+# Enable PostgreSQL by default for persistent task storage
+USE_POSTGRES=true
+
 # Build the command
 CMD="python -m mcp_std_server.server"
 
@@ -108,8 +124,13 @@ if [ "$REGISTRY_PORT" != "3031" ]; then
   CMD="$CMD --registry-port $REGISTRY_PORT"
 fi
 
+# Always enable PostgreSQL for persistent task storage
 if [ "$USE_POSTGRES" = true ]; then
-  CMD="$CMD --use-postgres"
+  if [ -n "$POSTGRES_PASSWORD" ]; then
+    CMD="$CMD --use-postgres --postgres-password $POSTGRES_PASSWORD"
+  else
+    CMD="$CMD --use-postgres"
+  fi
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
@@ -117,4 +138,6 @@ if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
 fi
 
 echo "Executing: $CMD"
+# Ensure the PostgreSQL password environment variable is available to the Python process
+export POSTGRES_PASSWORD
 exec $CMD

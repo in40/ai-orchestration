@@ -44,19 +44,19 @@ class LocalhostRegistryAdapter(RegistryAdapter):
                         }
                     }
                 }
-                
+
                 init_response = await client.post(
                     f"{self.base_url}",
                     json=init_req,
                     timeout=5.0
                 )
-                
+
                 if init_response.status_code != 200:
                     return []
-                
+
                 init_data = init_response.json()
                 server_info = init_data.get("result", {}).get("serverInfo", {})
-                
+
                 # Complete initialization handshake
                 initialized_req = {
                     "jsonrpc": "2.0",
@@ -67,31 +67,31 @@ class LocalhostRegistryAdapter(RegistryAdapter):
                         "capabilities": {"experimental": {}}
                     }
                 }
-                
+
                 await client.post(f"{self.base_url}", json=initialized_req, timeout=5.0)
-                
+
                 # Now try to list tools to see if registry tools are available
                 tools_req = {
                     "jsonrpc": "2.0",
                     "id": "list-tools",
                     "method": "tools/list"
                 }
-                
+
                 tools_response = await client.post(
                     f"{self.base_url}",
                     json=tools_req,
                     timeout=5.0
                 )
-                
+
                 if tools_response.status_code != 200:
                     return []
-                
+
                 tools_data = tools_response.json()
                 tools_list = tools_data.get("result", {}).get("tools", [])
-                
+
                 # Check if registry tools are available
                 registry_list_tool = next((tool for tool in tools_list if tool.get("name") == "registry/list"), None)
-                
+
                 if registry_list_tool:
                     # This is a registry server, call the registry/list tool to get registered servers
                     list_req = {
@@ -103,20 +103,20 @@ class LocalhostRegistryAdapter(RegistryAdapter):
                             "arguments": {}
                         }
                     }
-                    
+
                     list_response = await client.post(
                         f"{self.base_url}",
                         json=list_req,
                         timeout=5.0
                     )
-                    
+
                     if list_response.status_code == 200:
                         list_data = list_response.json()
                         result = list_data.get("result", {})
-                        
+
                         # The result contains services in a 'services' array
                         servers_from_registry = result.get("services", []) or result.get("output", [])
-                        
+
                         if isinstance(servers_from_registry, list):
                             # Format the servers to match our expected structure
                             formatted_servers = []
@@ -124,12 +124,12 @@ class LocalhostRegistryAdapter(RegistryAdapter):
                                 if isinstance(server, dict):
                                     # Get the URL for the server
                                     server_url = server.get("endpoint", server.get("url", self.base_url))
-                                    
+
                                     # Normalize the URL - if it's the same host/port as registry but missing path, add /mcp
                                     # Parse the base URL to compare host and port
                                     registry_parsed = urllib.parse.urlparse(self.base_url)
                                     server_parsed = urllib.parse.urlparse(server_url)
-                                    
+
                                     # If host and port match but path is missing or root, append the registry path
                                     # Handle equivalent hostnames like localhost and 127.0.0.1
                                     normalized_server_host = server_parsed.hostname
@@ -138,12 +138,12 @@ class LocalhostRegistryAdapter(RegistryAdapter):
                                     normalized_registry_host = registry_parsed.hostname
                                     if normalized_registry_host == 'localhost':
                                         normalized_registry_host = '127.0.0.1'
-                                        
-                                    if (normalized_server_host == normalized_registry_host and 
+
+                                    if (normalized_server_host == normalized_registry_host and
                                         server_parsed.port == registry_parsed.port and
                                         (not server_parsed.path or server_parsed.path == '/')):
                                         server_url = self.base_url
-                                    
+
                                     # Include all servers including the registry itself if it offers MCP services
                                     formatted_servers.append({
                                         "name": server.get("name", server.get("id", "unknown")),
@@ -151,11 +151,11 @@ class LocalhostRegistryAdapter(RegistryAdapter):
                                         "description": server.get("description", "Registered MCP server"),
                                         "adapter_type": "registry"
                                     })
-                            
+
                             # If we got servers from the registry, return them
                             if formatted_servers:
                                 return formatted_servers
-                
+
                 # If no registry functionality found, treat the server itself as an MCP server
                 return [{
                     "name": server_info.get("name", "localhost-registry"),
@@ -163,7 +163,7 @@ class LocalhostRegistryAdapter(RegistryAdapter):
                     "description": server_info.get("description", "Default local MCP registry"),
                     "adapter_type": "localhost"
                 }]
-                
+
         except httpx.RequestError:
             # Server is not available
             return []
@@ -276,7 +276,7 @@ class CustomRegistryAdapter(RegistryAdapter):
 
 class RegistryManager:
     """Manages multiple registry adapters."""
-    
+
     def __init__(self):
         self.adapters: List[RegistryAdapter] = []
         # Add the default localhost adapter

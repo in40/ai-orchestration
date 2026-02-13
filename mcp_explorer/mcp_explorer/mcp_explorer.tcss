@@ -57,8 +57,8 @@ Footer {
 }
 
 #results-container-wrapper {
-    height: 1fr;
-    max-height: 20;
+    height: 3fr;  /* Increase the height fraction */
+    min-height: 20;  /* Minimum height to make it more visible */
     border: solid $secondary;
     background: $boost;
     padding: 1;
@@ -70,38 +70,43 @@ Footer {
     width: 100%;
     height: 100%;
     overflow-y: auto;
+    overflow-x: auto;  /* Enable horizontal scrolling */
 }
 
 #results-display {
     width: 100%;
     height: 100%;
+    min-width: 100%;  /* Ensure minimum width */
     text-style: none;
     text-opacity: 1;
     border: solid $secondary;
     background: $boost;
     padding: 1;
     overflow-y: auto;
+    overflow-x: auto;  /* Enable horizontal scrolling */
     height: 100%;
     text-align: left;
     align: center top;
+    scrollbar-size: 1 1;  /* Show both vertical and horizontal scrollbars */
+    scrollbar-gutter: stable;  /* Keep space for scrollbars */
 }
 
 Static#results-display {
     width: 100%;
     height: 100%;
+    min-width: 100%;
     text-style: none;
     text-opacity: 1;
     border: solid $secondary;
     background: $boost;
     padding: 1;
     overflow-y: auto;
+    overflow-x: auto;  /* Enable horizontal scrolling */
     height: 100%;
     text-align: left;
     align: center top;
-}
-
-#results-display:focus {
-    border: tall $accent;
+    scrollbar-size: 1 1;  /* Show both vertical and horizontal scrollbars */
+    scrollbar-gutter: stable;  /* Keep space for scrollbars */
 }
 
 #results-table {

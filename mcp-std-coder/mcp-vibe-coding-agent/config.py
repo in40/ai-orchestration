@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import Optional, List
+import os
 
 
 class Settings(BaseSettings):
@@ -11,10 +12,17 @@ class Settings(BaseSettings):
     port: int = 3060                                   # changed to 3060 as requested
     registry_url: Optional[str] = "https://your-registry.com/register"  # Registry enabled
     host: str = "127.0.0.1"
-    
+
     # LM Studio configuration
     llm_base_url: str = "http://asus-tus:1234/v1"
     llm_model: str = "qwen3-4b"
+
+    # PostgreSQL configuration for persistent task storage
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "mcp_registry"
+    postgres_user: str = "postgres"
+    postgres_password: str = os.getenv("POSTGRES_PASSWORD", "")  # Use environment variable
 
 
 settings = Settings()
