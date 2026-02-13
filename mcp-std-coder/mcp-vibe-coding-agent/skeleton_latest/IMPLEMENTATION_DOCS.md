@@ -282,25 +282,9 @@ Sends log message to client.
 
 ## Registry Functionality
 
-The server includes mandatory registry functionality that should not be disabled by default. The server can operate in two distinct registry modes:
+The server includes mandatory registry functionality that should not be disabled by default. When enabled with `--enable-registry`, the server supports service discovery.
 
-### Registry Server Mode
-When enabled with `--enable-registry`, the server acts as a central registry to track available services from other MCP servers.
-
-**Usage:**
-```bash
-python -m mcp_std_server.server --transport streamable-http --port 3030 --enable-registry
-```
-
-### Registry Client Mode
-When enabled with `--register-with-registry`, the server registers itself with an external registry server.
-
-**Usage:**
-```bash
-python -m mcp_std_server.server --transport streamable-http --port 3031 --register-with-registry --registry-host 127.0.0.1 --registry-port 3030
-```
-
-### Registry Methods (when --enable-registry is used)
+### Registry Methods
 
 #### `registry/register`
 Registers a service with the registry.
@@ -337,13 +321,11 @@ Removes a service from the registry.
 - File-based storage in `mcp_registry.db`
 - No configuration required
 - Suitable for development and small deployments
-- Separate TaskStorage class available for storing received and submitted tasks in addition to registry data
 
 #### PostgreSQL
 - Production-ready database solution
 - Requires PostgreSQL installation
 - Better for high-concurrency scenarios
-- Separate TaskStorage class available for storing received and submitted tasks in addition to registry data
 
 **Configuration:**
 ```bash
@@ -354,13 +336,6 @@ Removes a service from the registry.
 --postgres-user postgres
 --postgres-password password
 ```
-
-### Task Storage
-- The server includes a separate TaskStorage class for persisting received and submitted tasks
-- Tasks are stored separately from registry data to maintain clear separation of concerns
-- Both SQLite and PostgreSQL backends support persistent task storage with status tracking
-- Tasks survive server restarts and maintain their state in the database
-- Separate schema for task management allows for independent scaling of task processing and service registry
 
 ### Heartbeat Management
 
@@ -374,19 +349,6 @@ Manages services that register with a remote registry:
 - Maintains registration status with remote registry
 - Handles graceful deregistration on shutdown
 
-### Registry Architecture:
-1. **Registry Server** - Central server that tracks available services (use `--enable-registry`)
-2. **Service Servers** - Individual MCP servers that register their capabilities
-3. **Registry Clients** - MCP servers that register with an external registry (use `--register-with-registry`)
-4. **AI Agent** - Queries the registry to discover available services
-
-### How to Use Registry:
-1. **As Registry Server**: Start the server with `--enable-registry` flag to accept registrations from other servers
-2. **As Registry Client**: Start the server with `--register-with-registry` flag to register with an external registry server
-3. Other MCP servers can register with the registry via the `/mcp` endpoint (for Streamable HTTP) or `/send` endpoint (for legacy)
-4. AI agents can discover services by querying the registry's `registry/list` method
-5. Services can deregister via the `registry/unregister` method
-
 ## Extending the Server
 
 ### Adding Custom Tools
@@ -397,7 +359,7 @@ from mcp_std_server.handlers.server_handlers import McpServerHandlers
 class CustomMcpServerHandlers(McpServerHandlers):
     def __init__(self, enable_registry=False, use_postgres=False, postgres_config=None):
         super().__init__(enable_registry, use_postgres, postgres_config)
-
+        
         # Add custom tool
         custom_tool = {
             "name": "custom_calculation",
@@ -412,12 +374,12 @@ class CustomMcpServerHandlers(McpServerHandlers):
             }
         }
         self.tools.append(custom_tool)
-
+    
     def _execute_tool(self, tool, arguments):
         if tool["name"] == "custom_calculation":
             op = arguments.get("operation")
             operands = arguments.get("operands", [])
-
+            
             if op == "add":
                 result = sum(operands)
             elif op == "multiply":
@@ -426,28 +388,12 @@ class CustomMcpServerHandlers(McpServerHandlers):
                     result *= num
             else:
                 raise ValueError(f"Unknown operation: {op}")
-
+            
             return {"result": result}
-
+        
         # Call parent method for other tools
         return super()._execute_tool(tool, arguments)
 ```
-
-### Customizing Tools for Specific Domains
-
-The server provides a flexible framework for implementing domain-specific tools. When extending the server for specific use cases (e.g., IT leadership, project management, etc.), consider implementing specialized tools that align with the domain requirements:
-
-- **Domain-Specific Tools**: Implement tools tailored to your specific use case (e.g., assign_task, review_code, generate_project_plan for IT leadership)
-- **Tool Input Validation**: Define appropriate input schemas for each tool to ensure proper validation
-- **Status Tracking**: Implement proper status tracking for long-running operations
-- **Integration Points**: Connect tools with external systems as needed for your domain
-
-Example domain-specific tools might include:
-- Task assignment and management tools
-- Code review and quality assurance tools
-- Project planning and scheduling tools
-- Team communication and coordination tools
-- Progress tracking and reporting tools
 
 ### Adding Custom Resources
 
@@ -553,14 +499,6 @@ class MyCustomMcpServer(McpServer):
 - `--postgres-user`: Username [default: postgres]
 - `--postgres-password`: Password [default: empty]
 
-### Port Configuration Clarification
-Understanding the difference between server and client ports:
-- `--port`: The port that this server listens on for incoming connections (server port)
-- `--client-port`: The port that this server connects to when acting as a client to other servers
-- When using `--register-with-registry`, the server acts as a client to connect to the registry server
-- Default server port is 3030, default registry client port is 3031
-- These ports can be configured independently to avoid conflicts
-
 ### Startup Scripts
 
 All MCP server implementations should follow the same shell script format as provided in the skeleton for consistency:
@@ -606,15 +544,6 @@ All implementations must follow the same .sh script format as provided with the 
 #### STDIO
 - Inherently secure for local processes
 - No network exposure
-
-### Database Security
-
-#### PostgreSQL Authentication
-When using PostgreSQL, ensure secure authentication by:
-- Setting strong passwords via `--postgres-password` parameter
-- Using dedicated database users with minimal required privileges
-- Storing credentials in environment variables when possible rather than command line
-- Ensuring the PostgreSQL server is properly secured and accessible only from authorized networks
 
 ### Data Validation
 
@@ -709,73 +638,4 @@ Start with basic tools/resources before implementing complex logic.
 
 ### Implementation Standards
 - All MCP server implementations must include registry functionality as mandatory (not optional)
-
-## Mixed-Mode Operation
-
-The server supports mixed-mode operation, functioning as both an MCP server (receiving tasks) and an MCP client (submitting tasks to other servers).
-
-### Mixed-Mode Architecture
-- **Dual Operation**: Server accepts inbound connections while maintaining outbound client connections
-- **Registry Integration**: Automatic service discovery for cross-server task delegation
-- **Task Delegation**: Ability to forward operations to other registered MCP servers
-- **Load Balancing**: Intelligent routing of requests to appropriate servers based on capabilities
-
-### Cross-Server Task Delegation Logic
-When registry functionality is enabled, the server can automatically delegate tasks to other registered MCP servers. The delegation logic works as follows:
-
-1. **Service Discovery**: The server queries the registry to discover available services and their capabilities
-2. **Capability Matching**: Tasks are matched to servers based on their advertised capabilities
-3. **Intelligent Routing**: Requests are forwarded to appropriate servers based on their capabilities
-4. **Result Aggregation**: Results from remote servers are returned to the original requester
-
-### Mixed-Mode Configuration
-The server can be configured for mixed-mode operation using the following command-line options:
-- `--enable-client-mode`: Enable client functionality to connect to other servers
-- `--client-transport`: Specify transport for client connections
-- `--client-host`, `--client-port`: Target server address for client connections
-- `--client-endpoint`: Direct endpoint specification for client connections
-
-### Cross-Server Operations
-When operating in mixed mode, the server provides these capabilities:
-- `delegate_tool_call()`: Forward tool execution to another server
-- `fetch_remote_resource()`: Retrieve resources from other servers
-- `resolve_remote_prompt()`: Get prompt results from other servers
-- Automatic service discovery through registry integration
-- Load balancing based on server capabilities and availability
-
-## Shell Script Variables
-
-The MCP server comes with several shell scripts for different deployment scenarios. Each script supports various environment variables and command-line parameters:
-
-### `start_mcp_server.sh`
-Comprehensive script with all configuration options.
-
-**Environment Variables and Parameters:**
-- `TRANSPORT` (default: "streamable-http"): Transport type (stdio, http, streamable-http)
-- `HOST` (default: "127.0.0.1"): Host for HTTP transport
-- `PORT` (default: 3030): Port for HTTP transport
-- `ENABLE_REGISTRY` (default: false): Enable registry functionality to track multiple MCP services
-- `REGISTER_WITH_REGISTRY` (default: true): Register this server with a registry server
-- `REGISTRY_HOST` (default: "127.0.0.1"): Registry server host to register with
-- `REGISTRY_PORT` (default: 3031): Registry server port to register with
-- `USE_POSTGRES` (default: false): Use PostgreSQL for registry storage instead of SQLite
-- `MAX_CONCURRENT_REQUESTS` (default: 10): Maximum number of concurrent requests
-
-### `start_registry_server.sh`
-Specifically configured for registry servers.
-
-**Environment Variables and Parameters:**
-- `TRANSPORT` (default: "streamable-http"): Transport type (http, streamable-http)
-- `HOST` (default: "127.0.0.1"): Host for HTTP transport
-- `PORT` (default: 3031): Port for HTTP transport (registry default)
-- `USE_POSTGRES` (default: false): Use PostgreSQL for registry storage instead of SQLite
-- `MAX_CONCURRENT_REQUESTS` (default: 10): Maximum number of concurrent requests
-- `BACKGROUND` (default: false): Run server in background
-- `LOG_FILE`: Redirect output to log file
-- `PID_FILE`: Write process ID to file
-
-### `start_mcp_default.sh`
-Quick start with default settings.
-
-**Environment Variables and Parameters:**
-- Uses default settings: Streamable HTTP transport on port 3030
+- All implementations must follow the same .sh script format as provided with the skeleton for consistency

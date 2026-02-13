@@ -1,6 +1,7 @@
 """
-Main MCP Server Implementation
-Ties together all components to create a fully compliant MCP server
+IT Lead MCP Server Implementation
+An AI agent serving as an IT lead for software development teams,
+accepting tasks via MCP endpoints and distributing subtasks to other agents.
 """
 import signal
 import sys
@@ -8,32 +9,39 @@ import threading
 import time
 from typing import Optional, Dict, Any
 import argparse
+import asyncio
+import json
+import requests
 
 from .utils.json_rpc import JsonRpcHandler, MessageType
 from .transports.stdio import StdioTransport
 from .transports.http_sse import HttpSseTransport
 from .transports.streamable_http import StreamableHttpTransport
-from .handlers.server_handlers import McpServerHandlers
+from .handlers.extended_server_handlers import ExtendedItLeadServerHandlers as ItLeadServerHandlers
 from .handlers.client_handlers import ClientMethodsHandlers
 from .utils.notifications import NotificationManager
 from .utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
-from dependencies.vibe_coder import register_vibe_coding_tool
 
 
-class McpServer:
-    """Main MCP Server implementation that combines all components"""
+class ItLeadMcpServer:
+    """IT Lead MCP Server implementation that distributes tasks to other agents"""
 
-    def __init__(self, transport_type: str = "streamable-http", host: str = "127.0.0.1", port: int = 3030, enable_registry: bool = False,
-                 register_with_registry: bool = False, registry_host: str = "127.0.0.1", registry_port: int = 3031,
-                 use_postgres: bool = False, postgres_host: str = "localhost", postgres_port: int = 5432,
+    def __init__(self, transport_type: str = "streamable-http", host: str = "127.0.0.1", port: int = 3061, 
+                 enable_registry: bool = True,  # Registry is mandatory
+                 register_with_registry: bool = True, registry_host: str = "127.0.0.1", registry_port: int = 3031,
+                 use_postgres: bool = True, postgres_host: str = "localhost", postgres_port: int = 5432,
                  postgres_db: str = "mcp_registry", postgres_user: str = "postgres", postgres_password: str = "",
-                 max_concurrent_requests: int = 10, enable_client_mode: bool = False, client_transport_type: str = "streamable-http", 
-                 client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None):
+                 max_concurrent_requests: int = 10,
+                 enable_client_mode: bool = True, client_transport_type: str = "streamable-http",
+                 client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None,
+                 llm_provider_url: str = "http://asus-tus:1234/v1/chat/completions",
+                 llm_model: str = "qwen3-4b",
+                 prompts_dir: str = "."):
         self.transport_type = transport_type
         self.host = host
         self.port = port
         self.running = False
-        self.enable_registry = enable_registry  # Optional registry functionality
+        self.enable_registry = enable_registry  # Registry functionality for service discovery
         self.register_with_registry = register_with_registry  # Auto-register with registry
         self.registry_host = registry_host
         self.registry_port = registry_port
@@ -44,13 +52,24 @@ class McpServer:
         self.postgres_user = postgres_user
         self.postgres_password = postgres_password
         self.max_concurrent_requests = max_concurrent_requests
-        
+
         # Client mode configuration
         self.enable_client_mode = enable_client_mode
         self.client_transport_type = client_transport_type
-        self.client_host = client_host
-        self.client_port = client_port
+        # If no specific client host/port is provided and we're registering with a registry,
+        # use the registry host/port for client connections by default
+        if client_host == "127.0.0.1" and client_port == 3030 and register_with_registry:
+            self.client_host = registry_host
+            self.client_port = registry_port
+        else:
+            self.client_host = client_host
+            self.client_port = client_port
         self.client_endpoint = client_endpoint
+
+        # LLM Configuration
+        self.llm_provider_url = llm_provider_url
+        self.llm_model = llm_model
+        self.prompts_dir = prompts_dir
 
         # Initialize components
         self.rpc_handler = JsonRpcHandler(max_concurrent_requests=max_concurrent_requests)
@@ -74,47 +93,36 @@ class McpServer:
             }
 
         self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
-        self.notification_manager = NotificationManager(self.rpc_handler)
-        self.server_handlers = McpServerHandlers(
+        self.server_handlers = ItLeadServerHandlers(
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
             postgres_config=postgres_config,
             client_handlers=self.client_handlers,
-            notification_manager=self.notification_manager
+            llm_provider_url=llm_provider_url,
+            llm_model=llm_model,
+            prompts_dir=prompts_dir
         )
+        self.notification_manager = NotificationManager(self.rpc_handler)
 
-        # Optional registry functionality
-        if self.enable_registry:
-            # Use the same registry as the handlers (either PostgreSQL or SQLite)
-            self.service_registry = self.server_handlers.service_registry
-            # Register this server with itself if it's acting as a registry
-            if self.service_registry is not None:  # Only proceed if registry initialization was successful
-                self.service_info = {
-                    "id": f"registry-{host}:{port}",
-                    "name": "MCP Service Registry",
-                    "description": "Central registry for MCP services",
-                    "endpoint": f"http://{host}:{port}",
-                    "capabilities": {
-                        "registry": True,
-                        "methods": ["registry/register", "registry/list", "registry/unregister"]
-                    }
+        # Optional registry functionality - only for registering with external registry
+        # The IT Lead server should register with the registry but not become a registry itself
+        if self.register_with_registry:
+            # Store registry connection info for later use in registration
+            self.service_info = {
+                "id": f"it-lead-server-{host}-{port}",
+                "name": f"IT Lead Agent Server on {host}:{port}",
+                "description": f"AI agent serving as IT lead for software development teams on {host}:{port}",
+                "endpoint": f"http://{host}:{port}/mcp",
+                "capabilities": {
+                    "tools": [tool["name"] for tool in self.server_handlers.tools],
+                    "resources": [resource["uri"] for resource in self.server_handlers.resources],
+                    "prompts": [prompt["name"] for prompt in self.server_handlers.prompts]
                 }
-                self.service_registry.register_service(self.service_info)
-
-                # Initialize heartbeat manager for the registry server
-                self.heartbeat_manager = HeartbeatManager(
-                    self.service_registry,
-                    self.service_info["id"],
-                    heartbeat_interval=30,  # Every 30 seconds
-                    max_age_minutes=10      # Remove services not seen in 10 minutes
-                )
-            else:
-                # Registry failed to initialize, disable registry functionality
-                print("❌ Registry functionality disabled due to initialization failure")
-                self.enable_registry = False
-                self.heartbeat_manager = None
-        else:
-            self.heartbeat_manager = None
+            }
+        
+        # Initialize heartbeat manager for the registry server if we're acting as one
+        # For IT Lead server, we typically don't act as a registry server
+        self.heartbeat_manager = None
 
         # Initialize remote heartbeat manager for auto-registration
         self.remote_heartbeat_manager = None
@@ -134,18 +142,20 @@ class McpServer:
         # Initialize client if client mode is enabled
         self.client = None
         if self.enable_client_mode:
-            # Client functionality would be initialized here
-            # Note: Actual client implementation would need to be added separately
-            print("Client mode enabled - actual client implementation needed")
+            from .client import McpClient
+            self.client = McpClient(
+                transport_type=self.client_transport_type,
+                host=self.client_host,
+                port=self.client_port,
+                endpoint=self.client_endpoint,
+                max_concurrent_requests=max_concurrent_requests
+            )
 
         # Connect the transport layer to the RPC handler for bidirectional communication
         self.rpc_handler.set_transport_layer(self.transport)
 
         # Register all handlers
         self._register_handlers()
-
-        # Register vibe coding tool after handlers are set up
-        self._register_vibe_coding_tool()
 
         # Set up signal handling for graceful shutdown (only in main thread/process)
         try:
@@ -181,9 +191,9 @@ class McpServer:
 
             # Prepare registration payload
             self.service_info = {
-                "id": f"server-{self.host}-{self.port}",
-                "name": f"MCP Server on {self.host}:{self.port}",
-                "description": f"MCP server providing services on {self.host}:{self.port}",
+                "id": f"it-lead-server-{self.host}-{self.port}",
+                "name": f"IT Lead Agent Server on {self.host}:{self.port}",
+                "description": f"AI agent serving as IT lead for software development teams on {self.host}:{self.port}",
                 "endpoint": endpoint_url,
                 "capabilities": {
                     "tools": [tool["name"] for tool in self.server_handlers.tools],
@@ -206,7 +216,7 @@ class McpServer:
             print(f"DEBUG: Registration response text: {response.text}")
 
             if response.status_code == 200:
-                print(f"Successfully registered with registry at {self.registry_host}:{self.registry_port}")
+                print(f"Successfully registered IT Lead server with registry at {self.registry_host}:{self.registry_port}")
 
                 # Initialize remote heartbeat manager to maintain registration
                 registry_base_url = f"http://{self.registry_host}:{self.registry_port}"
@@ -246,10 +256,6 @@ class McpServer:
             "notifications/prompts/list_changed",
             self._send_notification
         )
-
-    def _register_vibe_coding_tool(self):
-        """Register the vibe coding tool with the server handlers"""
-        register_vibe_coding_tool(self.server_handlers)
 
     def _message_callback(self, message):
         """Callback to handle incoming messages"""
@@ -310,18 +316,19 @@ class McpServer:
         sys.exit(0)
 
     def start(self):
-        """Start the MCP server"""
-        print(f"Starting MCP server with {self.transport_type} transport...")
+        """Start the IT Lead MCP server"""
+        print(f"Starting IT Lead MCP server with {self.transport_type} transport on port {self.port}...")
         self.running = True
 
         # Start the transport
         self.transport.start(self._message_callback)
 
-        print(f"MCP server running with {self.transport_type} transport")
+        print(f"IT Lead MCP server running with {self.transport_type} transport on port {self.port}")
 
         # Start client if client mode is enabled
-        if self.enable_client_mode:
-            print(f"Client mode enabled but client implementation not available")
+        if self.enable_client_mode and self.client:
+            print(f"Starting MCP client with {self.client_transport_type} transport to connect to remote server...")
+            self.client.connect()
 
         # Register with registry if configured to do so
         if self.register_with_registry:
@@ -351,12 +358,13 @@ class McpServer:
             self.stop()
 
     def stop(self):
-        """Stop the MCP server"""
-        print("Stopping MCP server...")
+        """Stop the IT Lead MCP server"""
+        print("Stopping IT Lead MCP server...")
 
         # Stop client if client mode is enabled
-        if self.enable_client_mode:
-            print("Client mode was enabled")
+        if self.enable_client_mode and self.client:
+            print("Stopping MCP client...")
+            self.client.disconnect()
 
         # Stop heartbeat managers first
         if self.remote_heartbeat_manager:
@@ -369,12 +377,12 @@ class McpServer:
 
         self.running = False
         self.transport.stop()
-        print("MCP server stopped")
+        print("IT Lead MCP server stopped")
 
 
 def main():
-    """Main entry point for the MCP server"""
-    parser = argparse.ArgumentParser(description='MCP (Model Context Protocol) Server')
+    """Main entry point for the IT Lead MCP server"""
+    parser = argparse.ArgumentParser(description='IT Lead MCP Server - AI agent for software development teams')
     parser.add_argument('--transport',
                        choices=['stdio', 'http', 'streamable-http'],
                        default='streamable-http',
@@ -384,13 +392,15 @@ def main():
                        help='Host for HTTP transport (default: 127.0.0.1)')
     parser.add_argument('--port',
                        type=int,
-                       default=3030,
-                       help='Port for HTTP transport (default: 3030)')
+                       default=3061,
+                       help='Port for HTTP transport (default: 3061)')
     parser.add_argument('--enable-registry',
                        action='store_true',
-                       help='Enable registry functionality to track multiple MCP services (optional)')
+                       default=False,
+                       help='Enable registry functionality (for running as registry server)')
     parser.add_argument('--register-with-registry',
                        action='store_true',
+                       default=True,
                        help='Register this server with a registry server (requires --registry-host and --registry-port)')
     parser.add_argument('--registry-host',
                        default='127.0.0.1',
@@ -401,7 +411,8 @@ def main():
                        help='Registry server port to register with (default: 3031)')
     parser.add_argument('--use-postgres',
                        action='store_true',
-                       help='Use PostgreSQL for registry storage instead of SQLite (optional)')
+                       default=True,
+                       help='Use PostgreSQL for registry storage instead of SQLite (recommended)')
     parser.add_argument('--postgres-host',
                        default='127.0.0.1',
                        help='PostgreSQL host (default: 127.0.0.1)')
@@ -419,21 +430,37 @@ def main():
                        default='',
                        help='PostgreSQL password (default: empty)')
     # Client mode arguments
-    parser.add_argument('--enable-client-mode', action='store_true', 
-                       help='Enable client mode to connect to another MCP server (default: False)')
-    parser.add_argument('--client-transport', choices=['stdio', 'http', 'streamable-http'], 
-                       default='streamable-http', 
+    parser.add_argument('--enable-client-mode',
+                       action='store_true',
+                       default=True,
+                       help='Enable client mode to connect to other MCP servers (default: True)')
+    parser.add_argument('--client-transport',
+                       choices=['stdio', 'http', 'streamable-http'],
+                       default='streamable-http',
                        help='Transport mechanism for client connection (default: streamable-http)')
-    parser.add_argument('--client-host', default='127.0.0.1', 
+    parser.add_argument('--client-host',
+                       default='127.0.0.1',
                        help='Host of the remote MCP server to connect to (default: 127.0.0.1)')
-    parser.add_argument('--client-port', type=int, default=3030, 
+    parser.add_argument('--client-port',
+                       type=int,
+                       default=3030,
                        help='Port of the remote MCP server to connect to (default: 3030)')
-    parser.add_argument('--client-endpoint', 
+    parser.add_argument('--client-endpoint',
                        help='Specific endpoint of the remote MCP server (overrides host:port)')
     parser.add_argument('--max-concurrent-requests',
                        type=int,
                        default=10,
                        help='Maximum number of concurrent requests (default: 10)')
+    # LLM Configuration
+    parser.add_argument('--llm-provider-url',
+                       default='http://asus-tus:1234/v1/chat/completions',
+                       help='URL for the LLM provider (default: http://asus-tus:1234/v1/chat/completions)')
+    parser.add_argument('--llm-model',
+                       default='qwen3-4b',
+                       help='LLM model name (default: qwen3-4b)')
+    parser.add_argument('--prompts-dir',
+                       default='.',
+                       help='Directory to keep prompts (default: current directory)')
 
     args = parser.parse_args()
 
@@ -444,7 +471,7 @@ def main():
     elif postgres_host == "::1":
         postgres_host = "127.0.0.1"
 
-    server = McpServer(
+    server = ItLeadMcpServer(
         transport_type=args.transport,
         host=args.host,
         port=args.port,
@@ -463,10 +490,17 @@ def main():
         client_transport_type=args.client_transport,
         client_host=args.client_host,
         client_port=args.client_port,
-        client_endpoint=args.client_endpoint
+        client_endpoint=args.client_endpoint,
+        llm_provider_url=args.llm_provider_url,
+        llm_model=args.llm_model,
+        prompts_dir=args.prompts_dir
     )
     server.start()
 
 
-if __name__ == "__main__":
+def main_func():
+    """Wrapper function to avoid module import warnings"""
     main()
+
+if __name__ == "__main__":
+    main_func()

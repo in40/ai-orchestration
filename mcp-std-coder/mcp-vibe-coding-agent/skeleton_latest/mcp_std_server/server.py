@@ -17,7 +17,6 @@ from .handlers.server_handlers import McpServerHandlers
 from .handlers.client_handlers import ClientMethodsHandlers
 from .utils.notifications import NotificationManager
 from .utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
-from dependencies.vibe_coder import register_vibe_coding_tool
 
 
 class McpServer:
@@ -27,8 +26,7 @@ class McpServer:
                  register_with_registry: bool = False, registry_host: str = "127.0.0.1", registry_port: int = 3031,
                  use_postgres: bool = False, postgres_host: str = "localhost", postgres_port: int = 5432,
                  postgres_db: str = "mcp_registry", postgres_user: str = "postgres", postgres_password: str = "",
-                 max_concurrent_requests: int = 10, enable_client_mode: bool = False, client_transport_type: str = "streamable-http", 
-                 client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None):
+                 max_concurrent_requests: int = 10):
         self.transport_type = transport_type
         self.host = host
         self.port = port
@@ -44,13 +42,6 @@ class McpServer:
         self.postgres_user = postgres_user
         self.postgres_password = postgres_password
         self.max_concurrent_requests = max_concurrent_requests
-        
-        # Client mode configuration
-        self.enable_client_mode = enable_client_mode
-        self.client_transport_type = client_transport_type
-        self.client_host = client_host
-        self.client_port = client_port
-        self.client_endpoint = client_endpoint
 
         # Initialize components
         self.rpc_handler = JsonRpcHandler(max_concurrent_requests=max_concurrent_requests)
@@ -74,45 +65,38 @@ class McpServer:
             }
 
         self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
-        self.notification_manager = NotificationManager(self.rpc_handler)
         self.server_handlers = McpServerHandlers(
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
             postgres_config=postgres_config,
-            client_handlers=self.client_handlers,
-            notification_manager=self.notification_manager
+            client_handlers=self.client_handlers
         )
+        self.notification_manager = NotificationManager(self.rpc_handler)
 
         # Optional registry functionality
         if self.enable_registry:
             # Use the same registry as the handlers (either PostgreSQL or SQLite)
             self.service_registry = self.server_handlers.service_registry
             # Register this server with itself if it's acting as a registry
-            if self.service_registry is not None:  # Only proceed if registry initialization was successful
-                self.service_info = {
-                    "id": f"registry-{host}:{port}",
-                    "name": "MCP Service Registry",
-                    "description": "Central registry for MCP services",
-                    "endpoint": f"http://{host}:{port}",
-                    "capabilities": {
-                        "registry": True,
-                        "methods": ["registry/register", "registry/list", "registry/unregister"]
-                    }
+            self.service_info = {
+                "id": f"registry-{host}:{port}",
+                "name": "MCP Service Registry",
+                "description": "Central registry for MCP services",
+                "endpoint": f"http://{host}:{port}",
+                "capabilities": {
+                    "registry": True,
+                    "methods": ["registry/register", "registry/list", "registry/unregister"]
                 }
-                self.service_registry.register_service(self.service_info)
+            }
+            self.service_registry.register_service(self.service_info)
 
-                # Initialize heartbeat manager for the registry server
-                self.heartbeat_manager = HeartbeatManager(
-                    self.service_registry,
-                    self.service_info["id"],
-                    heartbeat_interval=30,  # Every 30 seconds
-                    max_age_minutes=10      # Remove services not seen in 10 minutes
-                )
-            else:
-                # Registry failed to initialize, disable registry functionality
-                print("❌ Registry functionality disabled due to initialization failure")
-                self.enable_registry = False
-                self.heartbeat_manager = None
+            # Initialize heartbeat manager for the registry server
+            self.heartbeat_manager = HeartbeatManager(
+                self.service_registry,
+                self.service_info["id"],
+                heartbeat_interval=30,  # Every 30 seconds
+                max_age_minutes=10      # Remove services not seen in 10 minutes
+            )
         else:
             self.heartbeat_manager = None
 
@@ -131,21 +115,11 @@ class McpServer:
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
 
-        # Initialize client if client mode is enabled
-        self.client = None
-        if self.enable_client_mode:
-            # Client functionality would be initialized here
-            # Note: Actual client implementation would need to be added separately
-            print("Client mode enabled - actual client implementation needed")
-
         # Connect the transport layer to the RPC handler for bidirectional communication
         self.rpc_handler.set_transport_layer(self.transport)
 
         # Register all handlers
         self._register_handlers()
-
-        # Register vibe coding tool after handlers are set up
-        self._register_vibe_coding_tool()
 
         # Set up signal handling for graceful shutdown (only in main thread/process)
         try:
@@ -247,10 +221,6 @@ class McpServer:
             self._send_notification
         )
 
-    def _register_vibe_coding_tool(self):
-        """Register the vibe coding tool with the server handlers"""
-        register_vibe_coding_tool(self.server_handlers)
-
     def _message_callback(self, message):
         """Callback to handle incoming messages"""
         # Check if this is a response to a server-initiated request
@@ -258,7 +228,7 @@ class McpServer:
             # This is a response to a server-initiated request to the client
             self.rpc_handler.handle_client_response(message)
             return  # Don't process further as this is handled by the pending request mechanism
-
+        
         # Use the synchronous version of handle_message for stdio transport
         try:
             response = self.rpc_handler.handle_message_sync(message)
@@ -319,10 +289,6 @@ class McpServer:
 
         print(f"MCP server running with {self.transport_type} transport")
 
-        # Start client if client mode is enabled
-        if self.enable_client_mode:
-            print(f"Client mode enabled but client implementation not available")
-
         # Register with registry if configured to do so
         if self.register_with_registry:
             print(f"Registering with registry at {self.registry_host}:{self.registry_port}...")
@@ -353,10 +319,6 @@ class McpServer:
     def stop(self):
         """Stop the MCP server"""
         print("Stopping MCP server...")
-
-        # Stop client if client mode is enabled
-        if self.enable_client_mode:
-            print("Client mode was enabled")
 
         # Stop heartbeat managers first
         if self.remote_heartbeat_manager:
@@ -418,18 +380,6 @@ def main():
     parser.add_argument('--postgres-password',
                        default='',
                        help='PostgreSQL password (default: empty)')
-    # Client mode arguments
-    parser.add_argument('--enable-client-mode', action='store_true', 
-                       help='Enable client mode to connect to another MCP server (default: False)')
-    parser.add_argument('--client-transport', choices=['stdio', 'http', 'streamable-http'], 
-                       default='streamable-http', 
-                       help='Transport mechanism for client connection (default: streamable-http)')
-    parser.add_argument('--client-host', default='127.0.0.1', 
-                       help='Host of the remote MCP server to connect to (default: 127.0.0.1)')
-    parser.add_argument('--client-port', type=int, default=3030, 
-                       help='Port of the remote MCP server to connect to (default: 3030)')
-    parser.add_argument('--client-endpoint', 
-                       help='Specific endpoint of the remote MCP server (overrides host:port)')
     parser.add_argument('--max-concurrent-requests',
                        type=int,
                        default=10,
@@ -458,12 +408,7 @@ def main():
         postgres_db=args.postgres_db,
         postgres_user=args.postgres_user,
         postgres_password=args.postgres_password,
-        max_concurrent_requests=args.max_concurrent_requests,
-        enable_client_mode=args.enable_client_mode,
-        client_transport_type=args.client_transport,
-        client_host=args.client_host,
-        client_port=args.client_port,
-        client_endpoint=args.client_endpoint
+        max_concurrent_requests=args.max_concurrent_requests
     )
     server.start()
 
