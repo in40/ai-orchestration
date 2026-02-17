@@ -60,7 +60,9 @@ class AdvancedAssignmentHandlers:
 
     def register_handlers(self, rpc_handler: JsonRpcHandler):
         """Register advanced assignment handlers with the RPC handler"""
-        rpc_handler.register_request_handler('tools/call', self.handle_tools_call)
+        # Note: Do NOT register tools/call here - the main handler in extended_server_handlers.py
+        # is responsible for routing tool calls to this module. Registering tools/call here
+        # would override the main handler and prevent proper task storage.
 
     def handle_tools_call(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle tools/call request for advanced assignment tools"""
@@ -96,8 +98,8 @@ class AdvancedAssignmentHandlers:
         elif tool_name == "check_agent_availability":
             return self._check_agent_availability(arguments)
 
-        # For any other tools, return a generic response
-        return {"result": f"Executed advanced assignment tool '{tool_name}' with arguments: {arguments}"}
+        # For any other tools, return None to indicate this module doesn't handle them
+        return None
 
     def _balance_agent_load(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Balance workload across available agents"""
@@ -292,6 +294,15 @@ class AdvancedAssignmentHandlers:
 
     def _evaluate_agent_match_with_llm(self, task: dict, agent: dict):
         """Use LLM to evaluate agent-task match"""
+        # Check if this is a requirements-related task
+        task_domain = task.get('domain', 'general')
+        task_description = task.get('description', '').lower()
+        is_requirements_task = ('requirement' in task_description or 
+                               'analyze' in task_description or 
+                               'specification' in task_description or
+                               'business' in task_description or
+                               'translate' in task_description)
+        
         prompt = f"""
         Evaluate the match between the following task and agent:
 
@@ -302,7 +313,8 @@ class AdvancedAssignmentHandlers:
           "description": "{task.get('description', 'No description')}",
           "required_skills": {json.dumps(task.get('required_skills', []))},
           "complexity_level": "{task.get('complexity', 'medium')}",
-          "domain": "{task.get('domain', 'general')}"
+          "domain": "{task.get('domain', 'general')}",
+          "is_requirements_related": {json.dumps(is_requirements_task)}
         }}
 
         AGENT:
@@ -321,6 +333,7 @@ class AdvancedAssignmentHandlers:
         4. Overall recommendation score (0.0-1.0)
         5. Potential challenges
         6. Recommendation confidence
+        7. If this is a requirements-related task, consider if the agent has requirements engineering specialty
 
         Return as JSON:
         {{
@@ -330,7 +343,8 @@ class AdvancedAssignmentHandlers:
           "overall_score": 0.0-1.0,
           "challenges": ["challenge1", "challenge2"],
           "confidence": 0.0-1.0,
-          "recommendation": "strong_match|good_match|moderate_match|not_recommended"
+          "recommendation": "strong_match|good_match|moderate_match|not_recommended",
+          "is_requirements_specialist": {json.dumps("requirements_engineering" in agent.get('specialties', []))}
         }}
         """
         

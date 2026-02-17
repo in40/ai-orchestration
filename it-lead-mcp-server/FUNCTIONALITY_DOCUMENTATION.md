@@ -179,6 +179,120 @@ The server fully complies with the Model Context Protocol (MLM) specification:
 
 **Functionality**: Tracks and reports progress for specified tasks, including completion percentage and estimated completion time.
 
+### Enhanced Requirements Integration Tools
+
+#### `coordinate_requirements_analysis`
+**Description**: Coordinate between stakeholder inputs and requirements engineer
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "stakeholder_inputs": {"type": "string", "description": "Raw stakeholder inputs (interviews, documents, etc.)"},
+    "business_context": {"type": "string", "description": "Business context and constraints"},
+    "previous_requirements": {"type": "array", "items": {"type": "object"}, "description": "Previous requirements for reference"},
+    "project_context": {"type": "string", "description": "Project context and constraints"},
+    "existing_artifacts": {"type": "array", "items": {"type": "string"}, "description": "Existing project artifacts"}
+  },
+  "required": ["stakeholder_inputs", "business_context", "project_context"]
+}
+```
+
+**Functionality**: Coordinates requirements analysis with the requirements engineer agent, facilitating the transformation of stakeholder inputs into structured requirements.
+
+#### `validate_requirements_completeness`
+**Description**: Validate completeness of requirements using requirements engineer capabilities
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "requirement_document": {"type": "string", "description": "Requirement document to validate"},
+    "validation_criteria": {"type": "array", "items": {"type": "string"}, "description": "Criteria for validation"},
+    "project_context": {"type": "string", "description": "Project context and constraints"}
+  },
+  "required": ["requirement_document", "validation_criteria", "project_context"]
+}
+```
+
+**Functionality**: Validates requirements completeness using the requirements engineer agent's specialized capabilities.
+
+#### `sync_with_requirements_engineer`
+**Description**: Synchronize requirements with the requirements engineer agent
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": {"type": "string", "enum": ["push", "pull", "update", "validate"], "description": "Type of synchronization operation"},
+    "requirements_data": {"type": "object", "description": "Requirements data to synchronize"},
+    "target_agent": {"type": "string", "description": "Target agent for synchronization"}
+  },
+  "required": ["operation"]
+}
+```
+
+**Functionality**: Synchronizes requirements data with the requirements engineer agent using various operations.
+
+#### `fetch_requirements_specifications`
+**Description**: Fetch requirements specifications from requirements engineer
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "project_id": {"type": "string", "description": "Project identifier"},
+    "filter": {"type": "string", "description": "Filter for specific requirements"},
+    "format": {"type": "string", "enum": ["json", "text", "srs"], "default": "json", "description": "Format for returned specifications"}
+  },
+  "required": ["project_id"]
+}
+```
+
+**Functionality**: Retrieves requirements specifications from the requirements engineer agent in the requested format.
+
+#### `submit_stakeholder_inputs`
+**Description**: Submit stakeholder inputs to requirements engineer for analysis
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "stakeholder_inputs": {"type": "string", "description": "Raw stakeholder inputs (interviews, documents, etc.)"},
+    "business_context": {"type": "string", "description": "Business context and constraints"},
+    "project_reference": {"type": "string", "description": "Reference to the project"},
+    "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"], "default": "medium"}
+  },
+  "required": ["stakeholder_inputs", "business_context", "project_reference"]
+}
+```
+
+**Functionality**: Submits stakeholder inputs to the requirements engineer agent for analysis and formalization into structured requirements.
+
+#### `validate_requirements_traceability`
+**Description**: Validate requirements traceability and completeness using requirements engineer capabilities
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "requirements": {"type": "array", "items": {"type": "object"}, "description": "Requirements to validate"},
+    "design_elements": {"type": "array", "items": {"type": "object"}, "description": "Design elements linked to requirements"},
+    "code_modules": {"type": "array", "items": {"type": "object"}, "description": "Code modules implementing requirements"},
+    "test_cases": {"type": "array", "items": {"type": "object"}, "description": "Test cases validating requirements"}
+  },
+  "required": ["requirements"]
+}
+```
+
+**Functionality**: Validates requirements traceability by checking links between requirements and design elements, code modules, and test cases using the requirements engineer agent's capabilities.
+
 ### Enhanced Strategic Planning Tools
 
 #### `decompose_requirements`
@@ -520,6 +634,48 @@ The server fully complies with the Model Context Protocol (MLM) specification:
 - in_progress_tasks: Count of in-progress tasks
 - blocked_tasks: Count of blocked tasks
 - upcoming_milestones: List of upcoming milestones
+
+### Enhanced Requirements Integration Resources
+
+#### `it-lead://resource/requirements-traceability`
+**Name**: Requirements Traceability
+**Description**: Requirements traceability information from requirements engineer
+
+**Content Format**: JSON object containing:
+- traceability_id: Unique identifier for the traceability record
+- created_at: Timestamp of creation
+- requirements: Array of requirements objects
+- design_elements: Array of design elements linked to requirements
+- code_modules: Array of code modules implementing requirements
+- test_cases: Array of test cases validating requirements
+- last_updated_from_requirements_engineer: Timestamp of last update from requirements engineer
+
+#### `it-lead://resource/current-requirements-status`
+**Name**: Current Requirements Status
+**Description**: Current status of requirements gathering and validation
+
+**Content Format**: JSON object containing:
+- status_id: Unique identifier for the status record
+- created_at: Timestamp of creation
+- requirements_gathering_progress: Percentage of requirements gathering completed
+- requirements_validated: Count of validated requirements
+- requirements_approved: Count of approved requirements
+- ambiguities_identified: Count of identified ambiguities
+- ambiguities_resolved: Count of resolved ambiguities
+- next_milestone: Next milestone in requirements process
+- estimated_completion: Estimated completion date
+
+#### `it-lead://resource/requirements-ambiguity-log`
+**Name**: Requirements Ambiguity Log
+**Description**: Log of identified ambiguities and their resolution status
+
+**Content Format**: JSON object containing:
+- log_id: Unique identifier for the log
+- created_at: Timestamp of creation
+- ambiguities: Array of ambiguity objects with id, requirement_id, description, status, dates, and resolution info
+- total_identified: Total count of identified ambiguities
+- total_resolved: Total count of resolved ambiguities
+- resolution_rate: Rate of ambiguity resolution
 
 ## Prompts Capabilities
 

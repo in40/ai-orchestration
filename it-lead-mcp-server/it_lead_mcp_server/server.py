@@ -239,9 +239,23 @@ class ItLeadMcpServer:
 
     def _register_handlers(self):
         """Register all handlers with the RPC handler"""
+        print("DEBUG: Starting handler registration...")
+        print(f"DEBUG: RPC handler has {len(self.rpc_handler.request_handlers)} request handlers before registration")
+        
+        print("DEBUG: Registering server handlers...")
         self.server_handlers.register_handlers(self.rpc_handler)
+        print(f"DEBUG: After server handlers registration, RPC handler has {len(self.rpc_handler.request_handlers)} request handlers")
+        
+        print("DEBUG: Registering client handlers...")
         self.client_handlers.register_handlers(self.rpc_handler)
+        print(f"DEBUG: After client handlers registration, RPC handler has {len(self.rpc_handler.request_handlers)} request handlers")
+        
+        print("DEBUG: Registering notification handlers...")
         self.notification_manager.register_handlers(self.rpc_handler)
+        print(f"DEBUG: After all handlers registration, RPC handler has {len(self.rpc_handler.request_handlers)} request handlers")
+        
+        # Print the registered methods for debugging
+        print(f"DEBUG: Registered methods: {list(self.rpc_handler.request_handlers.keys())}")
 
         # Register notification callbacks
         self.notification_manager.register_notification_callback(
@@ -339,9 +353,25 @@ class ItLeadMcpServer:
             self.heartbeat_manager.start()
 
         # Keep the server running
+        last_team_discovery = time.time()
+        team_discovery_interval = 30  # seconds
+
         try:
             while self.running:
+                current_time = time.time()
                 time.sleep(0.1)  # Small sleep to prevent busy waiting
+                
+                # Periodically refresh team discovery
+                if current_time - last_team_discovery > team_discovery_interval:
+                    try:
+                        # Trigger team discovery to refresh agent status
+                        if hasattr(self.server_handlers, 'team_coordination_manager'):
+                            self.server_handlers.team_coordination_manager.discover_agents()
+                        last_team_discovery = current_time
+                        print(f"🔄 Team discovery refreshed at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}")
+                    except Exception as e:
+                        print(f"⚠️ Error refreshing team discovery: {e}")
+
                 # Check for any pending notifications to send
                 changes = self.notification_manager.get_changes_status()
 

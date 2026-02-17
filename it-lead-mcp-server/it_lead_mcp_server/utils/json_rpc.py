@@ -318,7 +318,7 @@ class JsonRpcHandler:
         }
         return JsonRpcMessage(error_response, MessageType.RESPONSE)
     
-    async def send_request_and_wait(self, request: JsonRpcMessage, timeout: float = 30.0):
+    async def send_request_and_wait(self, request: JsonRpcMessage, timeout: float = 1200.0):
         """Send a request and wait for the response"""
         request_id = request.get_id()
         

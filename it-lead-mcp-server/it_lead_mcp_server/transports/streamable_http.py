@@ -51,6 +51,9 @@ class StreamableHttpTransport:
                 
                 # Return the response
                 if response:
+                    with open("/tmp/mcp_debug.log", "a") as f:
+                        f.write(f"DEBUG: response is not None\n")
+                        f.write(f"DEBUG: response.to_json() = {response.to_json()}\n")
                     return JSONResponse(content=json.loads(response.to_json()))
                 else:
                     return JSONResponse(content={"jsonrpc": "2.0", "result": {}})

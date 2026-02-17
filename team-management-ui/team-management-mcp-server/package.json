@@ -1,0 +1,21 @@
+{
+  "name": "team-management-ui",
+  "version": "1.0.0",
+  "description": "Team management web application with MCP integration",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "build": "cd webapp && npm run build",
+    "install-app": "cd webapp && npm install"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1"
+  },
+  "keywords": ["team", "management", "mcp", "ui"],
+  "author": "Team Management System",
+  "license": "MIT"
+}

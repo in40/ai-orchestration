@@ -16,6 +16,7 @@ from .advanced_assignment_handlers import AdvancedAssignmentHandlers
 from .quality_gate_handlers import QualityGateHandlers
 from .human_interface_handlers import HumanInterfaceHandlers
 from .advanced_orchestration_handlers import AdvancedOrchestrationHandlers
+from .async_task_handlers import AsyncTaskHandlers
 
 
 class ExtendedItLeadServerHandlers:
@@ -106,6 +107,40 @@ class ExtendedItLeadServerHandlers:
                         "include_details": {"type": "boolean", "default": False, "description": "Include detailed progress information"}
                     },
                     "required": ["task_ids"]
+                }
+            },
+            {
+                "name": "get_all_tasks",
+                "description": "Retrieve all tasks from the system",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status_filter": {"type": "string", "description": "Filter tasks by status (optional)"},
+                        "limit": {"type": "integer", "description": "Limit number of returned tasks (optional)"}
+                    }
+                }
+            },
+            {
+                "name": "get_task_history",
+                "description": "Get the complete status history of a specific task with timestamps",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "ID of the task to get history for"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+            {
+                "name": "check_agent_task_status",
+                "description": "Check real-time task status directly with the assigned agent via MCP",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "ID of the task to check"},
+                        "assigned_agent": {"type": "string", "description": "Name of the assigned agent (e.g., 'implementation-engineer')"}
+                    },
+                    "required": ["task_id"]
                 }
             }
         ]
@@ -206,13 +241,23 @@ class ExtendedItLeadServerHandlers:
         # Initialize task storage
         try:
             from ..utils.task_storage import TaskStorage
+            # Use SQLite if use_postgres is False
+            use_sqlite = not use_postgres
+            # Set the appropriate database name based on whether we're using SQLite or PostgreSQL
+            if use_sqlite:
+                default_database = "mcp_registry.db"
+            else:
+                default_database = "mcp_registry"
+
             self.task_storage = TaskStorage(
                 host=self.postgres_config.get("host", "localhost"),
                 port=self.postgres_config.get("port", 5432),
-                database=self.postgres_config.get("database", "mcp_registry"),
+                database=self.postgres_config.get("database", default_database),
                 user=self.postgres_config.get("user", "postgres"),
-                password=self.postgres_config.get("password", "")
+                password=self.postgres_config.get("password", ""),
+                use_sqlite=use_sqlite
             )
+            print("✅ Task storage initialized successfully")
         except Exception as e:
             print(f"❌ Failed to initialize task storage: {e}")
             self.task_storage = None
@@ -227,6 +272,33 @@ class ExtendedItLeadServerHandlers:
         # Initialize LLM client
         from ..utils.llm_client import MockLlmClient
         self.llm_client = MockLlmClient(self.llm_provider_url, self.llm_model)
+
+        # Initialize task assignment manager (for intelligent routing and forwarding)
+        try:
+            from ..utils.task_assignment import TaskAssignmentManager
+            self.task_assignment_manager = TaskAssignmentManager(
+                llm_client=self.llm_client,
+                service_registry=self.service_registry,
+                task_storage=self.task_storage
+            )
+            print("✅ Task assignment manager initialized successfully")
+        except Exception as e:
+            print(f"❌ Failed to initialize task assignment manager: {e}")
+            import traceback
+            traceback.print_exc()
+            self.task_assignment_manager = None
+        
+        # Initialize agent status checker (for tracking task status with agents)
+        try:
+            from ..utils.agent_status_checker import AgentStatusChecker
+            self.agent_status_checker = AgentStatusChecker(
+                service_registry=self.service_registry,
+                task_storage=self.task_storage
+            )
+            print("✅ Agent status checker initialized successfully")
+        except Exception as e:
+            print(f"❌ Failed to initialize agent status checker: {e}")
+            self.agent_status_checker = None
 
         # Initialize enhanced agent registry
         from ..utils.enhanced_agent_registry import EnhancedAgentRegistry
@@ -261,6 +333,16 @@ class ExtendedItLeadServerHandlers:
             llm_client=self.llm_client,
             agent_registry=self.enhanced_agent_registry,
             task_storage=self.task_storage
+        )
+
+        # Initialize async task handlers
+        from ..client import McpClient
+        self.async_task_handlers = AsyncTaskHandlers(
+            llm_client=self.llm_client,
+            agent_registry=self.enhanced_agent_registry,
+            task_storage=self.task_storage,
+            mcp_client_factory=lambda endpoint: McpClient(endpoint=endpoint),
+            notification_manager=None  # Will be set up if needed
         )
 
     def _add_enhanced_tools(self):
@@ -415,9 +497,13 @@ class ExtendedItLeadServerHandlers:
                 }
             }
         ]
-        
+
         # Add all enhanced tools to the main tools list
         self.tools.extend(strategic_planning_tools)
+
+        # Add async task tools
+        async_task_tools = self.async_task_handlers.tools
+        self.tools.extend(async_task_tools)
 
     def _add_enhanced_resources(self):
         """Add enhanced resources from new modules"""
@@ -519,6 +605,7 @@ class ExtendedItLeadServerHandlers:
 
     def register_handlers(self, rpc_handler: JsonRpcHandler):
         """Register all server handlers with the RPC handler"""
+        print("DEBUG: Registering handlers - tools/call mapped to self.handle_tools_call")
         # Standard MCP methods
         rpc_handler.register_request_handler('initialize', self.handle_initialize)
         rpc_handler.register_request_handler('tools/list', self.handle_tools_list)
@@ -604,52 +691,118 @@ class ExtendedItLeadServerHandlers:
 
     def handle_tools_call(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle tools/call request - enhanced to support new modules"""
-        # Handle case where params is None (when no params are provided in the request)
-        if params is None:
-            params = {}
+        try:
+            print(f"DEBUG: handle_tools_call called with params: {params}")
+            # Handle case where params is None (when no params are provided in the request)
+            if params is None:
+                params = {}
 
-        # Support both "name" and "tool" as the parameter name for compatibility
-        tool_name = params.get("name") or params.get("tool")
-        tool_arguments = params.get("arguments", {})
+            # Support both "name" and "tool" as the parameter name for compatibility
+            tool_name = params.get("name") or params.get("tool")
+            tool_arguments = params.get("arguments", {})
+            print(f"DEBUG: Processing tool: {tool_name}")
 
-        # Find the tool
-        tool = None
-        for t in self.tools:
-            if t["name"] == tool_name:
-                tool = t
-                break
+            # Find the tool
+            tool = None
+            for t in self.tools:
+                if t["name"] == tool_name:
+                    tool = t
+                    break
 
-        if not tool:
-            raise ValueError(f"Tool '{tool_name}' not found")
+            if not tool:
+                print(f"ERROR: Tool '{tool_name}' not found in main tools list")
+                raise ValueError(f"Tool '{tool_name}' not found")
 
-        # First, try enhanced modules
-        # Strategic Planning
-        result = self.strategic_planning_handlers.handle_tools_call(params, request_id)
-        if result is not None:
-            return result
-            
-        # Advanced Assignment
-        result = self.advanced_assignment_handlers.handle_tools_call(params, request_id)
-        if result is not None:
-            return result
-            
-        # Quality Gate
-        result = self.quality_gate_handlers.handle_tools_call(params, request_id)
-        if result is not None:
-            return result
-            
-        # Human Interface
-        result = self.human_interface_handlers.handle_tools_call(params, request_id)
-        if result is not None:
-            return result
-            
-        # Advanced Orchestration
-        result = self.advanced_orchestration_handlers.handle_tools_call(params, request_id)
-        if result is not None:
-            return result
+            print(f"DEBUG: Tool found in main tools list, checking enhanced modules...")
+            # First, try enhanced modules
+            # Strategic Planning
+            try:
+                result = self.strategic_planning_handlers.handle_tools_call(params, request_id)
+                print(f"DEBUG: Strategic planning result for tool {tool_name}: {result}")
+                if result is not None:
+                    print(f"DEBUG: Returning strategic planning result for tool {tool_name}")
+                    return result
+            except Exception as e:
+                print(f"ERROR in strategic_planning_handlers.handle_tools_call: {e}")
+                import traceback
+                traceback.print_exc()
 
-        # If not handled by enhanced modules, use original implementation
-        return self._execute_original_tool(tool, tool_arguments)
+            # Advanced Assignment
+            try:
+                result = self.advanced_assignment_handlers.handle_tools_call(params, request_id)
+                print(f"DEBUG: Advanced assignment result for tool {tool_name}: {result}")
+                if result is not None:
+                    print(f"DEBUG: Returning advanced assignment result for tool {tool_name}")
+                    return result
+            except Exception as e:
+                print(f"ERROR in advanced_assignment_handlers.handle_tools_call: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Quality Gate
+            try:
+                result = self.quality_gate_handlers.handle_tools_call(params, request_id)
+                print(f"DEBUG: Quality gate result for tool {tool_name}: {result}")
+                if result is not None:
+                    print(f"DEBUG: Returning quality gate result for tool {tool_name}")
+                    return result
+            except Exception as e:
+                print(f"ERROR in quality_gate_handlers.handle_tools_call: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Human Interface
+            try:
+                result = self.human_interface_handlers.handle_tools_call(params, request_id)
+                print(f"DEBUG: Human interface result for tool {tool_name}: {result}")
+                if result is not None:
+                    print(f"DEBUG: Returning human interface result for tool {tool_name}")
+                    return result
+            except Exception as e:
+                print(f"ERROR in human_interface_handlers.handle_tools_call: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Advanced Orchestration
+            try:
+                result = self.advanced_orchestration_handlers.handle_tools_call(params, request_id)
+                print(f"DEBUG: Advanced orchestration result for tool {tool_name}: {result}")
+                if result is not None:
+                    print(f"DEBUG: Returning advanced orchestration result for tool {tool_name}")
+                    return result
+            except Exception as e:
+                print(f"ERROR in advanced_orchestration_handlers.handle_tools_call: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Async Task Handlers
+            try:
+                result = self.async_task_handlers.handle_tools_call(params, request_id)
+                print(f"DEBUG: Async task result for tool {tool_name}: {result}")
+                if result is not None:
+                    print(f"DEBUG: Returning async task result for tool {tool_name}")
+                    return result
+            except Exception as e:
+                print(f"ERROR in async_task_handlers.handle_tools_call: {e}")
+                import traceback
+                traceback.print_exc()
+
+            print(f"DEBUG: No enhanced module handled the tool {tool_name}, calling original implementation")
+            # If not handled by enhanced modules, use original implementation
+            try:
+                original_result = self._execute_original_tool(tool, tool_arguments)
+                print(f"DEBUG: Original implementation result: {original_result}")
+                return original_result
+            except Exception as e:
+                print(f"ERROR in _execute_original_tool: {e}")
+                import traceback
+                traceback.print_exc()
+                return {"result": {"error": f"Error in original tool implementation: {str(e)}"}}
+        except Exception as e:
+            print(f"ERROR in handle_tools_call: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"result": {"error": f"Error in handle_tools_call: {str(e)}"}}
 
     def _execute_original_tool(self, tool: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute original IT Lead tools for backward compatibility"""
@@ -657,40 +810,43 @@ class ExtendedItLeadServerHandlers:
 
         # IT Lead specific tools
         if tool_name == "assign_task":
+            print(f"DEBUG: assign_task called with arguments: {arguments}")
             task_id = arguments.get("task_id", "unknown")
             task_description = arguments.get("task_description", "")
             assignee = arguments.get("assignee", "")
             priority = arguments.get("priority", "medium")
             deadline = arguments.get("deadline", "")
-
-            # In a real implementation, this would assign the task to the appropriate agent
-            # For now, we'll simulate the assignment and return a result
-            result = {
-                "task_id": task_id,
-                "assigned_to": assignee,
-                "priority": priority,
-                "deadline": deadline,
-                "status": "assigned",
-                "message": f"Task '{task_id}' assigned to {assignee} with priority {priority}"
-            }
-
-            # Store the task in the database
-            if self.task_storage:
-                self.task_storage.store_received_task(
-                    task_id=task_id,
-                    title=f"Task: {task_id}",
-                    description=task_description,
-                    assigned_to=assignee,
-                    priority=priority,
-                    deadline=deadline,
-                    source_server="internal",
-                    metadata={"tool_call": "assign_task", "original_arguments": arguments}
+            
+            # Use the task assignment manager for intelligent routing and forwarding
+            if self.task_assignment_manager:
+                print(f"DEBUG: Using task assignment manager for intelligent routing")
+                try:
+                    # Call the task assignment manager (now sync, matching server handler pattern)
+                    assignment_result = self.task_assignment_manager.assign_and_forward_task(
+                        task_id=task_id,
+                        task_description=task_description,
+                        assignee=assignee if assignee else None,
+                        priority=priority,
+                        deadline=deadline,
+                        metadata={"tool_call": "assign_task", "original_arguments": arguments}
+                    )
+                    
+                    print(f"DEBUG: Task assignment result: {assignment_result}")
+                    return {"result": assignment_result}
+                    
+                except Exception as e:
+                    print(f"DEBUG: Error in task assignment manager: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Fall back to simple assignment
+                    return self._execute_simple_assign_task(
+                        task_id, task_description, assignee, priority, deadline, arguments
+                    )
+            else:
+                print(f"DEBUG: Task assignment manager not available, using simple assignment")
+                return self._execute_simple_assign_task(
+                    task_id, task_description, assignee, priority, deadline, arguments
                 )
-
-            # Log the task assignment
-            print(f"Assigned task: {task_id} to {assignee}, priority: {priority}, deadline: {deadline}")
-
-            return {"result": result}
 
         elif tool_name == "review_code":
             pull_request_id = arguments.get("pull_request_id", "unknown")
@@ -714,10 +870,15 @@ class ExtendedItLeadServerHandlers:
                     task_id=f"review-{pull_request_id}",
                     title=f"Code Review: PR #{pull_request_id}",
                     description=f"Review code changes for PR #{pull_request_id}",
-                    assigned_to=reviewer,
+                    submitter="api_user",
+                    submitter_type="api",
+                    transport_channel="streamable-http",
+                    assigned_to=reviewer if reviewer else "unassigned",
                     priority="medium",
                     source_server="internal",
-                    metadata={"tool_call": "review_code", "original_arguments": arguments}
+                    metadata={"tool_call": "review_code", "original_arguments": arguments},
+                    status="received",
+                    status_reason="Code review requested"
                 )
 
             print(f"Completed code review for PR #{pull_request_id}")
@@ -744,10 +905,15 @@ class ExtendedItLeadServerHandlers:
                     task_id=f"plan-{int(time.time())}",
                     title="Project Plan Generation",
                     description=f"Generate project plan for: {requirements[:100]}...",
+                    submitter="api_user",
+                    submitter_type="api",
+                    transport_channel="streamable-http",
                     assigned_to="system",
                     priority="high",
                     source_server="internal",
-                    metadata={"tool_call": "generate_project_plan", "original_arguments": arguments}
+                    metadata={"tool_call": "generate_project_plan", "original_arguments": arguments},
+                    status="received",
+                    status_reason="Project plan generation requested"
                 )
 
             print(f"Generated project plan for requirements: {requirements[:50]}...")
@@ -774,10 +940,15 @@ class ExtendedItLeadServerHandlers:
                     task_id=f"arch-analysis-{int(time.time())}",
                     title="Architecture Analysis",
                     description=f"Analyze architecture: {current_architecture[:100]}...",
+                    submitter="api_user",
+                    submitter_type="api",
+                    transport_channel="streamable-http",
                     assigned_to="system",
                     priority="high",
                     source_server="internal",
-                    metadata={"tool_call": "analyze_architecture", "original_arguments": arguments}
+                    metadata={"tool_call": "analyze_architecture", "original_arguments": arguments},
+                    status="received",
+                    status_reason="Architecture analysis requested"
                 )
 
             print(f"Completed architecture analysis for: {current_architecture[:50]}...")
@@ -804,10 +975,15 @@ class ExtendedItLeadServerHandlers:
                     task_id=f"meeting-{int(time.time())}",
                     title=f"Team Meeting: {meeting_type}",
                     description=f"Schedule {meeting_type} meeting for {datetime}",
+                    submitter="api_user",
+                    submitter_type="api",
+                    transport_channel="streamable-http",
                     assigned_to="organizer",
                     priority="medium",
                     source_server="internal",
-                    metadata={"tool_call": "schedule_team_meeting", "original_arguments": arguments}
+                    metadata={"tool_call": "schedule_team_meeting", "original_arguments": arguments},
+                    status="received",
+                    status_reason="Team meeting scheduled"
                 )
 
             print(f"Scheduled {meeting_type} meeting for {datetime} with {len(attendees)} attendees")
@@ -817,23 +993,40 @@ class ExtendedItLeadServerHandlers:
             task_ids = arguments.get("task_ids", [])
             include_details = arguments.get("include_details", False)
 
-            # Simulate tracking task progress
-            progress_data = []
-            for task_id in task_ids:
-                progress_data.append({
-                    "task_id": task_id,
-                    "progress_percentage": 75,  # Simulated progress
-                    "status": "in_progress",
-                    "estimated_completion": "2023-12-31T10:00:00Z"
-                })
+            # If no task_ids provided, fetch all tasks from the database
+            if not task_ids and self.task_storage:
+                all_tasks = self.task_storage.get_all_tasks()
+                progress_data = []
+                for task in all_tasks:
+                    progress_data.append({
+                        "task_id": task["task_id"],
+                        "title": task["title"],
+                        "description": task["description"],
+                        "progress_percentage": self._calculate_progress_from_status(task["status"]),
+                        "status": task["status"],
+                        "assigned_to": task["assigned_to"],
+                        "priority": task["priority"],
+                        "created_at": task["created_at"],
+                        "updated_at": task["updated_at"]
+                    })
+            else:
+                # Simulate tracking specific task progress
+                progress_data = []
+                for task_id in task_ids:
+                    progress_data.append({
+                        "task_id": task_id,
+                        "progress_percentage": 75,  # Simulated progress
+                        "status": "in_progress",
+                        "estimated_completion": "2023-12-31T10:00:00Z"
+                    })
 
             result = {
                 "tracked_tasks": progress_data,
                 "summary": {
-                    "total_tasks": len(task_ids),
-                    "completed": 0,
-                    "in_progress": len(task_ids),
-                    "on_schedule": len(task_ids)
+                    "total_tasks": len(progress_data),
+                    "completed": len([t for t in progress_data if t.get("status") == "completed"]),
+                    "in_progress": len([t for t in progress_data if t.get("status") == "in_progress"]),
+                    "pending": len([t for t in progress_data if t.get("status") == "pending"])
                 }
             }
 
@@ -842,15 +1035,167 @@ class ExtendedItLeadServerHandlers:
                 self.task_storage.store_received_task(
                     task_id=f"tracking-{int(time.time())}",
                     title="Task Progress Tracking",
-                    description=f"Track progress for {len(task_ids)} tasks: {', '.join(task_ids[:5])}{'...' if len(task_ids) > 5 else ''}",
+                    description=f"Track progress for {len(task_ids)} tasks: {', '.join(task_ids[:5])}{'...' if len(task_ids) > 5 else 'all tasks'}",
+                    submitter="api_user",
+                    submitter_type="api",
+                    transport_channel="streamable-http",
                     assigned_to="system",
                     priority="low",
                     source_server="internal",
-                    metadata={"tool_call": "track_task_progress", "original_arguments": arguments}
+                    metadata={"tool_call": "track_task_progress", "original_arguments": arguments},
+                    status="received",
+                    status_reason="Task progress tracking requested"
                 )
 
-            print(f"Tracked progress for {len(task_ids)} tasks")
+            print(f"Tracked progress for {len(task_ids) if task_ids else len(progress_data)} tasks")
             return {"result": result}
+
+        elif tool_name == "get_all_tasks":
+            print(f"DEBUG: get_all_tasks called with arguments: {arguments}")
+            status_filter = arguments.get("status_filter")
+            limit = arguments.get("limit")
+
+            # Retrieve tasks from the database
+            if self.task_storage:
+                print(f"DEBUG: Task storage is available, attempting to retrieve tasks")
+                try:
+                    if status_filter:
+                        print(f"DEBUG: Getting tasks with status filter: {status_filter}")
+                        tasks = self.task_storage.get_tasks_by_status(status_filter)
+                    else:
+                        print(f"DEBUG: Getting all tasks")
+                        tasks = self.task_storage.get_all_tasks()
+
+                    print(f"DEBUG: Retrieved {len(tasks) if tasks else 0} tasks from database")
+
+                    # Apply limit if specified
+                    if limit and isinstance(limit, int) and limit > 0:
+                        print(f"DEBUG: Applying limit of {limit}")
+                        tasks = tasks[:limit]
+
+                    # Format tasks for response
+                    formatted_tasks = []
+                    for task in tasks:
+                        print(f"DEBUG: Formatting task {task.get('task_id', 'unknown')}")
+                        formatted_tasks.append({
+                            "task_id": task["task_id"],
+                            "title": task["title"],
+                            "description": task["description"],
+                            "status": task["status"],
+                            "assigned_to": task["assigned_to"],
+                            "priority": task["priority"],
+                            "deadline": task["deadline"],
+                            "created_at": task["created_at"],
+                            "updated_at": task["updated_at"],
+                            "progress_percentage": self._calculate_progress_from_status(task["status"])
+                        })
+
+                    result = {
+                        "tasks": formatted_tasks,
+                        "total_count": len(formatted_tasks),
+                        "status_filter": status_filter
+                    }
+
+                    print(f"DEBUG: Successfully retrieved and formatted {len(formatted_tasks)} tasks from database")
+                    return {"result": result}
+                except Exception as e:
+                    print(f"ERROR in get_all_tasks: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return {"result": {"tasks": [], "total_count": 0, "error": f"Error retrieving tasks: {str(e)}"}}
+            else:
+                print("ERROR: Task storage is not available in get_all_tasks")
+                return {"result": {"tasks": [], "total_count": 0, "error": "Task storage not available"}}
+
+        elif tool_name == "get_task_history":
+            task_id = arguments.get("task_id")
+            if not task_id:
+                return {"result": {"error": "task_id is required"}}
+
+            # Retrieve task history from the database
+            if self.task_storage:
+                try:
+                    # Get the specific task
+                    task = self.task_storage.get_task(task_id)
+                    
+                    if not task:
+                        return {"result": {"error": f"Task {task_id} not found"}}
+                    
+                    # Format the history with human-readable timestamps
+                    history_entries = []
+                    status_history = task.get("status_history", [])
+                    
+                    if isinstance(status_history, str):
+                        import json
+                        status_history = json.loads(status_history)
+                    
+                    for entry in status_history:
+                        timestamp = entry.get("timestamp", 0)
+                        history_entries.append({
+                            "status": entry.get("status", "unknown"),
+                            "reason": entry.get("reason", ""),
+                            "timestamp": timestamp,
+                            "datetime": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp)) if timestamp else None
+                        })
+                    
+                    # Add timestamp fields from the task
+                    result = {
+                        "task_id": task_id,
+                        "title": task.get("title", ""),
+                        "current_status": task.get("status", "unknown"),
+                        "submitter": task.get("submitter", "unknown"),
+                        "submitter_type": task.get("submitter_type", "unknown"),
+                        "transport_channel": task.get("transport_channel", "unknown"),
+                        "assigned_to": task.get("assigned_to", "unassigned"),
+                        "created_at": task.get("created_at"),
+                        "updated_at": task.get("updated_at"),
+                        "assigned_at": task.get("assigned_at"),
+                        "started_at": task.get("started_at"),
+                        "completed_at": task.get("completed_at"),
+                        "status_history": history_entries,
+                        "total_status_changes": len(history_entries)
+                    }
+                    
+                    return {"result": result}
+                except Exception as e:
+                    print(f"ERROR in get_task_history: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return {"result": {"error": f"Error retrieving task history: {str(e)}"}}
+            else:
+                return {"result": {"error": "Task storage not available"}}
+
+        elif tool_name == "check_agent_task_status":
+            task_id = arguments.get("task_id", "")
+            assigned_agent = arguments.get("assigned_agent", "")
+            
+            # If no agent specified, try to get it from the database
+            if not assigned_agent and self.task_storage:
+                try:
+                    task = self.task_storage.get_task(task_id)
+                    if task:
+                        assigned_agent = task.get("assigned_to", "")
+                except Exception as e:
+                    print(f"Error getting task from database: {e}")
+            
+            if not task_id:
+                return {"result": {"error": "task_id is required"}}
+            
+            if not assigned_agent:
+                return {"result": {"error": "assigned_agent is required (either provide it or ensure task exists in database)"}}
+            
+            # Use the agent status checker to query the agent
+            if self.agent_status_checker:
+                try:
+                    result = self.agent_status_checker.check_task_status_with_agent(task_id, assigned_agent)
+                    return {"result": result}
+                except Exception as e:
+                    print(f"Error checking agent task status: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return {"result": {"error": f"Error checking agent status: {str(e)}"}}
+            else:
+                return {"result": {"error": "Agent status checker not available"}}
 
         # Handle registry tools by calling their respective handlers
         elif tool_name == "registry/register":
@@ -862,6 +1207,49 @@ class ExtendedItLeadServerHandlers:
 
         # For any other tools, return a generic response
         return {"result": f"Executed tool '{tool_name}' with arguments: {arguments}"}
+
+    def _execute_simple_assign_task(self, task_id: str, task_description: str,
+                                    assignee: str, priority: str, deadline: str,
+                                    arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute simple task assignment (fallback when task assignment manager is unavailable)"""
+        result = {
+            "task_id": task_id,
+            "assigned_to": assignee,
+            "priority": priority,
+            "deadline": deadline,
+            "status": "assigned",
+            "message": f"Task '{task_id}' assigned to {assignee} with priority {priority}"
+        }
+
+        # Store the task in the database
+        if self.task_storage:
+            print(f"DEBUG: Attempting to store task {task_id} in database (simple mode)")
+            try:
+                success = self.task_storage.store_received_task(
+                    task_id=task_id,
+                    title=f"Task: {task_id}",
+                    description=task_description,
+                    submitter="api_user",
+                    submitter_type="api",
+                    transport_channel="streamable-http",
+                    assigned_to=assignee if assignee else "unassigned",
+                    priority=priority,
+                    deadline=deadline,
+                    source_server="internal",
+                    metadata={"tool_call": "assign_task", "original_arguments": arguments},
+                    status="received",
+                    status_reason="Task assigned via assign_task tool (simple mode)"
+                )
+                print(f"DEBUG: store_received_task returned: {success}")
+            except Exception as e:
+                print(f"DEBUG: Error storing task in database: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("DEBUG: task_storage is None, cannot store task")
+
+        print(f"Assigned task (simple mode): {task_id} to {assignee}, priority: {priority}, deadline: {deadline}")
+        return {"result": result}
 
     def _perform_code_review(self, code_diff: str) -> str:
         """Perform code review using the LLM"""
@@ -961,7 +1349,7 @@ class ExtendedItLeadServerHandlers:
                 "temperature": 0.7
             }
 
-            response = requests.post(self.llm_provider_url, headers=headers, json=data)
+            response = requests.post(self.llm_provider_url, headers=headers, json=data, timeout=1200)
 
             if response.status_code == 200:
                 result = response.json()
@@ -1028,6 +1416,11 @@ class ExtendedItLeadServerHandlers:
     def _read_resource(self, resource: Dict[str, Any]) -> Dict[str, Any]:
         """Read content from a specific resource"""
         uri = resource["uri"]
+
+        # Handle dynamic task status resources: it-lead://resource/task-status/{task_id}
+        if uri.startswith("it-lead://resource/task-status/"):
+            task_id = uri.split("/")[-1]
+            return self._read_task_status_resource(task_id, uri)
 
         # IT Lead specific resources
         if uri == "it-lead://resource/team-status":
@@ -1159,6 +1552,87 @@ class ExtendedItLeadServerHandlers:
                 "text": f"Content for resource: {uri}"
             }]
         }
+
+    def _read_task_status_resource(self, task_id: str, uri: str) -> Dict[str, Any]:
+        """Read task status resource for async task tracking
+        
+        Args:
+            task_id: Task identifier
+            uri: Resource URI
+            
+        Returns:
+            Resource content with task status
+        """
+        if not self.task_storage:
+            return {
+                "contents": [{
+                    "uri": uri,
+                    "text": json.dumps({
+                        "error": "Task storage not available",
+                        "task_id": task_id
+                    }, indent=2)
+                }]
+            }
+
+        try:
+            # Get task from storage
+            tasks = self.task_storage.get_all_tasks()
+            task = None
+            for t in tasks:
+                if t.get("task_id") == task_id:
+                    task = t
+                    break
+
+            if not task:
+                return {
+                    "contents": [{
+                        "uri": uri,
+                        "text": json.dumps({
+                            "error": f"Task {task_id} not found",
+                            "task_id": task_id
+                        }, indent=2)
+                    }]
+                }
+
+            # Build status response
+            status_data = {
+                "task_id": task_id,
+                "status": task.get("status", "unknown"),
+                "assigned_to": task.get("assigned_to", "unknown"),
+                "priority": task.get("priority", "medium"),
+                "title": task.get("title", ""),
+                "description": task.get("description", ""),
+                "created_at": task.get("created_at"),
+                "updated_at": task.get("updated_at"),
+                "deadline": task.get("deadline"),
+                "metadata": task.get("metadata", {}),
+                "async_mode": task.get("metadata", {}).get("async_mode", False),
+                "tool_to_invoke": task.get("metadata", {}).get("tool_to_invoke"),
+                "notification_sent": task.get("metadata", {}).get("notification_sent", False),
+                "agent_endpoint": task.get("metadata", {}).get("agent_endpoint")
+            }
+
+            # Include status history if available
+            if "status_history" in task:
+                status_data["status_history"] = task["status_history"]
+
+            return {
+                "contents": [{
+                    "uri": uri,
+                    "text": json.dumps(status_data, indent=2, default=str)
+                }]
+            }
+
+        except Exception as e:
+            return {
+                "contents": [{
+                    "uri": uri,
+                    "text": json.dumps({
+                        "error": f"Failed to retrieve task status: {str(e)}",
+                        "task_id": task_id
+                    }, indent=2)
+                }]
+            }
 
     def handle_prompts_list(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle prompts/list request"""
@@ -1342,7 +1816,7 @@ class ExtendedItLeadServerHandlers:
                 "messages": [{"role": "user", "content": "health check"}],
                 "max_tokens": 5
             }
-            response = requests.post(self.llm_provider_url, json=test_prompt, timeout=10)
+            response = requests.post(self.llm_provider_url, json=test_prompt, timeout=1200)
             health_status["llm_connection"] = response.status_code in [200, 401, 400]  # 401/400 means connection worked but auth/token issue
             health_status["checks"]["llm"] = {
                 "status": "healthy" if health_status["llm_connection"] else "unhealthy",
@@ -1526,3 +2000,19 @@ class ExtendedItLeadServerHandlers:
                 "success": False,
                 "message": "Failed to unregister service or service not found"
             }
+
+    def _calculate_progress_from_status(self, status: str) -> int:
+        """Calculate progress percentage based on task status"""
+        status_map = {
+            "completed": 100,
+            "in_progress": 50,
+            "in-progress": 50,
+            "assigned": 25,
+            "received": 10,
+            "submitted": 15,
+            "pending": 5,
+            "failed": 0,
+            "cancelled": 0,
+            "canceled": 0
+        }
+        return status_map.get(status.lower(), 0)

@@ -25,7 +25,7 @@ class AdvancedOrchestrationHandlers:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "workflow_type": {"type": "string", "enum": ["sequential", "parallel", "iterative", "event_driven"]},
+                        "workflow_type": {"type": "string", "enum": ["sequential", "parallel", "iterative", "event_driven", "requirements_gathering", "requirements_validation"]},
                         "tasks": {"type": "array", "items": {"$ref": "#/definitions/task"}},
                         "context": {"type": "object", "description": "Workflow execution context"}
                     },
@@ -62,7 +62,9 @@ class AdvancedOrchestrationHandlers:
 
     def register_handlers(self, rpc_handler: JsonRpcHandler):
         """Register advanced orchestration handlers with the RPC handler"""
-        rpc_handler.register_request_handler('tools/call', self.handle_tools_call)
+        # Note: Do NOT register tools/call here - the main handler in extended_server_handlers.py
+        # is responsible for routing tool calls to this module. Registering tools/call here
+        # would override the main handler and prevent proper task storage.
 
     def handle_tools_call(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle tools/call request for advanced orchestration tools"""
@@ -98,15 +100,15 @@ class AdvancedOrchestrationHandlers:
         elif tool_name == "resolve_conflict":
             return self._resolve_conflict(arguments)
 
-        # For any other tools, return a generic response
-        return {"result": f"Executed advanced orchestration tool '{tool_name}' with arguments: {arguments}"}
+        # For any other tools, return None to indicate this module doesn't handle them
+        return None
 
     def _execute_workflow(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a defined workflow pattern"""
         workflow_type = arguments.get("workflow_type", "sequential")
         tasks = arguments.get("tasks", [])
         context = arguments.get("context", {})
-        
+
         if workflow_type == "sequential":
             result = self._execute_sequential_workflow(tasks, context)
         elif workflow_type == "parallel":
@@ -115,6 +117,10 @@ class AdvancedOrchestrationHandlers:
             result = self._execute_iterative_workflow(tasks, context)
         elif workflow_type == "event_driven":
             result = self._execute_event_driven_workflow(tasks, context)
+        elif workflow_type == "requirements_gathering":
+            result = self._execute_requirements_gathering_workflow(tasks, context)
+        elif workflow_type == "requirements_validation":
+            result = self._execute_requirements_validation_workflow(tasks, context)
         else:
             result = {
                 "status": "error",
@@ -223,11 +229,106 @@ class AdvancedOrchestrationHandlers:
             "status": "completed" if not failed_tasks else "partial"
         }
 
+    def _execute_requirements_gathering_workflow(self, tasks: List[dict], context: dict) -> dict:
+        """Execute requirements gathering workflow involving requirements engineer"""
+        executed_tasks = []
+        failed_tasks = []
+
+        # Check if requirements engineer is available
+        req_eng_available = self._check_agent_availability("requirements-engineer")
+        
+        if not req_eng_available:
+            print("Requirements engineer unavailable, proceeding with local requirements gathering")
+        
+        # Simulate requirements gathering workflow
+        for task in tasks:
+            try:
+                # This would involve calling the requirements engineer agent if available
+                task_result = {
+                    "task_id": task.get("id", f"req-gather-{int(time.time())}"),
+                    "status": "completed",
+                    "execution_time": 2.5,  # seconds
+                    "output": f"Requirements gathered: {task.get('title', 'unnamed task')}",
+                    "workflow_phase": "requirements_gathering",
+                    "involved_agents": ["requirements-engineer"] if req_eng_available else ["it-lead-local"],
+                    "requirements_engineer_available": req_eng_available
+                }
+                executed_tasks.append(task_result)
+            except Exception as e:
+                failed_tasks.append({
+                    "task_id": task.get("id", f"req-gather-{int(time.time())}"),
+                    "error": str(e),
+                    "workflow_phase": "requirements_gathering"
+                })
+
+        return {
+            "workflow_type": "requirements_gathering",
+            "executed_tasks": executed_tasks,
+            "failed_tasks": failed_tasks,
+            "total_execution_time": sum([t.get("execution_time", 0) for t in executed_tasks]),
+            "status": "completed" if not failed_tasks else "partial",
+            "requirements_engineer_involved": req_eng_available,
+            "requirements_engineer_available": req_eng_available
+        }
+    
+    def _check_agent_availability(self, agent_id: str) -> bool:
+        """Check if an agent is available"""
+        if self.agent_registry:
+            try:
+                availability = self.agent_registry.check_agent_availability(agent_id)
+                return availability.get("status") == "available"
+            except Exception:
+                # If we can't check availability, assume the agent is not available
+                return False
+        return False
+
+    def _execute_requirements_validation_workflow(self, tasks: List[dict], context: dict) -> dict:
+        """Execute requirements validation workflow involving requirements engineer"""
+        executed_tasks = []
+        failed_tasks = []
+
+        # Check if requirements engineer is available
+        req_eng_available = self._check_agent_availability("requirements-engineer")
+        
+        if not req_eng_available:
+            print("Requirements engineer unavailable, proceeding with local requirements validation")
+        
+        # Simulate requirements validation workflow
+        for task in tasks:
+            try:
+                # This would involve calling the requirements engineer agent for validation if available
+                task_result = {
+                    "task_id": task.get("id", f"req-validate-{int(time.time())}"),
+                    "status": "completed",
+                    "execution_time": 2.0,  # seconds
+                    "output": f"Requirements validated: {task.get('title', 'unnamed task')}",
+                    "workflow_phase": "requirements_validation",
+                    "involved_agents": ["requirements-engineer"] if req_eng_available else ["it-lead-local"],
+                    "requirements_engineer_available": req_eng_available
+                }
+                executed_tasks.append(task_result)
+            except Exception as e:
+                failed_tasks.append({
+                    "task_id": task.get("id", f"req-validate-{int(time.time())}"),
+                    "error": str(e),
+                    "workflow_phase": "requirements_validation"
+                })
+
+        return {
+            "workflow_type": "requirements_validation",
+            "executed_tasks": executed_tasks,
+            "failed_tasks": failed_tasks,
+            "total_execution_time": sum([t.get("execution_time", 0) for t in executed_tasks]),
+            "status": "completed" if not failed_tasks else "partial",
+            "requirements_engineer_involved": req_eng_available,
+            "requirements_engineer_available": req_eng_available
+        }
+
     def _execute_event_driven_workflow(self, tasks: List[dict], context: dict) -> dict:
         """Execute tasks based on events"""
         executed_tasks = []
         failed_tasks = []
-        
+
         # Simulate event-driven execution
         for task in tasks:
             try:
@@ -245,7 +346,7 @@ class AdvancedOrchestrationHandlers:
                     "triggered_by_event": "simulated_event",
                     "error": str(e)
                 })
-        
+
         return {
             "workflow_type": "event_driven",
             "executed_tasks": executed_tasks,

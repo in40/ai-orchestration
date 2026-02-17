@@ -66,12 +66,29 @@ The IT Lead server provides the following tools:
 4. **analyze_architecture**: Analyze software architecture and suggest improvements
 5. **schedule_team_meeting**: Schedule a team meeting to discuss project matters
 6. **track_task_progress**: Track progress of assigned tasks
+7. **coordinate_requirements_analysis**: Coordinate between stakeholder inputs and requirements engineer
+8. **validate_requirements_completeness**: Validate completeness of requirements using requirements engineer capabilities
+9. **sync_with_requirements_engineer**: Synchronize requirements with the requirements engineer agent
+10. **fetch_requirements_specifications**: Fetch requirements specifications from requirements engineer
+11. **submit_stakeholder_inputs**: Submit stakeholder inputs to requirements engineer for analysis
+12. **validate_requirements_traceability**: Validate requirements traceability and completeness using requirements engineer capabilities
+13. **coordinate_implementation_tasks**: Coordinate between architectural decisions and implementation engineer
+14. **generate_code_from_specifications**: Generate code from architectural specifications using implementation engineer
+15. **implement_feature_with_guidelines**: Implement specific features following architectural guidelines using implementation engineer
+16. **apply_coding_standards_across_codebase**: Apply consistent coding standards and patterns to code using implementation engineer
+17. **generate_unit_tests_for_code**: Generate unit tests for code following test-first approach using implementation engineer
+18. **refactor_code_for_improvements**: Refactor code for maintainability and performance improvements using implementation engineer
+19. **sync_with_implementation_engineer**: Synchronize implementation tasks with the implementation engineer agent
+20. **fetch_implementation_artifacts**: Fetch implementation artifacts from implementation engineer
 
 ### Available Resources
 
 1. **it-lead://resource/team-status**: Current status of the development team
 2. **it-lead://resource/project-plan**: Current project plan and milestones
 3. **it-lead://resource/architecture-document**: Software architecture documentation
+4. **it-lead://resource/current-implementation-status**: Current status of implementation activities and progress
+5. **it-lead://resource/code-quality-metrics**: Metrics and reports on code quality from implementation engineer
+6. **it-lead://resource/implementation-artifact-traceability**: Traceability of implementation artifacts to requirements and design
 
 ### Available Prompts
 

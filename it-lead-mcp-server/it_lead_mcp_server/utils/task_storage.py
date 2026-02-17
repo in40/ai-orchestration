@@ -1,38 +1,53 @@
 """
 Task Storage for IT Lead MCP Server
-Handles storage of received and submitted tasks in PostgreSQL
+Handles storage of received and submitted tasks in PostgreSQL or SQLite
 """
 import json
 import time
+import sqlite3
 from typing import Dict, List, Any, Optional
 import logging
 
 
 class TaskStorage:
-    """Handles storage of tasks in PostgreSQL database"""
+    """Handles storage of tasks in PostgreSQL or SQLite database"""
 
-    def __init__(self, host: str = "localhost", port: int = 5432, database: str = "mcp_registry",
-                 user: str = "postgres", password: str = ""):
+    def __init__(self, host: str = "localhost", port: int = 5432, database: str = "mcp_registry.db",
+                 user: str = "postgres", password: str = "", use_sqlite: bool = True):  # Changed default to True
         self.host = host
         self.port = port
         self.database = database
         self.user = user
         self.password = password
+        self.use_sqlite = use_sqlite  # Use SQLite by default
         self.connection = None
 
-        print(f"DEBUG: TaskStorage initializing with host={host}, port={port}, database={database}, user={user}")
+        print(f"DEBUG: TaskStorage initializing with host={host}, port={port}, database={database}, user={user}, use_sqlite={use_sqlite}")
 
         try:
-            import psycopg2
-            import psycopg2.extras
-            self.psycopg2 = psycopg2
-            self.extras = psycopg2.extras
-            self._connect()
-            self._init_db()
+            if use_sqlite:
+                self._connect_sqlite()
+                self._init_db_sqlite()
+            else:
+                import psycopg2
+                import psycopg2.extras
+                self.psycopg2 = psycopg2
+                self.extras = psycopg2.extras
+                self._connect_postgres()
+                self._init_db_postgres()
+            print("✅ TaskStorage initialized successfully")
         except ImportError:
-            raise ImportError("psycopg2 is required for task storage. Install it with: pip install psycopg2-binary")
+            if not use_sqlite:
+                raise ImportError("psycopg2 is required for PostgreSQL task storage. Install it with: pip install psycopg2-binary")
+            else:
+                # If using SQLite and there's an import error, it's likely not psycopg2 related
+                # Re-raise if it's a different import error
+                raise
+        except Exception as e:
+            print(f"❌ Failed to initialize task storage: {e}")
+            raise
 
-    def _connect(self):
+    def _connect_postgres(self):
         """Establish connection to PostgreSQL database"""
         try:
             self.connection = self.psycopg2.connect(
@@ -47,28 +62,47 @@ class TaskStorage:
             print(f"❌ Failed to connect to PostgreSQL: {e}")
             raise
 
-    def _init_db(self):
-        """Initialize the database and create tasks table if it doesn't exist"""
+    def _connect_sqlite(self):
+        """Establish connection to SQLite database"""
+        try:
+            # Make sure we're using a proper database file path
+            db_path = self.database if self.database.endswith('.db') else f"{self.database}.db"
+            self.connection = sqlite3.connect(db_path, check_same_thread=False)
+            print(f"✅ Successfully connected to SQLite task storage database: {db_path}")
+        except Exception as e:
+            print(f"❌ Failed to connect to SQLite: {e}")
+            raise
+
+    def _init_db_postgres(self):
+        """Initialize the PostgreSQL database and create task_registry table if it doesn't exist"""
         try:
             cursor = self.connection.cursor()
 
-            # Create tasks table
+            # Create task_registry table with full lifecycle tracking
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tasks (
+                CREATE TABLE IF NOT EXISTS task_registry (
                     id SERIAL PRIMARY KEY,
                     task_id VARCHAR(255) UNIQUE NOT NULL,
-                    title TEXT,
+                    title TEXT NOT NULL,
                     description TEXT,
-                    status VARCHAR(50) DEFAULT 'received',
-                    assigned_to VARCHAR(255),
-                    priority VARCHAR(20) DEFAULT 'medium',
+                    submitter VARCHAR(255) NOT NULL,
+                    submitter_type VARCHAR(50) NOT NULL CHECK (submitter_type IN ('human', 'agent', 'system', 'api')),
+                    transport_channel VARCHAR(50) NOT NULL DEFAULT 'unknown' CHECK (transport_channel IN ('http', 'stdio', 'streamable-http', 'api', 'websocket', 'unknown')),
+                    assigned_to VARCHAR(255) DEFAULT 'unassigned',
+                    status VARCHAR(50) NOT NULL DEFAULT 'received' CHECK (status IN ('received', 'pending_assignment', 'assigned', 'requirements_collection', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled')),
+                    status_reason TEXT,
+                    priority VARCHAR(20) NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high', 'critical')),
                     deadline TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    assigned_at TIMESTAMP,
+                    started_at TIMESTAMP,
+                    completed_at TIMESTAMP,
                     source_server VARCHAR(255),
                     target_server VARCHAR(255),
                     result TEXT,
-                    metadata JSONB
+                    metadata JSONB DEFAULT '{}',
+                    status_history JSONB DEFAULT '[]'
                 )
             """)
 
@@ -79,45 +113,119 @@ class TaskStorage:
 
             self.connection.commit()
             cursor.close()
-            print("✅ Task storage database initialized")
+            print("✅ PostgreSQL task storage database initialized")
         except Exception as e:
-            print(f"❌ Error initializing task storage database: {e}")
+            print(f"❌ Error initializing PostgreSQL task storage database: {e}")
             raise
 
-    def store_received_task(self, task_id: str, title: str, description: str, 
-                          assigned_to: Optional[str] = None, priority: str = "medium",
-                          deadline: Optional[str] = None, source_server: Optional[str] = None,
-                          metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """Store a received task in the database"""
+    def _init_db_sqlite(self):
+        """Initialize the SQLite database and create tasks table if it doesn't exist"""
         try:
             cursor = self.connection.cursor()
 
+            # Create tasks table
             cursor.execute("""
-                INSERT INTO tasks (task_id, title, description, status, assigned_to, priority, deadline, source_server, metadata)
-                VALUES (%s, %s, %s, 'received', %s, %s, %s, %s, %s)
-                ON CONFLICT (task_id) 
-                DO UPDATE SET
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    status = 'received',
-                    assigned_to = EXCLUDED.assigned_to,
-                    priority = EXCLUDED.priority,
-                    deadline = EXCLUDED.deadline,
-                    source_server = EXCLUDED.source_server,
-                    updated_at = CURRENT_TIMESTAMP,
-                    metadata = EXCLUDED.metadata
-            """, (
-                task_id, title, description, assigned_to, priority, 
-                deadline, source_server, json.dumps(metadata) if metadata else None
-            ))
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT UNIQUE NOT NULL,
+                    title TEXT,
+                    description TEXT,
+                    status TEXT DEFAULT 'received',
+                    assigned_to TEXT,
+                    priority TEXT DEFAULT 'medium',
+                    deadline TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    source_server TEXT,
+                    target_server TEXT,
+                    result TEXT,
+                    metadata TEXT
+                )
+            """)
+
+            # Create indexes for better performance
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON tasks(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_assigned_to ON tasks(assigned_to)")
+
+            self.connection.commit()
+            cursor.close()
+            print("✅ SQLite task storage database initialized")
+        except Exception as e:
+            print(f"❌ Error initializing SQLite task storage database: {e}")
+            raise
+
+    def store_received_task(self, task_id: str, title: str, description: str,
+                          submitter: str = "unknown", submitter_type: str = "system",
+                          transport_channel: str = "unknown", assigned_to: Optional[str] = "unassigned",
+                          priority: str = "medium", deadline: Optional[str] = None,
+                          source_server: Optional[str] = None, target_server: Optional[str] = None,
+                          metadata: Optional[Dict[str, Any]] = None,
+                          status: str = "received", status_reason: Optional[str] = None) -> bool:
+        """Store a received task in the database with full lifecycle tracking"""
+        try:
+            cursor = self.connection.cursor()
+            
+            # Prepare status history entry
+            status_history_entry = {
+                "status": status,
+                "timestamp": time.time(),
+                "reason": status_reason
+            }
+
+            if self.use_sqlite:
+                # For SQLite, use INSERT OR REPLACE since it doesn't support ON CONFLICT
+                cursor.execute("""
+                    INSERT OR REPLACE INTO task_registry
+                    (task_id, title, description, submitter, submitter_type, transport_channel,
+                     assigned_to, status, status_reason, priority, deadline, source_server, target_server,
+                     metadata, status_history, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """, (
+                    task_id, title, description, submitter, submitter_type, transport_channel,
+                    assigned_to, status, status_reason, priority, deadline, source_server, target_server,
+                    json.dumps(metadata) if metadata else '{}', json.dumps([status_history_entry])
+                ))
+            else:
+                # For PostgreSQL, use ON CONFLICT
+                cursor.execute("""
+                    INSERT INTO task_registry
+                    (task_id, title, description, submitter, submitter_type, transport_channel,
+                     assigned_to, status, status_reason, priority, deadline, source_server, target_server,
+                     metadata, status_history)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (task_id)
+                    DO UPDATE SET
+                        title = EXCLUDED.title,
+                        description = EXCLUDED.description,
+                        submitter = EXCLUDED.submitter,
+                        submitter_type = EXCLUDED.submitter_type,
+                        transport_channel = EXCLUDED.transport_channel,
+                        assigned_to = EXCLUDED.assigned_to,
+                        status = EXCLUDED.status,
+                        status_reason = EXCLUDED.status_reason,
+                        priority = EXCLUDED.priority,
+                        deadline = EXCLUDED.deadline,
+                        source_server = EXCLUDED.source_server,
+                        target_server = EXCLUDED.target_server,
+                        updated_at = CURRENT_TIMESTAMP,
+                        metadata = EXCLUDED.metadata,
+                        status_history = task_registry.status_history || EXCLUDED.status_history
+                """, (
+                    task_id, title, description, submitter, submitter_type, transport_channel,
+                    assigned_to, status, status_reason, priority, deadline, source_server, target_server,
+                    json.dumps(metadata) if metadata else '{}', json.dumps([status_history_entry])
+                ))
 
             self.connection.commit()
             cursor.close()
 
-            print(f"✅ Received task stored: {task_id}")
+            print(f"✅ Received task stored: {task_id} (submitter: {submitter}, assigned_to: {assigned_to}, status: {status})")
             return True
         except Exception as e:
             print(f"❌ Error storing received task: {e}")
+            import traceback
+            traceback.print_exc()
             self.connection.rollback()
             return False
 
@@ -128,23 +236,35 @@ class TaskStorage:
         try:
             cursor = self.connection.cursor()
 
-            cursor.execute("""
-                INSERT INTO tasks (task_id, title, description, status, target_server, priority, deadline, metadata)
-                VALUES (%s, %s, %s, 'submitted', %s, %s, %s, %s)
-                ON CONFLICT (task_id) 
-                DO UPDATE SET
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    status = 'submitted',
-                    target_server = EXCLUDED.target_server,
-                    priority = EXCLUDED.priority,
-                    deadline = EXCLUDED.deadline,
-                    updated_at = CURRENT_TIMESTAMP,
-                    metadata = EXCLUDED.metadata
-            """, (
-                task_id, title, description, target_server, priority, 
-                deadline, json.dumps(metadata) if metadata else None
-            ))
+            if self.use_sqlite:
+                # For SQLite, use INSERT OR REPLACE since it doesn't support ON CONFLICT
+                cursor.execute("""
+                    INSERT OR REPLACE INTO tasks 
+                    (task_id, title, description, status, target_server, priority, deadline, metadata, updated_at)
+                    VALUES (?, ?, ?, 'submitted', ?, ?, ?, ?, datetime('now'))
+                """, (
+                    task_id, title, description, target_server, priority,
+                    deadline, json.dumps(metadata) if metadata else None
+                ))
+            else:
+                # For PostgreSQL, use ON CONFLICT
+                cursor.execute("""
+                    INSERT INTO tasks (task_id, title, description, status, target_server, priority, deadline, metadata)
+                    VALUES (%s, %s, %s, 'submitted', %s, %s, %s, %s)
+                    ON CONFLICT (task_id)
+                    DO UPDATE SET
+                        title = EXCLUDED.title,
+                        description = EXCLUDED.description,
+                        status = 'submitted',
+                        target_server = EXCLUDED.target_server,
+                        priority = EXCLUDED.priority,
+                        deadline = EXCLUDED.deadline,
+                        updated_at = CURRENT_TIMESTAMP,
+                        metadata = EXCLUDED.metadata
+                """, (
+                    task_id, title, description, target_server, priority,
+                    deadline, json.dumps(metadata) if metadata else None
+                ))
 
             self.connection.commit()
             cursor.close()
@@ -161,18 +281,32 @@ class TaskStorage:
         try:
             cursor = self.connection.cursor()
 
-            if result:
-                cursor.execute("""
-                    UPDATE tasks
-                    SET status = %s, result = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE task_id = %s
-                """, (status, result, task_id))
+            if self.use_sqlite:
+                if result:
+                    cursor.execute("""
+                        UPDATE tasks
+                        SET status = ?, result = ?, updated_at = datetime('now')
+                        WHERE task_id = ?
+                    """, (status, result, task_id))
+                else:
+                    cursor.execute("""
+                        UPDATE tasks
+                        SET status = ?, updated_at = datetime('now')
+                        WHERE task_id = ?
+                    """, (status, task_id))
             else:
-                cursor.execute("""
-                    UPDATE tasks
-                    SET status = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE task_id = %s
-                """, (status, task_id))
+                if result:
+                    cursor.execute("""
+                        UPDATE tasks
+                        SET status = %s, result = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE task_id = %s
+                    """, (status, result, task_id))
+                else:
+                    cursor.execute("""
+                        UPDATE tasks
+                        SET status = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE task_id = %s
+                    """, (status, task_id))
 
             affected_rows = cursor.rowcount
             self.connection.commit()
@@ -190,15 +324,16 @@ class TaskStorage:
             return False
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific task by ID"""
+        """Get a specific task by ID from task_registry table"""
         try:
-            cursor = self.connection.cursor(cursor_factory=self.extras.RealDictCursor)
+            cursor = self.connection.cursor()
 
             cursor.execute("""
-                SELECT id, task_id, title, description, status, assigned_to, priority, 
-                       deadline, created_at, updated_at, source_server, target_server, 
-                       result, metadata
-                FROM tasks
+                SELECT id, task_id, title, description, submitter, submitter_type, transport_channel,
+                       status, status_reason, assigned_to, priority, deadline,
+                       created_at, updated_at, assigned_at, started_at, completed_at,
+                       source_server, target_server, result, metadata, status_history
+                FROM task_registry
                 WHERE task_id = %s
             """, (task_id,))
 
@@ -207,37 +342,48 @@ class TaskStorage:
 
             if row:
                 return {
-                    "id": row['id'],
-                    "task_id": row['task_id'],
-                    "title": row['title'],
-                    "description": row['description'],
-                    "status": row['status'],
-                    "assigned_to": row['assigned_to'],
-                    "priority": row['priority'],
-                    "deadline": row['deadline'].isoformat() if row['deadline'] else None,
-                    "created_at": row['created_at'].isoformat() if row['created_at'] else None,
-                    "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None,
-                    "source_server": row['source_server'],
-                    "target_server": row['target_server'],
-                    "result": row['result'],
-                    "metadata": row['metadata']
+                    "id": row[0],
+                    "task_id": row[1],
+                    "title": row[2],
+                    "description": row[3],
+                    "submitter": row[4],
+                    "submitter_type": row[5],
+                    "transport_channel": row[6],
+                    "status": row[7],
+                    "status_reason": row[8],
+                    "assigned_to": row[9],
+                    "priority": row[10],
+                    "deadline": row[11].isoformat() if row[11] else None,
+                    "created_at": row[12].isoformat() if row[12] else None,
+                    "updated_at": row[13].isoformat() if row[13] else None,
+                    "assigned_at": row[14].isoformat() if row[14] else None,
+                    "started_at": row[15].isoformat() if row[15] else None,
+                    "completed_at": row[16].isoformat() if row[16] else None,
+                    "source_server": row[17],
+                    "target_server": row[18],
+                    "result": row[19],
+                    "metadata": row[20],
+                    "status_history": row[21]
                 }
 
             return None
         except Exception as e:
             print(f"❌ Error getting task: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def get_tasks_by_status(self, status: str) -> List[Dict[str, Any]]:
         """Get all tasks with a specific status"""
         try:
-            cursor = self.connection.cursor(cursor_factory=self.extras.RealDictCursor)
+            cursor = self.connection.cursor()
 
             cursor.execute("""
-                SELECT id, task_id, title, description, status, assigned_to, priority, 
-                       deadline, created_at, updated_at, source_server, target_server, 
-                       result, metadata
-                FROM tasks
+                SELECT id, task_id, title, description, submitter, submitter_type, transport_channel,
+                       status, status_reason, assigned_to, priority, deadline,
+                       created_at, updated_at, assigned_at, started_at, completed_at,
+                       source_server, target_server, result, metadata, status_history
+                FROM task_registry
                 WHERE status = %s
                 ORDER BY created_at DESC
             """, (status,))
@@ -248,37 +394,48 @@ class TaskStorage:
             tasks = []
             for row in rows:
                 tasks.append({
-                    "id": row['id'],
-                    "task_id": row['task_id'],
-                    "title": row['title'],
-                    "description": row['description'],
-                    "status": row['status'],
-                    "assigned_to": row['assigned_to'],
-                    "priority": row['priority'],
-                    "deadline": row['deadline'].isoformat() if row['deadline'] else None,
-                    "created_at": row['created_at'].isoformat() if row['created_at'] else None,
-                    "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None,
-                    "source_server": row['source_server'],
-                    "target_server": row['target_server'],
-                    "result": row['result'],
-                    "metadata": row['metadata']
+                    "id": row[0],
+                    "task_id": row[1],
+                    "title": row[2],
+                    "description": row[3],
+                    "submitter": row[4],
+                    "submitter_type": row[5],
+                    "transport_channel": row[6],
+                    "status": row[7],
+                    "status_reason": row[8],
+                    "assigned_to": row[9],
+                    "priority": row[10],
+                    "deadline": row[11].isoformat() if row[11] else None,
+                    "created_at": row[12].isoformat() if row[12] else None,
+                    "updated_at": row[13].isoformat() if row[13] else None,
+                    "assigned_at": row[14].isoformat() if row[14] else None,
+                    "started_at": row[15].isoformat() if row[15] else None,
+                    "completed_at": row[16].isoformat() if row[16] else None,
+                    "source_server": row[17],
+                    "target_server": row[18],
+                    "result": row[19],
+                    "metadata": row[20],
+                    "status_history": row[21]
                 })
 
             return tasks
         except Exception as e:
             print(f"❌ Error getting tasks by status: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def get_all_tasks(self) -> List[Dict[str, Any]]:
-        """Get all tasks"""
+        """Get all tasks from the registry"""
         try:
-            cursor = self.connection.cursor(cursor_factory=self.extras.RealDictCursor)
+            cursor = self.connection.cursor()
 
             cursor.execute("""
-                SELECT id, task_id, title, description, status, assigned_to, priority, 
-                       deadline, created_at, updated_at, source_server, target_server, 
-                       result, metadata
-                FROM tasks
+                SELECT id, task_id, title, description, submitter, submitter_type, transport_channel,
+                       status, status_reason, assigned_to, priority, deadline,
+                       created_at, updated_at, assigned_at, started_at, completed_at,
+                       source_server, target_server, result, metadata, status_history
+                FROM task_registry
                 ORDER BY created_at DESC
             """)
 
@@ -288,25 +445,35 @@ class TaskStorage:
             tasks = []
             for row in rows:
                 tasks.append({
-                    "id": row['id'],
-                    "task_id": row['task_id'],
-                    "title": row['title'],
-                    "description": row['description'],
-                    "status": row['status'],
-                    "assigned_to": row['assigned_to'],
-                    "priority": row['priority'],
-                    "deadline": row['deadline'].isoformat() if row['deadline'] else None,
-                    "created_at": row['created_at'].isoformat() if row['created_at'] else None,
-                    "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None,
-                    "source_server": row['source_server'],
-                    "target_server": row['target_server'],
-                    "result": row['result'],
-                    "metadata": row['metadata']
+                    "id": row[0],
+                    "task_id": row[1],
+                    "title": row[2],
+                    "description": row[3],
+                    "submitter": row[4],
+                    "submitter_type": row[5],
+                    "transport_channel": row[6],
+                    "status": row[7],
+                    "status_reason": row[8],
+                    "assigned_to": row[9],
+                    "priority": row[10],
+                    "deadline": row[11].isoformat() if row[11] else None,
+                    "created_at": row[12].isoformat() if row[12] else None,
+                    "updated_at": row[13].isoformat() if row[13] else None,
+                    "assigned_at": row[14].isoformat() if row[14] else None,
+                    "started_at": row[15].isoformat() if row[15] else None,
+                    "completed_at": row[16].isoformat() if row[16] else None,
+                    "source_server": row[17],
+                    "target_server": row[18],
+                    "result": row[19],
+                    "metadata": row[20],
+                    "status_history": row[21]
                 })
 
             return tasks
         except Exception as e:
             print(f"❌ Error getting all tasks: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def close(self):

@@ -91,6 +91,8 @@ class EnhancedAgentRegistry:
                 specialties.append("testing")
             if any("security" in tool.lower() for tool in tools):
                 specialties.append("security")
+            if any("requirement" in tool.lower() or "analyze_requirements" in tool.lower() or "translate_business_to_technical" in tool.lower() for tool in tools):
+                specialties.append("requirements_engineering")
         return specialties
     
     def _extract_experience_domains(self, capabilities: dict) -> list:
