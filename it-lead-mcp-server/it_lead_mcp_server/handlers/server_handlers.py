@@ -423,7 +423,7 @@ class ItLeadServerHandlers:
             # Log the task assignment
             print(f"Assigned task: {task_id} to {assignee}, priority: {priority}, deadline: {deadline}")
             
-            return {"result": result}
+            return result
 
         elif tool_name == "review_code":
             pull_request_id = arguments.get("pull_request_id", "unknown")
@@ -454,7 +454,7 @@ class ItLeadServerHandlers:
                 )
 
             print(f"Completed code review for PR #{pull_request_id}")
-            return {"result": result}
+            return result
 
         elif tool_name == "generate_project_plan":
             requirements = arguments.get("requirements", "")
@@ -484,7 +484,7 @@ class ItLeadServerHandlers:
                 )
 
             print(f"Generated project plan for requirements: {requirements[:50]}...")
-            return {"result": result}
+            return result
 
         elif tool_name == "analyze_architecture":
             current_architecture = arguments.get("current_architecture", "")
@@ -514,7 +514,7 @@ class ItLeadServerHandlers:
                 )
 
             print(f"Completed architecture analysis for: {current_architecture[:50]}...")
-            return {"result": result}
+            return result
 
         elif tool_name == "schedule_team_meeting":
             meeting_type = arguments.get("meeting_type", "standup")
@@ -544,7 +544,7 @@ class ItLeadServerHandlers:
                 )
 
             print(f"Scheduled {meeting_type} meeting for {datetime} with {len(attendees)} attendees")
-            return {"result": result}
+            return result
 
         elif tool_name == "track_task_progress":
             task_ids = arguments.get("task_ids", [])
@@ -583,7 +583,7 @@ class ItLeadServerHandlers:
                 )
 
             print(f"Tracked progress for {len(task_ids)} tasks")
-            return {"result": result}
+            return result
 
         # Handle registry tools by calling their respective handlers
         elif tool_name == "registry/register":
@@ -694,7 +694,7 @@ class ItLeadServerHandlers:
                 "temperature": 0.7
             }
             
-            response = requests.post(self.llm_provider_url, headers=headers, json=data)
+            response = requests.post(self.llm_provider_url, headers=headers, json=data, timeout=1200)
             
             if response.status_code == 200:
                 result = response.json()
@@ -1024,7 +1024,7 @@ class ItLeadServerHandlers:
                 "messages": [{"role": "user", "content": "health check"}],
                 "max_tokens": 5
             }
-            response = requests.post(self.llm_provider_url, json=test_prompt, timeout=10)
+            response = requests.post(self.llm_provider_url, json=test_prompt, timeout=1200)
             health_status["llm_connection"] = response.status_code in [200, 401, 400]  # 401/400 means connection worked but auth/token issue
             health_status["checks"]["llm"] = {
                 "status": "healthy" if health_status["llm_connection"] else "unhealthy",

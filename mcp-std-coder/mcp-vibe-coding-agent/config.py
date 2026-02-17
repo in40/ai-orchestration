@@ -4,7 +4,7 @@ import os
 
 
 class Settings(BaseSettings):
-    server_name: str = "vibe-coding-agent"
+    server_name: str = "Implementation Engineer"
     server_description: str = "AI coding agent that turns natural language into code using local LLM (vibe coding)"
     server_version: str = "1.0.0"
     capabilities: List[str] = ["tools", "resources"]   # we expose tools

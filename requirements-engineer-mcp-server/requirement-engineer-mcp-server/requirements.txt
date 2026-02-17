@@ -1,0 +1,7 @@
+fastapi>=0.104.1
+uvicorn>=0.24.0
+sse-starlette>=1.8.2
+psycopg2-binary>=2.9.7
+requests>=2.31.0
+nest-asyncio>=1.5.8
+sseclient-py>=1.7.2

@@ -44,7 +44,9 @@ class HumanInterfaceHandlers:
 
     def register_handlers(self, rpc_handler: JsonRpcHandler):
         """Register human interface handlers with the RPC handler"""
-        rpc_handler.register_request_handler('tools/call', self.handle_tools_call)
+        # Note: Do NOT register tools/call here - the main handler in extended_server_handlers.py
+        # is responsible for routing tool calls to this module. Registering tools/call here
+        # would override the main handler and prevent proper task storage.
 
     def handle_tools_call(self, params: Dict[str, Any], request_id: str) -> Dict[str, Any]:
         """Handle tools/call request for human interface tools"""
@@ -74,8 +76,8 @@ class HumanInterfaceHandlers:
         if tool_name == "escalate_to_human":
             return self._escalate_to_human(arguments)
 
-        # For any other tools, return a generic response
-        return {"result": f"Executed human interface tool '{tool_name}' with arguments: {arguments}"}
+        # For any other tools, return None to indicate this module doesn't handle them
+        return None
 
     def _escalate_to_human(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Escalate decision to human operator"""

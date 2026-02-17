@@ -18,6 +18,8 @@ from .handlers.client_handlers import ClientMethodsHandlers
 from .utils.notifications import NotificationManager
 from .utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
 from dependencies.vibe_coder import register_vibe_coding_tool
+from implementation_engineer import register_implementation_engineer_tools
+from config import settings
 
 
 class McpServer:
@@ -182,8 +184,8 @@ class McpServer:
             # Prepare registration payload
             self.service_info = {
                 "id": f"server-{self.host}-{self.port}",
-                "name": f"MCP Server on {self.host}:{self.port}",
-                "description": f"MCP server providing services on {self.host}:{self.port}",
+                "name": settings.server_name,
+                "description": f"{settings.server_description} on {self.host}:{self.port}",
                 "endpoint": endpoint_url,
                 "capabilities": {
                     "tools": [tool["name"] for tool in self.server_handlers.tools],
@@ -250,6 +252,8 @@ class McpServer:
     def _register_vibe_coding_tool(self):
         """Register the vibe coding tool with the server handlers"""
         register_vibe_coding_tool(self.server_handlers)
+        # Also register the implementation engineer tools
+        register_implementation_engineer_tools(self.server_handlers)
 
     def _message_callback(self, message):
         """Callback to handle incoming messages"""

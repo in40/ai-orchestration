@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Script to start the IT Lead MCP server with various options
+# Script to start the IT Lead MCP server with PostgreSQL for task storage
 # Usage: ./start_it_lead_server.sh [options]
 
-echo "Starting IT Lead MCP Server..."
+echo "Starting IT Lead MCP Server with PostgreSQL..."
 
 # Default values
 TRANSPORT="streamable-http"
@@ -13,13 +13,16 @@ ENABLE_REGISTRY=true
 REGISTER_WITH_REGISTRY=true
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT=3031
-USE_POSTGRES=true
+USE_POSTGRES=true  # Changed to true to use PostgreSQL by default
+POSTGRES_HOST="127.0.0.1"
+POSTGRES_PORT=5432
+POSTGRES_DB="mcp_registry"
+POSTGRES_USER="postgres"
+POSTGRES_PASSWORD="postgres"  # You should change this to a secure password in production
 MAX_CONCURRENT_REQUESTS=10
 LLM_PROVIDER_URL="http://asus-tus:1234/v1/chat/completions"
 LLM_MODEL="qwen3-4b"
 PROMPTS_DIR="."
-POSTGRES_USER="postgres"
-POSTGRES_PASSWORD="postgres"
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -56,6 +59,30 @@ while [[ $# -gt 0 ]]; do
       USE_POSTGRES=true
       shift
       ;;
+    --use-sqlite)
+      USE_POSTGRES=false
+      shift
+      ;;
+    --postgres-host)
+      POSTGRES_HOST="$2"
+      shift 2
+      ;;
+    --postgres-port)
+      POSTGRES_PORT="$2"
+      shift 2
+      ;;
+    --postgres-db)
+      POSTGRES_DB="$2"
+      shift 2
+      ;;
+    --postgres-user)
+      POSTGRES_USER="$2"
+      shift 2
+      ;;
+    --postgres-password)
+      POSTGRES_PASSWORD="$2"
+      shift 2
+      ;;
     --max-concurrent-requests)
       MAX_CONCURRENT_REQUESTS="$2"
       shift 2
@@ -72,14 +99,6 @@ while [[ $# -gt 0 ]]; do
       PROMPTS_DIR="$2"
       shift 2
       ;;
-    --postgres-user)
-      POSTGRES_USER="$2"
-      shift 2
-      ;;
-    --postgres-password)
-      POSTGRES_PASSWORD="$2"
-      shift 2
-      ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -92,12 +111,16 @@ while [[ $# -gt 0 ]]; do
       echo "  --registry-host HOST      Registry server host [default: 127.0.0.1]"
       echo "  --registry-port PORT      Registry server port [default: 3031]"
       echo "  --use-postgres            Use PostgreSQL for registry storage instead of SQLite [default: true]"
+      echo "  --use-sqlite              Use SQLite for registry storage (alias for --no-postgres) [default: false]"
+      echo "  --postgres-host HOST      PostgreSQL host [default: 127.0.0.1]"
+      echo "  --postgres-port PORT      PostgreSQL port [default: 5432]"
+      echo "  --postgres-db DB          PostgreSQL database name [default: mcp_registry]"
+      echo "  --postgres-user USER      PostgreSQL username [default: postgres]"
+      echo "  --postgres-password PASS  PostgreSQL password [default: postgres]"
       echo "  --max-concurrent-requests NUM  Maximum number of concurrent requests [default: 10]"
       echo "  --llm-provider-url URL    URL for the LLM provider [default: http://asus-tus:1234/v1/chat/completions]"
       echo "  --llm-model MODEL         LLM model name [default: qwen3-4b]"
       echo "  --prompts-dir DIR         Directory to keep prompts [default: current directory]"
-      echo "  --postgres-user USER      PostgreSQL username [default: postgres]"
-      echo "  --postgres-password PASS  PostgreSQL password [default: postgres]"
       echo "  -h, --help               Show this help message"
       exit 0
       ;;
@@ -141,7 +164,11 @@ if [ "$REGISTRY_PORT" != "3031" ]; then
 fi
 
 if [ "$USE_POSTGRES" = true ]; then
-  CMD_ARGS="$CMD_ARGS --use-postgres --postgres-user $POSTGRES_USER --postgres-password $POSTGRES_PASSWORD"
+  CMD_ARGS="$CMD_ARGS --use-postgres --postgres-host $POSTGRES_HOST --postgres-port $POSTGRES_PORT --postgres-db $POSTGRES_DB --postgres-user $POSTGRES_USER --postgres-password $POSTGRES_PASSWORD"
+  echo "Configured to use PostgreSQL for task storage (host: $POSTGRES_HOST, port: $POSTGRES_PORT, db: $POSTGRES_DB)"
+else
+  # When USE_POSTGRES is false, we don't pass --use-postgres flag, so it defaults to SQLite
+  echo "Configured to use SQLite for task storage"
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
@@ -160,6 +187,6 @@ if [ "$PROMPTS_DIR" != "." ]; then
   CMD_ARGS="$CMD_ARGS --prompts-dir $PROMPTS_DIR"
 fi
 
-echo "Executing: python -m it_lead_mcp_server.server $CMD_ARGS"
-export PYTHONPATH=.
-exec python -m it_lead_mcp_server.server $CMD_ARGS
+echo "Executing: python -c \"import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()\""
+export PYTHONPATH=".:$PYTHONPATH"
+python -c "import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()"
