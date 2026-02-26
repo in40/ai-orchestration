@@ -666,6 +666,44 @@ async def update_task_status_endpoint(update: TaskStatusUpdate):
         "type": "task_updated",
         "data": update.dict()
     })
+
+@app.post("/api/tasks/delete")
+async def delete_task_endpoint(task_data: dict):
+    """Delete a task from IT Lead server"""
+    task_id = task_data.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id is required")
+    
+    logger.info(f"Deleting task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"delete-task-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "delete_task",
+                        "arguments": {"task_id": task_id}
+                    }
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"Task deleted: {result}")
+                return {"message": f"Task {task_id} has been deleted", "success": True}
+            else:
+                logger.error(f"Failed to delete task: {response.status_code}")
+                raise HTTPException(status_code=500, detail=f"Failed to delete task")
+    except Exception as e:
+        logger.error(f"Error deleting task: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
     
     return {"message": "Task status updated successfully", "task_id": update.task_id}
 

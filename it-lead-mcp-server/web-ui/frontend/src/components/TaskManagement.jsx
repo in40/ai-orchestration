@@ -131,6 +131,17 @@ const TaskManagement = () => {
     setSelectedTaskHistory(null);
   };
 
+  const handleDelete = async (taskId) => {
+    if (!window.confirm("Are you sure?")) return;
+    try {
+      await axios.post('/api/tasks/delete', { task_id: taskId });
+      setTasks(prevTasks => prevTasks.filter(task => task.id !== taskId));
+    } catch (err) {
+      console.error("Error deleting task:", err);
+      alert("Failed to delete task");
+    }
+  };
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" height="50vh">
@@ -231,6 +242,13 @@ const TaskManagement = () => {
                         onClick={() => handleViewHistory(task.id)}
                       >
                         <HistoryIcon />
+                      </IconButton>
+                      <IconButton 
+                        color="error" 
+                        aria-label="delete task"
+                        onClick={() => handleDelete(task.id)}
+                      >
+                        <DeleteIcon />
                       </IconButton>
                     </TableCell>
                     </TableRow>

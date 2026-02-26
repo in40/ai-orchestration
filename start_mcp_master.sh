@@ -1,0 +1,153 @@
+#!/bin/bash
+
+# Master Startup Script for Complete MCP System
+# Starts all servers in dependency order:
+# 1. Registry Server (mcp-std-skeleton) - provides service discovery on port 3031
+# 2. Requirements Engineer (port 3062)
+# 3. IT Lead Server (port 3061)
+# 4. Team Management Server (port 3063)
+# 5. Web UI (port 8000/5173)
+
+set -e
+
+echo "================================================"
+echo "Starting Complete MCP System..."
+echo "================================================"
+
+# Cleanup function
+cleanup() {
+    echo ""
+    echo "Shutting down MCP System..."
+    pkill -f "mcp_std_server" 2>/dev/null || true
+    pkill -f "it_lead_mcp_server" 2>/dev/null || true  
+    pkill -f "team_management" 2>/dev/null || true
+    echo "MCP System has been shut down."
+    exit 0
+}
+
+trap cleanup INT TERM
+
+echo ""
+echo "Step 1/5: Starting Registry Server on port 3031..."
+echo "---------------------------------------------------"
+cd /root/qwen/base/mcp-std-skeleton
+nohup bash ./start_registry_server.sh --port 3031 > /tmp/mcp_registry.log 2>&1 &
+REG_PID=$!
+echo "  PID: $REG_PID"
+
+# Wait for registry to be ready
+echo -n "  Waiting for Registry Server... "
+for i in {1..30}; do
+    if curl -s http://localhost:3031/ > /dev/null 2>&1; then
+        echo "✓"
+        break
+    fi
+    sleep 1
+done
+
+echo ""
+echo "Step 2/5: Starting Requirements Engineer Server on port 3062..."
+echo "------------------------------------------------------------------"
+cd /root/qwen/base/requirements-engineer-mcp-server/requirement-engineer-mcp-server
+nohup bash ./start_requirement_engineer_server.sh > /tmp/req_eng.log 2>&1 &
+REQ_ENG_PID=$!
+echo "  PID: $REQ_ENG_PID"
+
+# Wait for Requirements Engineer to be ready
+echo -n "  Waiting for Requirements Engineer Server... "
+for i in {1..30}; do
+    if curl -s http://localhost:3062/ > /dev/null 2>&1; then
+        echo "✓"
+        break
+    fi
+    sleep 1
+done
+
+echo ""
+echo "Step 3/5: Starting IT Lead Server on port 3061..."
+echo "---------------------------------------------------"
+cd /root/qwen/base/it-lead-mcp-server
+nohup bash ./start_it_lead_server.sh > /tmp/it_lead.log 2>&1 &
+IT_LEAD_PID=$!
+echo "  PID: $IT_LEAD_PID"
+
+# Wait for IT Lead to be ready  
+echo -n "  Waiting for IT Lead Server... "
+for i in {1..30}; do
+    if curl -s http://localhost:3061/ > /dev/null 2>&1; then
+        echo "✓"
+        break
+    fi
+    sleep 1
+done
+
+echo ""
+echo "Step 4/5: Starting Team Management Server on port 3063..."
+echo "----------------------------------------------------------"
+cd /root/qwen/base/team-management-ui/team-management-mcp-server
+if [ -f "./start_team_management_server.sh" ]; then
+    nohup bash ./start_team_management_server.sh > /tmp/team_management.log 2>&1 &
+    TMGT_PID=$!
+    echo "  PID: $TMGT_PID"
+    
+    # Wait for Team Mgmt to be ready
+    echo -n "  Waiting for Team Management Server... "
+    for i in {1..30}; do
+        if curl -s http://localhost:3063/ > /dev/null 2>&1; then
+            echo "✓"
+            break
+        fi
+        sleep 1
+    done
+else
+    echo "  ⚠ Team Management startup script not found, skipping..."
+fi
+
+echo ""
+echo "Step 5/5: Starting Web UI (IT Lead) on ports 8000/5173..."
+echo "----------------------------------------------------------"
+cd /root/qwen/base/it-lead-mcp-server
+if [ -f "./start_ui.sh" ]; then
+    nohup bash ./start_ui.sh \
+        --web-backend-port 8000 \
+        --web-frontend-port 5173 \
+        --registry-host 127.0.0.1 \
+        --registry-port 3031 \
+        > /tmp/webui.log 2>&1 &
+    WEBUI_PID=$!
+    echo "  PID: $WEBUI_PID"
+    
+    # Wait for Web UI to be ready
+    echo -n "  Waiting for Web UI... "
+    for i in {1..15}; do
+        if curl -s http://localhost:8000/ > /dev/null 2>&1 || [ $i -eq 15 ]; then
+            break
+        fi
+        sleep 2
+    done
+    echo "✓"
+else
+    echo "  ⚠ Web UI startup script (start_ui.sh) not found, skipping..."
+fi
+
+echo ""
+echo "================================================"
+echo "MCP System Startup Complete!"
+echo "================================================"
+echo ""
+echo "Registry Server:          http://localhost:3031/mcp"
+echo "Requirements Engineer:     http://localhost:3062/mcp" 
+echo "IT Lead Server:            http://localhost:3061/mcp"
+echo "Team Management:           http://localhost:3063/mcp  (if started)"
+echo "Web UI:                    http://localhost:5173/"
+echo ""
+echo "Process IDs:"
+echo "  Registry Server:         PID $REG_PID"
+echo "  Requirements Engineer:     PID $REQ_ENG_PID"  
+echo "  IT Lead Server:           PID $IT_LEAD_PID"
+echo "  Team Management:          PID $TMGT_PID (if started)"
+echo "  Web UI:                   PID $WEBUI_PID (if started)"
+echo ""
+
+# Keep script running
+wait

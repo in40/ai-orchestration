@@ -145,6 +145,10 @@ class ExtendedItLeadServerHandlers:
             }
         ]
 
+        # Initialize async_task_handlers early (before _add_enhanced_tools is called)
+        # This prevents AttributeError when _add_enhanced_tools() tries to access self.async_task_handlers
+        self.async_task_handlers = None
+
         # Add enhanced tools from new modules
         self._add_enhanced_tools()
 
@@ -502,7 +506,11 @@ class ExtendedItLeadServerHandlers:
         self.tools.extend(strategic_planning_tools)
 
         # Add async task tools
-        async_task_tools = self.async_task_handlers.tools
+        if self.async_task_handlers:
+            async_task_tools = self.async_task_handlers.tools
+        else:
+            async_task_tools = []
+        
         self.tools.extend(async_task_tools)
 
     def _add_enhanced_resources(self):
@@ -1107,6 +1115,27 @@ class ExtendedItLeadServerHandlers:
                 print("ERROR: Task storage is not available in get_all_tasks")
                 return {"result": {"tasks": [], "total_count": 0, "error": "Task storage not available"}}
 
+        elif tool_name == "delete_task":
+            task_id = arguments.get("task_id")
+            if not task_id:
+                return {"result": {"success": False, "error": "task_id is required"}}
+            
+            if self.task_storage:
+                try:
+                    success = self.task_storage.delete_task(task_id)
+                    if success:
+                        print(f"Successfully deleted task: {task_id}")
+                        return {"result": {"success": True, "message": f"Task {task_id} has been deleted"}}
+                    else:
+                        print(f"Failed to delete task: {task_id}")
+                        return {"result": {"success": False, "error": f"Failed to delete task {task_id}"}}
+                except Exception as e:
+                    import traceback
+                    print(f"ERROR deleting task {task_id}: {e}")
+                    traceback.print_exc()
+                    return {"result": {"success": False, "error": str(e)}}
+            else:
+                return {"result": {"success": False, "error": "Task storage not available"}}
         elif tool_name == "get_task_history":
             task_id = arguments.get("task_id")
             if not task_id:

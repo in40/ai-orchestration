@@ -476,7 +476,36 @@ class TaskStorage:
             traceback.print_exc()
             return []
 
+    def delete_task(self, task_id: str) -> bool:
+        """Delete a specific task from the registry. Returns True if deleted, False if not found."""
+        try:
+            if self.use_sqlite:
+                cursor = self.connection.cursor()
+                cursor.execute("DELETE FROM task_registry WHERE task_id = ?", (task_id,))
+                deleted = cursor.rowcount > 0
+                self.connection.commit()
+                cursor.close()
+            else:
+                import psycopg2
+                cursor = self.connection.cursor()
+                cursor.execute("DELETE FROM task_registry WHERE task_id = %s", (task_id,))
+                deleted = cursor.rowcount > 0
+                self.connection.commit()
+                cursor.close()
+
+            if deleted:
+                print(f"Successfully deleted task: {task_id}")
+            else:
+                print(f"Task not found for deletion: {task_id}")
+            return deleted
+        except Exception as e:
+            print(f"Error deleting task {task_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def close(self):
+
         """Close the database connection"""
         if self.connection:
             self.connection.close()
