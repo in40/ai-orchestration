@@ -28,7 +28,7 @@ import {
   MenuItem,
   IconButton
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 const TaskManagement = () => {
