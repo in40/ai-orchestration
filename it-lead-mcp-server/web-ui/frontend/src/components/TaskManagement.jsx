@@ -135,7 +135,9 @@ const TaskManagement = () => {
     if (!window.confirm("Are you sure?")) return;
     try {
       await axios.post('/api/tasks/delete', { task_id: taskId });
-      setTasks(prevTasks => prevTasks.filter(task => task.id !== taskId));
+      // Refresh tasks from server
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
     } catch (err) {
       console.error("Error deleting task:", err);
       alert("Failed to delete task");
