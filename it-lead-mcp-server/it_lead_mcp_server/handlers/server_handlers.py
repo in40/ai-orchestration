@@ -207,7 +207,9 @@ class ItLeadServerHandlers:
             self.task_storage = None
 
         if self.enable_registry:
-            self._initialize_registry(use_postgres)
+            # Always use SQLite for service registry to share with port 3031's Registry Server
+            # Use PostgreSQL only for task storage, not service discovery
+            self._initialize_registry(use_postgres=False)
 
         # Add registry-specific tools if enabled
         if self.enable_registry:

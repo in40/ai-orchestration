@@ -278,7 +278,9 @@ class ExtendedItLeadServerHandlers:
             self.task_storage = None
 
         if self.enable_registry:
-            self._initialize_registry(use_postgres)
+            # Always use SQLite for service registry to share with port 3031's Registry Server
+            # Use PostgreSQL only for task storage, not service discovery
+            self._initialize_registry(use_postgres=False)
 
         # Add registry-specific tools if enabled
         if self.enable_registry:
@@ -561,7 +563,8 @@ class ExtendedItLeadServerHandlers:
                 )
             else:
                 from ..utils.service_registry_db import ServiceRegistryDB
-                self.service_registry = ServiceRegistryDB()
+                # Use absolute path to share registry with port 3031's Registry Server
+                self.service_registry = ServiceRegistryDB(db_path="/root/qwen/base/mcp-std-skeleton/mcp_registry.db")
         except Exception as e:
             print(f"Failed to initialize registry: {e}")
             print("Registry functionality will be disabled")

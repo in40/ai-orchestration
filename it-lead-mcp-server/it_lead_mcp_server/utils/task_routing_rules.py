@@ -12,12 +12,12 @@ TASK_ROUTING_RULES = [
 
     {
         "id": "rule-1.0",
-        "name": "Website Creation Request",
+        "name": "Website Creation Request (Requirements)",
         "category": "keyword",
         "conditions": {
             "keywords_any": ["website", "web application", "online site"],
             "keywords_all": [],
-            "keywords_none": ["code review", "security audit"]
+            "keywords_none": ["html page", "code", "python", "implement", "build"]
         },
         "action": {
             "assign_to": "requirements-engineer",
@@ -26,6 +26,24 @@ TASK_ROUTING_RULES = [
             "metadata": {"task_type": "website_decomposition"}
         },
         "confidence_threshold": 0.7
+    },
+
+    {
+        "id": "rule-1.0b",
+        "name": "Web Page Implementation Request",
+        "category": "keyword",
+        "conditions": {
+            "keywords_any": ["html", "css", "javascript", "react", "frontend"],
+            "keywords_all": [],
+            "action_verbs": ["create", "build", "implement", "develop"]
+        },
+        "action": {
+            "assign_to": "implementation-engineer",
+            "tool": "vibe_code_async",
+            "priority": "medium",
+            "metadata": {"task_type": "web_page_implementation"}
+        },
+        "confidence_threshold": 0.6
     },
 
     {
