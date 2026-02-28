@@ -163,12 +163,11 @@ Resolve this conflict by determining:
 4. What is the proper workflow sequence?
 
 ## Available Agents
-1. **implementation-engineer**: Writes code, implements features
-2. **requirements-engineer**: Analyzes requirements
-3. **code-reviewer**: Reviews code quality
-4. **qa-test-engineer**: Testing and validation
-5. **security-engineer**: Security analysis
-6. **devops-engineer**: Deployment and infrastructure
+1. **requirements-engineer**: Analyzes requirements, resolves ambiguities
+2. **code-reviewer**: Reviews code quality
+3. **qa-test-engineer**: Testing and validation
+
+Note: Implementation tasks should be handled by requirements-engineer for task decomposition.
 
 ## Response Format
 Respond in valid JSON format:
@@ -199,12 +198,13 @@ Respond in valid JSON format:
 The task requires intelligent routing analysis.
 
 ## Available Agents
-1. **implementation-engineer**: Writes code, implements features, generates code from specs
-2. **requirements-engineer**: Analyzes requirements, resolves ambiguities
-3. **code-reviewer**: Reviews code quality, validates architecture
-4. **qa-test-engineer**: Generates test suites, executes tests
-5. **security-engineer**: Security analysis, vulnerability scanning
-6. **devops-engineer**: Deployments, CI/CD, infrastructure
+1. **requirements-engineer**: Analyzes requirements, resolves ambiguities, decomposes tasks into actionable items
+2. **code-reviewer**: Reviews code quality, validates architecture
+3. **qa-test-engineer**: Generates test suites, executes tests
+4. **security-engineer**: Security analysis, vulnerability scanning
+5. **devops-engineer**: Deployments, CI/CD, infrastructure
+
+Note: Implementation tasks should be assigned to requirements-engineer for decomposition into actionable development items.
 
 ## Your Task
 Analyze and provide optimal task assignment.

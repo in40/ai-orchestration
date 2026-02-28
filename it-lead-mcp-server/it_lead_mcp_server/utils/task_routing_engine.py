@@ -117,49 +117,62 @@ class TaskRoutingEngine:
     def _handle_explicit_assignee(self, assignee: str, task_description: str,
                                   context: Dict[str, Any]) -> RoutingDecision:
         """Handle explicit assignee in task assignment"""
-        # Normalize assignee
+        # Normalize assignee for lookup but keep original name for storage/display
         assignee_lower = assignee.lower().replace(" ", "-").replace("_", "-")
         
-        # Map common variations
+        # Map common variations to (proper_name_for_storage, normalized_name_for_lookup)
         assignee_mapping = {
-            "implementation-engineer": "implementation-engineer",
-            "implementation-engineer-agent": "implementation-engineer",
-            "implementation": "implementation-engineer",
-            "requirements-engineer": "requirements-engineer",
-            "requirements-engineer-agent": "requirements-engineer",
-            "requirements": "requirements-engineer",
-            "code-reviewer": "code-reviewer",
-            "code-reviewer-agent": "code-reviewer",
-            "reviewer": "code-reviewer",
-            "qa-test-engineer": "qa-test-engineer",
-            "qa-test-engineer-agent": "qa-test-engineer",
-            "qa": "qa-test-engineer",
-            "tester": "qa-test-engineer",
-            "security-engineer": "security-engineer",
-            "security-engineer-agent": "security-engineer",
-            "security": "security-engineer",
-            "devops-engineer": "devops-engineer",
-            "devops-engineer-agent": "devops-engineer",
-            "devops": "devops-engineer",
+            "it-lead": ("IT Lead", "assign_task"),
+            "implementation-engineer": ("Implementation Engineer", "implement_feature"),
+            "implementation-engineer-agent": ("Implementation Engineer", "implement_feature"),
+            "implementation": ("Implementation Engineer", "implement_feature"),
+            "requirements-engineer": ("Requirements Engineer", "analyze_requirements"),
+            "requirements-engineer-agent": ("Requirements Engineer", "analyze_requirements"),
+            "requirements": ("Requirements Engineer", "analyze_requirements"),
+            "code-reviewer": ("Code Reviewer", "review_code"),
+            "code-reviewer-agent": ("Code Reviewer", "review_code"),
+            "reviewer": ("Code Reviewer", "review_code"),
+            "qa-test-engineer": ("QA Test Engineer", "generate_test_suite"),
+            "qa-test-engineer-agent": ("QA Test Engineer", "generate_test_suite"),
+            "qa": ("QA Test Engineer", "generate_test_suite"),
+            "tester": ("QA Test Engineer", "generate_test_suite"),
+            "security-engineer": ("Security Engineer", "perform_security_analysis"),
+            "security-engineer-agent": ("Security Engineer", "perform_security_analysis"),
+            "security": ("Security Engineer", "perform_security_analysis"),
+            "devops-engineer": ("DevOps Engineer", "orchestrate_deployments"),
+            "devops-engineer-agent": ("DevOps Engineer", "orchestrate_deployments"),
+            "devops": ("DevOps Engineer", "orchestrate_deployments"),
         }
         
-        normalized_assignee = assignee_mapping.get(assignee_lower, assignee_lower)
+        # Check if assignee exists in mapping
+        result = assignee_mapping.get(assignee_lower)
         
-        # Check if agent is available
-        agent_endpoint = self.agent_endpoints.get(normalized_assignee)
+        if result:
+            proper_name, tool = result
+            return RoutingDecision(
+                success=True,
+                assign_to=proper_name,  # Use proper name for storage and display
+                tool=tool,
+                priority="medium",
+                confidence=1.0,
+                matched_rule_id="explicit-assignee",
+                requires_llm_planning=False,
+                metadata={"explicit_assignment": True}
+            )
         
-        # Determine appropriate tool based on task description
+        # Fallback: use normalized assignee as-is (for backward compatibility)
+        normalized_assignee = assignee_lower
         tool = self._determine_tool_for_assignee(normalized_assignee, task_description)
-        
+
         return RoutingDecision(
             success=True,
-            assign_to=normalized_assignee,
+            assign_to=normalized_assignee,  # Keep original for backward compatibility
             tool=tool,
             priority="medium",
             confidence=1.0,
             matched_rule_id="explicit-assignee",
             requires_llm_planning=False,
-            metadata={"explicit_assignment": True, "agent_endpoint": agent_endpoint}
+            metadata={"explicit_assignment": True}
         )
     
     def _determine_tool_for_assignee(self, assignee: str, task_description: str) -> str:
@@ -366,7 +379,7 @@ class TaskRoutingEngine:
             matched_phases = 0
             for phase in phases:
                 phase_keywords = phase.get("keywords", [])
-                if any(kw.lower() in task_description.lower() for kw in phase_keyword):
+                if any(kw.lower() in task_description.lower() for kw in phase_keywords):
                     matched_phases += 1
             
             if matched_phases < len(phases) * 0.5:
@@ -388,7 +401,7 @@ class TaskRoutingEngine:
         """Evaluate explicit assignee rule"""
         assignee_explicit = conditions.get("assignee_explicit")
         
-        if assignee_explicit:
+        if assignee_explicit and (context.get("explicit_assignee") == assignee_explicit):
             # This rule is for explicit assignee matching
             # The actual matching happens in _handle_explicit_assignee
             return RuleMatchResult(

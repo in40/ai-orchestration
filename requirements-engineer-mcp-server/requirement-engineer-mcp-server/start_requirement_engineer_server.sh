@@ -13,7 +13,9 @@ ENABLE_REGISTRY=false  # As per requirement: should not become a new registry
 REGISTER_WITH_REGISTRY=true  # As per requirement: should connect to existing registry
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT=3031  # As per requirement: connect to existing registry on port 3031
-USE_POSTGRES=true  # Use PostgreSQL for task storage as required
+USE_POSTGRES=false  # Use SQLite for task storage (matching Registry Server)
+POSTGRES_HOST="127.0.0.1"  # PostgreSQL host
+POSTGRES_DB="mcp_registry"  # Database name
 MAX_CONCURRENT_REQUESTS=10
 
 # Parse command line options
@@ -50,6 +52,14 @@ while [[ $# -gt 0 ]]; do
     --use-postgres)
       USE_POSTGRES=true
       shift
+      ;;
+    --postgres-host)
+      POSTGRES_HOST="$2"
+      shift 2
+      ;;
+    --postgres-db)
+      POSTGRES_DB="$2"
+      shift 2
       ;;
     --max-concurrent-requests)
       MAX_CONCURRENT_REQUESTS="$2"
@@ -117,7 +127,7 @@ else
 fi
 
 if [ "$USE_POSTGRES" = true ]; then
-  CMD="$CMD --use-postgres --postgres-user postgres --postgres-password postgres"
+  CMD="$CMD --use-postgres --postgres-host $POSTGRES_HOST --postgres-db $POSTGRES_DB --postgres-user postgres --postgres-password postgres"
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then

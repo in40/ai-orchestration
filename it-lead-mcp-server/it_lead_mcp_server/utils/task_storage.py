@@ -9,6 +9,20 @@ from typing import Dict, List, Any, Optional
 import logging
 
 
+def format_datetime_value(val):
+    """Helper function to safely convert datetime values from SQLite or PostgreSQL"""
+    if val is None:
+        return None
+    # If it's already a string (from SQLite), return as-is
+    if isinstance(val, str):
+        return val
+    # Otherwise try isoformat() for datetime objects
+    try:
+        return val.isoformat()
+    except AttributeError:
+        return str(val)
+
+
 class TaskStorage:
     """Handles storage of tasks in PostgreSQL or SQLite database"""
 
@@ -119,11 +133,35 @@ class TaskStorage:
             raise
 
     def _init_db_sqlite(self):
-        """Initialize the SQLite database and create tasks table if it doesn't exist"""
+        """Initialize the SQLite database and create task_registry table if it doesn't exist"""
         try:
             cursor = self.connection.cursor()
 
-            # Create tasks table
+            # Create task_registry table for full lifecycle tracking
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS task_registry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT UNIQUE NOT NULL,
+                    title TEXT,
+                    description TEXT,
+                    submitter TEXT DEFAULT 'unknown',
+                    submitter_type TEXT DEFAULT 'system',
+                    transport_channel TEXT DEFAULT 'unknown',
+                    assigned_to TEXT DEFAULT 'unassigned',
+                    status TEXT DEFAULT 'received',
+                    status_reason TEXT,
+                    priority TEXT DEFAULT 'medium',
+                    deadline TEXT,
+                    source_server TEXT,
+                    target_server TEXT,
+                    metadata TEXT,
+                    status_history TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Create tasks table for backward compatibility
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,9 +182,8 @@ class TaskStorage:
             """)
 
             # Create indexes for better performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON tasks(status)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_assigned_to ON tasks(assigned_to)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON task_registry(task_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON task_registry(status)")
 
             self.connection.commit()
             cursor.close()
@@ -353,12 +390,12 @@ class TaskStorage:
                     "status_reason": row[8],
                     "assigned_to": row[9],
                     "priority": row[10],
-                    "deadline": row[11].isoformat() if row[11] else None,
-                    "created_at": row[12].isoformat() if row[12] else None,
-                    "updated_at": row[13].isoformat() if row[13] else None,
-                    "assigned_at": row[14].isoformat() if row[14] else None,
-                    "started_at": row[15].isoformat() if row[15] else None,
-                    "completed_at": row[16].isoformat() if row[16] else None,
+                    "deadline": format_datetime_value(row[11]),
+                    "created_at": format_datetime_value(row[12]),
+                    "updated_at": format_datetime_value(row[13]),
+                    "assigned_at": format_datetime_value(row[14]),
+                    "started_at": format_datetime_value(row[15]),
+                    "completed_at": format_datetime_value(row[16]),
                     "source_server": row[17],
                     "target_server": row[18],
                     "result": row[19],
@@ -405,12 +442,12 @@ class TaskStorage:
                     "status_reason": row[8],
                     "assigned_to": row[9],
                     "priority": row[10],
-                    "deadline": row[11].isoformat() if row[11] else None,
-                    "created_at": row[12].isoformat() if row[12] else None,
-                    "updated_at": row[13].isoformat() if row[13] else None,
-                    "assigned_at": row[14].isoformat() if row[14] else None,
-                    "started_at": row[15].isoformat() if row[15] else None,
-                    "completed_at": row[16].isoformat() if row[16] else None,
+                    "deadline": format_datetime_value(row[11]),
+                    "created_at": format_datetime_value(row[12]),
+                    "updated_at": format_datetime_value(row[13]),
+                    "assigned_at": format_datetime_value(row[14]),
+                    "started_at": format_datetime_value(row[15]),
+                    "completed_at": format_datetime_value(row[16]),
                     "source_server": row[17],
                     "target_server": row[18],
                     "result": row[19],
@@ -456,12 +493,12 @@ class TaskStorage:
                     "status_reason": row[8],
                     "assigned_to": row[9],
                     "priority": row[10],
-                    "deadline": row[11].isoformat() if row[11] else None,
-                    "created_at": row[12].isoformat() if row[12] else None,
-                    "updated_at": row[13].isoformat() if row[13] else None,
-                    "assigned_at": row[14].isoformat() if row[14] else None,
-                    "started_at": row[15].isoformat() if row[15] else None,
-                    "completed_at": row[16].isoformat() if row[16] else None,
+                    "deadline": format_datetime_value(row[11]),
+                    "created_at": format_datetime_value(row[12]),
+                    "updated_at": format_datetime_value(row[13]),
+                    "assigned_at": format_datetime_value(row[14]),
+                    "started_at": format_datetime_value(row[15]),
+                    "completed_at": format_datetime_value(row[16]),
                     "source_server": row[17],
                     "target_server": row[18],
                     "result": row[19],

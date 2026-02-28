@@ -9,7 +9,25 @@ TASK_ROUTING_RULES = [
     # ===========================================
     # Category 1: Keyword-Based Rules (Simple)
     # ===========================================
-    
+
+    {
+        "id": "rule-1.0",
+        "name": "Website Creation Request",
+        "category": "keyword",
+        "conditions": {
+            "keywords_any": ["website", "web application", "online site"],
+            "keywords_all": [],
+            "keywords_none": ["code review", "security audit"]
+        },
+        "action": {
+            "assign_to": "requirements-engineer",
+            "tool": "analyze_requirements",
+            "priority": "high",
+            "metadata": {"task_type": "website_decomposition"}
+        },
+        "confidence_threshold": 0.7
+    },
+
     {
         "id": "rule-1.1",
         "name": "Python Code Implementation",
@@ -55,8 +73,7 @@ TASK_ROUTING_RULES = [
         "conditions": {
             "keywords_any": ["requirement", "specification", "spec", "business need", "user story"],
             "keywords_all": [],
-            "keywords_none": ["code", "implement", "deploy", "build"],
-            "document_attached": True
+            "keywords_none": ["code", "implement", "deploy", "build"]
         },
         "action": {
             "assign_to": "requirements-engineer",

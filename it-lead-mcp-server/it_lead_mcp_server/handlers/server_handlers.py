@@ -192,12 +192,15 @@ class ItLeadServerHandlers:
         # Initialize task storage
         try:
             from ..utils.task_storage import TaskStorage
+            # Determine if we should use SQLite based on whether postgres_config is empty or not
+            use_sqlite = not (use_postgres and self.postgres_config)
             self.task_storage = TaskStorage(
                 host=self.postgres_config.get("host", "localhost"),
                 port=self.postgres_config.get("port", 5432),
-                database=self.postgres_config.get("database", "mcp_registry"),
+                database=self.postgres_config.get("database", "mcp_registry.db"),
                 user=self.postgres_config.get("user", "postgres"),
-                password=self.postgres_config.get("password", "")
+                password=self.postgres_config.get("password", ""),
+                use_sqlite=use_sqlite
             )
         except Exception as e:
             print(f"❌ Failed to initialize task storage: {e}")
@@ -224,7 +227,8 @@ class ItLeadServerHandlers:
                 )
             else:
                 from ..utils.service_registry_db import ServiceRegistryDB
-                self.service_registry = ServiceRegistryDB()
+                # Use absolute path to share registry with port 3031's Registry Server
+                self.service_registry = ServiceRegistryDB(db_path="/root/qwen/base/mcp-std-skeleton/mcp_registry.db")
         except Exception as e:
             print(f"Failed to initialize registry: {e}")
             print("Registry functionality will be disabled")

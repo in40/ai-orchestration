@@ -12,16 +12,31 @@ from .llm_task_planner import LLMTaskPlanner
 
 class TaskAssignmentManager:
     """Manages task assignment and forwarding to specialized agents"""
-    
+
     def __init__(self, llm_client=None, service_registry=None, task_storage=None):
         self.llm_client = llm_client
         self.service_registry = service_registry
         self.task_storage = task_storage
-        
+
         # Initialize routing components
         self.routing_engine = TaskRoutingEngine(llm_client, service_registry)
         self.llm_planner = LLMTaskPlanner(llm_client, service_registry)
-    
+
+        # Update agent endpoints from registry if available
+        if service_registry:
+            try:
+                services = service_registry.list_services()
+                for service in services:
+                    service_name = service.get("name", "").lower()
+                    endpoint = service.get("endpoint")
+                    
+                    if "implementation" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
+                    elif "requirement" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
+            except Exception as e:
+                print(f"Error updating agent endpoints from registry: {e}")
+
     def assign_and_forward_task(self, task_id: str, task_description: str,
                                       assignee: Optional[str] = None,
                                       priority: str = "medium",
@@ -147,6 +162,7 @@ class TaskAssignmentManager:
                         )
                 else:
                     result["status"] = "assigned_pending"
+                    result["assigned_to"] = primary_agent
                     result["message"] = f"Task assigned to {primary_agent} but forwarding failed: {forward_result.get('error')}"
                     
                     if self.task_storage:
@@ -203,7 +219,7 @@ class TaskAssignmentManager:
                         "arguments": tool_arguments
                     }
                 },
-                timeout=30.0
+                timeout=120.0  # Increased from 30 to 120 seconds for LLM processing time
             )
             
             if response.status_code == 200:

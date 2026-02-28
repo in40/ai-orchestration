@@ -441,8 +441,8 @@ def main():
                        help='Registry server port to register with (default: 3031)')
     parser.add_argument('--use-postgres',
                        action='store_true',
-                       default=True,
-                       help='Use PostgreSQL for registry storage instead of SQLite (recommended)')
+                       default=False,
+                       help='Use PostgreSQL for registry storage instead of SQLite (default: False)')
     parser.add_argument('--postgres-host',
                        default='127.0.0.1',
                        help='PostgreSQL host (default: 127.0.0.1)')

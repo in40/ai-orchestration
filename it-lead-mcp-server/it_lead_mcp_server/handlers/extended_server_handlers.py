@@ -132,6 +132,17 @@ class ExtendedItLeadServerHandlers:
                 }
             },
             {
+                "name": "delete_task",
+                "description": "Delete a specific task from the system",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "ID of the task to delete"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+            {
                 "name": "check_agent_task_status",
                 "description": "Check real-time task status directly with the assigned agent via MCP",
                 "inputSchema": {

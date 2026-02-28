@@ -31,6 +31,9 @@ import {
 import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon } from '@mui/icons-material';
 import axios from 'axios';
 
+// Import enhanced AddTaskForm component
+import AddTaskForm from './enhanced/AddTaskForm';
+
 const TaskManagement = () => {
   const [tasks, setTasks] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -39,12 +42,16 @@ const TaskManagement = () => {
   const [openTaskDialog, setOpenTaskDialog] = useState(false);
   const [openHistoryDialog, setOpenHistoryDialog] = useState(false);
   const [selectedTaskHistory, setSelectedTaskHistory] = useState(null);
-  const [taskForm, setTaskForm] = useState({
+  // Enhanced task form state with all required fields for MCP integration
+  const [enhancedTaskData, setEnhancedTaskData] = useState({
     title: '',
     description: '',
-    assignee: '',
+    assignee: 'it-lead',  // Default to IT Lead for intelligent routing
     priority: 'medium',
-    dueDate: ''
+    dueDate: '',
+    tags: [],
+    context: {},
+    dependencies: []
   });
 
   useEffect(() => {
@@ -70,13 +77,17 @@ const TaskManagement = () => {
     fetchData();
   }, []);
 
+  // Open the enhanced task dialog with default values
   const handleAddTask = () => {
-    setTaskForm({
+    setEnhancedTaskData({
       title: '',
       description: '',
-      assignee: '',
+      assignee: 'it-lead',
       priority: 'medium',
-      dueDate: ''
+      dueDate: '',
+      tags: [],
+      context: {},
+      dependencies: []
     });
     setOpenTaskDialog(true);
   };
@@ -85,35 +96,35 @@ const TaskManagement = () => {
     setOpenTaskDialog(false);
   };
 
-  const handleTaskSubmit = async () => {
+  // Submit enhanced task with full metadata
+  const handleEnhancedTaskSubmit = async (taskData) => {
     try {
       await axios.post('/api/tasks/assign', {
-        task_id: `task-${Date.now()}`,
-        title: taskForm.title,
-        description: taskForm.description,
-        assignee: taskForm.assignee,
-        priority: taskForm.priority,
-        due_date: taskForm.dueDate
+        ...taskData,
+        id: taskData.id || `task-${Date.now()}`
       });
-      
-      // Refresh tasks
+
+      // Refresh tasks from server to show assigned status and routing results
       const response = await axios.get('/api/tasks');
       setTasks(response.data);
-      
+
       handleCloseTaskDialog();
     } catch (err) {
       console.error('Error assigning task:', err);
-      alert('Failed to assign task');
+      alert(`Failed to assign task: ${err.response?.data?.error || 'Unknown error'}`);
     }
   };
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setTaskForm(prev => ({
+  // Update enhanced form field
+  const handleEnhancedInputChange = (field) => (e) => {
+    setEnhancedTaskData(prev => ({
       ...prev,
-      [name]: value
+      [field]: e.target.value
     }));
   };
+
+  // Legacy: keep for any existing references, redirects to enhanced version
+  const handleInputChange = handleEnhancedInputChange;
 
   const handleViewHistory = async (taskId) => {
     try {
@@ -263,88 +274,15 @@ const TaskManagement = () => {
       </Grid>
 
       {/* Task Creation Dialog */}
-      <Dialog open={openTaskDialog} onClose={handleCloseTaskDialog}>
-        <DialogTitle>Create New Task</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Enter the details for the new task.
-          </DialogContentText>
-          
-          <TextField
-            autoFocus
-            margin="dense"
-            name="title"
-            label="Task Title"
-            type="text"
-            fullWidth
-            variant="outlined"
-            value={taskForm.title}
-            onChange={handleInputChange}
-            sx={{ mt: 2 }}
-          />
-          
-          <TextField
-            margin="dense"
-            name="description"
-            label="Description"
-            type="text"
-            fullWidth
-            multiline
-            rows={4}
-            variant="outlined"
-            value={taskForm.description}
-            onChange={handleInputChange}
-          />
-          
-          <FormControl fullWidth sx={{ mt: 2 }}>
-            <InputLabel>Assign To</InputLabel>
-            <Select
-              name="assignee"
-              value={taskForm.assignee}
-              label="Assign To"
-              onChange={handleInputChange}
-            >
-              {agents.map((agent, idx) => (
-                <MenuItem key={idx} value={agent.name}>{agent.name}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          
-          <FormControl fullWidth sx={{ mt: 2 }}>
-            <InputLabel>Priority</InputLabel>
-            <Select
-              name="priority"
-              value={taskForm.priority}
-              label="Priority"
-              onChange={handleInputChange}
-            >
-              <MenuItem value="low">Low</MenuItem>
-              <MenuItem value="medium">Medium</MenuItem>
-              <MenuItem value="high">High</MenuItem>
-              <MenuItem value="critical">Critical</MenuItem>
-            </Select>
-          </FormControl>
-          
-          <TextField
-            margin="dense"
-            name="dueDate"
-            label="Due Date"
-            type="date"
-            fullWidth
-            variant="outlined"
-            value={taskForm.dueDate}
-            onChange={handleInputChange}
-            InputLabelProps={{
-              shrink: true,
-            }}
-            sx={{ mt: 2 }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseTaskDialog}>Cancel</Button>
-          <Button onClick={handleTaskSubmit} variant="contained">Create Task</Button>
-        </DialogActions>
-      </Dialog>
+
+      {/* Enhanced Add Task Form Dialog */}
+      <AddTaskForm
+        open={openTaskDialog}
+        onClose={handleCloseTaskDialog}
+        onSubmit={handleEnhancedTaskSubmit}
+        agents={agents}
+      />
+
 
       {/* Task History Dialog */}
       <Dialog 

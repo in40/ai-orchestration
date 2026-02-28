@@ -1,0 +1,23 @@
+{
+  "task_id": "website-dev-cool-demo",
+  "title": "Build a Modern Cool Website - Tech Showcase Portfolio",
+  "description": "Create a stunning, modern portfolio website for NexusTech. Show services, team members, and projects with interactive elements.",
+  "assignee": "IT Lead",
+  "priority": "high",
+  "due_date": "",
+  "context": {
+    "code_diff": "",
+    "programming_language": "React, TypeScript, Node.js, Python",
+    "framework": "Vite, Express.js, SQLAlchemy",
+    "acceptance_criteria": [
+      "Responsive design that works on mobile, tablet, and desktop screens",
+      "Modern UI with glassmorphism effects and smooth transitions",
+      "Interactive hero section with animated gradient background",
+      "Services showcase grid with hover animations and icons"
+    ],
+    "business_context": "NexusTech is a boutique tech consultancy looking to establish their online presence."
+  },
+  "tags": ["feature", "frontend", "backend"],
+  "dependencies": [],
+  "attachments": []
+}

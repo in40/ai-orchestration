@@ -1,0 +1,83 @@
+================================================================================
+                    WEBSITE DEVELOPMENT TASK - PREVIEW                    
+================================================================================
+
+📋 SUBMIT TO: IT Lead (Intelligent Routing)
+🎯 PRIORITY: High
+📅 DUE DATE: (Optional)
+
+--------------------------------------------------------------------------------
+
+📝 TASK TITLE:
+   Build NexusTech Website - Modern Portfolio Platform
+
+📖 DESCRIPTION:
+   Create a stunning, modern portfolio website for NexusTech. Show services,
+   team members, and projects with interactive elements that convey
+   professionalism, innovation, and technical expertise.
+
+--------------------------------------------------------------------------------
+
+⚙️ TECHNICAL CONTEXT:
+
+   Programming Language: React, TypeScript, Node.js, Python
+   Framework: Vite, Express.js, SQLAlchemy
+
+   Acceptance Criteria:
+   - Responsive design (mobile/tablet/desktop)
+   - Glassmorphism effects and smooth transitions  
+   - Interactive hero section with animated gradient background
+   - Services showcase grid with hover animations
+
+--------------------------------------------------------------------------------
+
+🌐 EXPECTED WEBSITE FEATURES:
+
+   1. HERO SECTION
+      - Animated gradient background (moving colors)
+      - Company tagline and value proposition
+      - Call-to-action buttons ("View Services", "Contact Us")
+
+   2. SERVICES SHOWCASE
+      - Grid layout with service cards
+      - Hover animations reveal details
+      - Icons for each service category
+
+   3. TEAM MEMBERS
+      - Card-based profiles
+      - Photos, names, roles, social media links
+      - Smooth fade-in on scroll
+
+   4. PORTFOLIO GALLERY
+      - Filterable by project type
+      - Lightbox view for detailed images
+      - Project descriptions and technologies used
+
+   5. CONTACT FORM
+      - Name, email, message fields
+      - Form validation
+      - Email notification system
+
+--------------------------------------------------------------------------------
+
+🚀 WORKFLOW EXECUTION PLAN:
+
+   IT Lead → Requirements Engineer (analyze requirements)
+             ↓
+         Implementation Engineer (setup project structure)
+             ↓
+         Implementation Engineer (frontend components)
+             ↓  
+         Implementation Engineer (backend API)
+             ↓
+         Code Reviewer (quality check)
+             ↓
+         QA Test Engineer (testing)
+
+--------------------------------------------------------------------------------
+
+To submit this task:
+1. Open http://localhost:5173/tasks
+2. Click "Add Task" button  
+3. Fill in the form with details above
+4. IT Lead will analyze and route to appropriate agents!

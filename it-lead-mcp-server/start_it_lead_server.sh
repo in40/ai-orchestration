@@ -13,7 +13,7 @@ ENABLE_REGISTRY=true
 REGISTER_WITH_REGISTRY=true
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT=3031
-USE_POSTGRES=true  # Changed to true to use PostgreSQL by default
+USE_POSTGRES=false  # Changed to false to use SQLite by default (matching Registry Server)
 POSTGRES_HOST="127.0.0.1"
 POSTGRES_PORT=5432
 POSTGRES_DB="mcp_registry"
@@ -164,11 +164,30 @@ if [ "$REGISTRY_PORT" != "3031" ]; then
 fi
 
 if [ "$USE_POSTGRES" = true ]; then
-  CMD_ARGS="$CMD_ARGS --use-postgres --postgres-host $POSTGRES_HOST --postgres-port $POSTGRES_PORT --postgres-db $POSTGRES_DB --postgres-user $POSTGRES_USER --postgres-password $POSTGRES_PASSWORD"
-  echo "Configured to use PostgreSQL for task storage (host: $POSTGRES_HOST, port: $POSTGRES_PORT, db: $POSTGRES_DB)"
-else
-  # When USE_POSTGRES is false, we don't pass --use-postgres flag, so it defaults to SQLite
-  echo "Configured to use SQLite for task storage"
+  CMD_ARGS="$CMD_ARGS --use-postgres"
+fi
+
+echo "Configured to use PostgreSQL for task storage"
+
+# Add postgres-specific args only when using postgres
+if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_HOST" != "127.0.0.1" ]; then
+  CMD_ARGS="$CMD_ARGS --postgres-host $POSTGRES_HOST"
+fi
+
+if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_PORT" != "5432" ]; then
+  CMD_ARGS="$CMD_ARGS --postgres-port $POSTGRES_PORT"
+fi
+
+if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_DB" != "mcp_registry" ]; then
+  CMD_ARGS="$CMD_ARGS --postgres-db $POSTGRES_DB"
+fi
+
+if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_USER" != "postgres" ]; then
+  CMD_ARGS="$CMD_ARGS --postgres-user $POSTGRES_USER"
+fi
+
+if [ "$USE_POSTGRES" = true ] && [ -n "$POSTGRES_PASSWORD" ]; then
+  CMD_ARGS="$CMD_ARGS --postgres-password $POSTGRES_PASSWORD"
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
@@ -189,4 +208,10 @@ fi
 
 echo "Executing: python -c \"import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()\""
 export PYTHONPATH=".:$PYTHONPATH"
+
+# Set PostgreSQL password via environment variable for authentication
+if [ "$USE_POSTGRES" = true ] && [ -n "$POSTGRES_PASSWORD" ]; then
+  export PGPASSWORD="$POSTGRES_PASSWORD"
+fi
+
 python -c "import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()"

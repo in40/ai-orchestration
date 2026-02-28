@@ -183,7 +183,7 @@ class RequirementEngineerHandlers(McpServerHandlers):
 
         # Create a task record for tracking
         task_id = f"req-eng-{int(time.time())}-{tool_name}"
-        self.task_storage.create_task(task_id, tool_name, arguments, "started")
+        # self.task_storage.create_task(task_id, tool_name, arguments, "started")  # Skipped: IT Lead handles task storage
 
         try:
             # Handle requirement engineering tools
@@ -202,14 +202,14 @@ class RequirementEngineerHandlers(McpServerHandlers):
                 result = super()._execute_tool(tool, arguments)
 
             # Update task status to completed
-            self.task_storage.update_task_status(task_id, "completed", result)
+            # self.task_storage.update_task_status(task_id, "completed", result)  # Skipped: IT Lead handles task storage
             
             return result
             
         except Exception as e:
             # Update task status to failed
             error_msg = str(e)
-            self.task_storage.update_task_status(task_id, "failed", {"error": error_msg})
+            # self.task_storage.update_task_status(task_id, "failed", {"error": error_msg})  # Skipped: errors re-raised for IT Lead to handle
             raise e
 
     def _analyze_requirements(self, arguments: Dict[str, Any]) -> Dict[str, Any]:

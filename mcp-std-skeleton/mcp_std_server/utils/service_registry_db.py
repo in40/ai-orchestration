@@ -8,7 +8,7 @@ HOW TO USE REGISTRY FUNCTIONALITY:
 2. Call register_service, list_services, and unregister_service methods as needed
 
 EXAMPLE USAGE:
-    registry = ServiceRegistryDB(db_path="mcp_registry.db")
+    registry = ServiceRegistryDB(db_path="/root/qwen/base/mcp-std-skeleton/mcp_registry.db")
     registry.register_service({
         "id": "service-123",
         "name": "Example Service",
@@ -36,7 +36,7 @@ class ServiceRegistryDB:
     enabling a registry server that tracks multiple MCP services.
     """
 
-    def __init__(self, db_path: str = "mcp_registry.db"):
+    def __init__(self, db_path: str = "/root/qwen/base/mcp-std-skeleton/mcp_registry.db"):
         self.db_path = db_path
         self.init_db()
 
