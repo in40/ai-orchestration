@@ -103,7 +103,7 @@ class TaskStorage:
                     submitter_type VARCHAR(50) NOT NULL CHECK (submitter_type IN ('human', 'agent', 'system', 'api')),
                     transport_channel VARCHAR(50) NOT NULL DEFAULT 'unknown' CHECK (transport_channel IN ('http', 'stdio', 'streamable-http', 'api', 'websocket', 'unknown')),
                     assigned_to VARCHAR(255) DEFAULT 'unassigned',
-                    status VARCHAR(50) NOT NULL DEFAULT 'received' CHECK (status IN ('received', 'pending_assignment', 'assigned', 'requirements_collection', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled')),
+                    status VARCHAR(50) NOT NULL DEFAULT 'received' CHECK (status IN ('submitted', 'received', 'pending_assignment', 'assigned', 'requirements_collection', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled')),
                     status_reason TEXT,
                     priority VARCHAR(20) NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high', 'critical')),
                     deadline TIMESTAMP,
@@ -127,7 +127,38 @@ class TaskStorage:
 
             self.connection.commit()
             cursor.close()
-            print("✅ PostgreSQL task storage database initialized")
+
+            # Update constraint if needed (to add 'submitted' status)
+            print("Updating task_registry status constraint if needed...")
+            try:
+                cursor = self.connection.cursor()
+                cursor.execute("""
+                    SELECT conname
+                    FROM pg_constraint
+                    WHERE conrelid = 'task_registry'::regclass
+                      AND conname = 'task_registry_status_check'
+                """)
+                constraint = cursor.fetchone()
+                if constraint:
+                    # Drop and recreate the constraint with updated allowed statuses
+                    print("  Dropping existing status constraint...")
+                    cursor.execute("""
+                        ALTER TABLE task_registry DROP CONSTRAINT IF EXISTS task_registry_status_check
+                    """)
+                    self.connection.commit()
+
+                # Recreate or create new constraint
+                print("  Creating/updating status constraint...")
+                cursor.execute("""
+                    ALTER TABLE task_registry ADD CONSTRAINT task_registry_status_check 
+                    CHECK (status IN ('submitted', 'received', 'pending_assignment', 'assigned', 'requirements_collection', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled'))
+                """)
+                self.connection.commit()
+                cursor.close()
+                print("✅ Status constraint updated successfully")
+            except Exception as e:
+                print(f"  Note: Could not update status constraint (may already exist or user lacks permissions): {e}")
+
         except Exception as e:
             print(f"❌ Error initializing PostgreSQL task storage database: {e}")
             raise
@@ -216,8 +247,8 @@ class TaskStorage:
                     INSERT OR REPLACE INTO task_registry
                     (task_id, title, description, submitter, submitter_type, transport_channel,
                      assigned_to, status, status_reason, priority, deadline, source_server, target_server,
-                     metadata, status_history, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                     metadata, status_history)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     task_id, title, description, submitter, submitter_type, transport_channel,
                     assigned_to, status, status_reason, priority, deadline, source_server, target_server,

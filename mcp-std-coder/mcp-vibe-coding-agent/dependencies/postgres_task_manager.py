@@ -240,7 +240,7 @@ class PostgresTaskManager:
             cursor = self.connection.cursor()
             cursor.execute("""
                 UPDATE async_tasks
-                SET status = %s, result_data = %s, updated_at = %s, expires_at = %s
+                SET status = %s, progress = 100, result_data = %s, updated_at = %s, expires_at = %s
                 WHERE task_id = %s
             """, (
                 TaskStatus.COMPLETED.value,
@@ -359,15 +359,15 @@ class PostgresTaskManager:
 
     def submit_for_processing(self, task_id: str, llm_call_func):
         """Submit task for background processing"""
+        
         def process_task():
-            # First update status to working
-            self.update_task_status(task_id, TaskStatus.WORKING, 10)
-
             try:
+                # First update status to working
+                self.update_task_status(task_id, TaskStatus.WORKING, 10)
+                
                 # Get the task input data
                 task = self.get_task(task_id)
                 if not task:
-                    print(f"❌ Task {task_id} not found during processing")
                     return
 
                 # Call the LLM function with the input data

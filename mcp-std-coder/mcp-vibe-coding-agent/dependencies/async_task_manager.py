@@ -95,6 +95,7 @@ class AsyncTaskManager:
         if task_id in self.tasks:
             task = self.tasks[task_id]
             task.status = TaskStatus.COMPLETED
+            task.progress = 100  # Set progress to 100 for completed tasks
             task.result = result
             task.updatedAt = time.time()
             # Extend expiration for completed tasks

@@ -38,7 +38,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None) -> str:
             "temperature": vibe / 10,  # 0.1 to 1.0
             "max_tokens": 2048
         },
-        timeout=300
+        timeout=60
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
@@ -188,18 +188,15 @@ def register_vibe_coding_tool(server_handlers):
         }
     }
     
-    # Add vibe coding tools to existing tools (not replacing) to avoid overwriting other tools
-    existing_vibe_tools = [t["name"] for t in server_handlers.tools if t.get("name").startswith(("vibe_code", "tasks/"))]
-    
-    if not existing_vibe_tools:
-        server_handlers.tools.extend([
-            vibe_code_tool,
-            vibe_code_async_tool,
-            tasks_list_tool,
-            tasks_get_tool,
-            tasks_result_tool,
-            tasks_cancel_tool
-        ])
+    # Replace the example tools with the vibe coding tools
+    server_handlers.tools = [
+        vibe_code_tool,
+        vibe_code_async_tool,
+        tasks_list_tool,
+        tasks_get_tool,
+        tasks_result_tool,
+        tasks_cancel_tool
+    ]
     
     # Notify that tools have changed
     if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:

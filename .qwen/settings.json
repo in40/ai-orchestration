@@ -1,0 +1,74 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "openai"
+    }
+  },
+  "model": {
+    "name": "qwen3-coder-next@q5_k_xl"
+  },
+  "$version": 3,
+  "ui": {
+    "feedbackLastShownTimestamp": 1772131561975
+  },
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "qwen3-coder-next@q8_k_xl",
+        "name": "QWEN3 Coder Next UD Q8",
+        "envKey": "SUDO_USER",
+        "baseUrl": "http://192.168.51.237:1234/v1",
+        "generationConfig": {
+          "timeout": 60000000,
+          "maxRetries": 3,
+          "customHeaders": {
+            "X-Model-Version": "v1.0",
+            "X-Request-Priority": "high"
+          },
+          "extra_body": {
+            "enable_thinking": true
+          },
+          "samplingParams": {
+            "temperature": 0.2
+          }
+        }
+      },
+      {
+        "id": "qwen3-coder-next@q6_k_xl",
+        "name": "QWEN3 Coder Next UD Q6",
+        "envKey": "SUDO_USER",
+        "baseUrl": "http://192.168.51.237:1234/v1",
+        "generationConfig": {
+          "timeout": 60000000,
+          "maxRetries": 3,
+          "customHeaders": {
+            "X-Model-Version": "v1.0",
+            "X-Request-Priority": "high"
+          },
+          "extra_body": {
+            "enable_thinking": true
+          },
+          "samplingParams": {
+            "temperature": 0.2
+          }
+        }
+      },
+      {
+        "id": "qwen3-coder-next@q5_k_xl",
+        "name": "QWEN3 Coder Next UD Q5",
+        "baseUrl": "http://192.168.51.237:1234/v1",
+        "envKey": "SUDO_USER",
+        "generationConfig": {
+          "timeout": 600000000,
+          "maxRetries": 3000,
+          "customHeaders": {
+            "X-Model-Version": "v1.0",
+            "X-Request-Priority": "high"
+          },
+          "extra_body": {},
+          "samplingParams": {}
+        }
+      }
+    ]
+  }
+}

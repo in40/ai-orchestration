@@ -1,0 +1,766 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Card,
+  CardContent,
+  Typography,
+  Box,
+  Button,
+  CircularProgress,
+  Alert,
+  Grid,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  IconButton,
+  LinearProgress,
+  Stack,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails
+} from '@mui/material';
+import { 
+  Add as AddIcon, 
+  Edit as EditIcon, 
+  History as HistoryIcon, 
+  Delete as DeleteIcon,
+  SmartToy as SmartToyIcon,
+  Route as RouteIcon,
+  Terminal as TerminalIcon,
+  ExpandMore as ExpandMoreIcon
+} from '@mui/icons-material';
+import axios from 'axios';
+
+// Import enhanced AddTaskForm component
+import AddTaskForm from './enhanced/AddTaskForm';
+
+const TaskManagement = () => {
+  const [tasks, setTasks] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [openTaskDialog, setOpenTaskDialog] = useState(false);
+  const [openHistoryDialog, setOpenHistoryDialog] = useState(false);
+  const [openProgressDialog, setOpenProgressDialog] = useState(false);
+  const [selectedTaskProgress, setSelectedTaskProgress] = useState(null);
+  const [selectedTaskHistory, setSelectedTaskHistory] = useState(null);
+
+  // Enhanced task form state
+  const [enhancedTaskData, setEnhancedTaskData] = useState({
+    title: '',
+    description: '',
+    assignee: 'it-lead',
+    priority: 'medium',
+    dueDate: '',
+    tags: [],
+    context: {},
+    dependencies: []
+  });
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        const [tasksResponse, agentsResponse] = await Promise.all([
+          axios.get('/api/tasks'),
+          axios.get('/api/agents')
+        ]);
+        
+        setTasks(tasksResponse.data);
+        setAgents(agentsResponse.data);
+        setError(null);
+      } catch (err) {
+        setError('Failed to load tasks or agents');
+        console.error('Error loading tasks or agents:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  const handleAddTask = () => {
+    setTaskForm({
+      title: '',
+      description: '',
+      assignee: '',
+      priority: 'medium',
+      dueDate: ''
+    });
+    setOpenTaskDialog(true);
+  };
+
+  const handleCloseTaskDialog = () => {
+    setOpenTaskDialog(false);
+  };
+
+  const handleTaskSubmit = async () => {
+    try {
+      await axios.post('/api/tasks/assign', {
+        task_id: `task-${Date.now()}`,
+        title: taskForm.title,
+        description: taskForm.description,
+        assignee: taskForm.assignee,
+        priority: taskForm.priority,
+        due_date: taskForm.dueDate
+      });
+      
+      // Refresh tasks
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+      
+      handleCloseTaskDialog();
+    } catch (err) {
+      console.error('Error assigning task:', err);
+      alert('Failed to assign task');
+    }
+  };
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setTaskForm(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  const handleCloseProgressDialog = () => {
+    setOpenProgressDialog(false);
+    setSelectedTaskProgress(null);
+  };
+
+  const handleViewHistory = async (taskId) => {
+    try {
+      const response = await axios.get(`/api/tasks/${taskId}/history`);
+      setSelectedTaskHistory(response.data);
+      setOpenHistoryDialog(true);
+    } catch (err) {
+      console.error('Error loading task history:', err);
+      alert('Failed to load task history');
+    }
+  };
+
+  const handleCloseHistoryDialog = () => {
+    setOpenHistoryDialog(false);
+    setSelectedTaskHistory(null);
+  };
+
+  const handleDelete = async (taskId) => {
+    if (!window.confirm("Are you sure?")) return;
+    try {
+      await axios.post('/api/tasks/delete', { task_id: taskId });
+      // Refresh tasks from server
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      console.error("Error deleting task:", err);
+      alert("Failed to delete task");
+    }
+  };
+
+  const handleViewProgress = async (taskId) => {
+    try {
+      setLoading(true);
+      // Fetch detailed progress via MCP-based endpoint
+      const response = await axios.get(`/api/tasks/${taskId}/progress`);
+      
+      if (response.data && response.data.task_id === taskId) {
+        setSelectedTaskProgress(response.data);
+        setOpenProgressDialog(true);
+      } else {
+        alert('Failed to load task progress');
+      }
+    } catch (err) {
+      console.error('Error loading task progress:', err);
+      alert('Failed to load task progress');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" height="50vh">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert severity="error">{error}</Alert>
+    );
+  }
+
+  return (
+    <Grid container spacing={3}>
+      <Grid item xs={12}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+          <Typography variant="h4">Task Management</Typography>
+          <Button 
+            variant="contained" 
+            startIcon={<AddIcon />}
+            onClick={handleAddTask}
+          >
+            Add Task
+          </Button>
+        </Box>
+      </Grid>
+
+      <Grid item xs={12}>
+        <Card>
+          <CardContent>
+            <TableContainer component={Paper}>
+              <Table sx={{ minWidth: 650 }} aria-label="tasks table">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Title</TableCell>
+                    <TableCell>Assignee</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Priority</TableCell>
+                    <TableCell>Progress</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {tasks.map((task) => (
+                    <TableRow
+                      key={task.id}
+                      sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
+                    >
+                      <TableCell component="th" scope="row">
+                        {task.title}
+                      </TableCell>
+                      <TableCell>{task.assignee}</TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={task.status} 
+                          size="small" 
+                          color={
+                            task.status === 'completed' ? 'success' : 
+                            task.status === 'in-progress' ? 'info' : 
+                            task.status === 'pending' ? 'warning' : 'default'
+                          } 
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={task.priority} 
+                          size="small" 
+                          color={
+                            task.priority === 'critical' ? 'error' : 
+                            task.priority === 'high' ? 'warning' : 
+                            task.priority === 'medium' ? 'info' : 'default'
+                          } 
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                          <Box sx={{ width: '100%', mr: 1 }}>
+                            <div style={{ height: 8, backgroundColor: '#e0e0e0', borderRadius: 4 }}>
+                              <div 
+                                style={{ 
+                                  height: '100%', 
+                                  width: `${task.progress}%`, 
+                                  backgroundColor: task.priority === 'high' ? '#f44336' : task.priority === 'medium' ? '#ff9800' : '#4caf50',
+                                  borderRadius: 4
+                                }} 
+                              />
+                            </div>
+                          </Box>
+                          <Typography variant="body2">{task.progress}%</Typography>
+                        </Box>
+                      </TableCell>
+                      <TableCell align="right">
+                      <IconButton 
+                        color="primary" 
+                        aria-label="view history"
+                        onClick={() => handleViewHistory(task.id)}
+                      >
+                        <HistoryIcon />
+                      </IconButton>
+                      <IconButton 
+                        color="error" 
+                        aria-label="delete task"
+                        onClick={() => handleDelete(task.id)}
+                      >
+                        <DeleteIcon />
+                      </IconButton>
+                    </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      </Grid>
+
+      {/* Task Creation Dialog */}
+      <Dialog open={openTaskDialog} onClose={handleCloseTaskDialog}>
+        <DialogTitle>Create New Task</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Enter the details for the new task.
+          </DialogContentText>
+          
+          <TextField
+            autoFocus
+            margin="dense"
+            name="title"
+            label="Task Title"
+            type="text"
+            fullWidth
+            variant="outlined"
+            value={taskForm.title}
+            onChange={handleInputChange}
+            sx={{ mt: 2 }}
+          />
+          
+          <TextField
+            margin="dense"
+            name="description"
+            label="Description"
+            type="text"
+            fullWidth
+            multiline
+            rows={4}
+            variant="outlined"
+            value={taskForm.description}
+            onChange={handleInputChange}
+          />
+          
+          <FormControl fullWidth sx={{ mt: 2 }}>
+            <InputLabel>Assign To</InputLabel>
+            <Select
+              name="assignee"
+              value={taskForm.assignee}
+              label="Assign To"
+              onChange={handleInputChange}
+            >
+              {agents.map((agent, idx) => (
+                <MenuItem key={idx} value={agent.name}>{agent.name}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          
+          <FormControl fullWidth sx={{ mt: 2 }}>
+            <InputLabel>Priority</InputLabel>
+            <Select
+              name="priority"
+              value={taskForm.priority}
+              label="Priority"
+              onChange={handleInputChange}
+            >
+              <MenuItem value="low">Low</MenuItem>
+              <MenuItem value="medium">Medium</MenuItem>
+              <MenuItem value="high">High</MenuItem>
+              <MenuItem value="critical">Critical</MenuItem>
+            </Select>
+          </FormControl>
+          
+          <TextField
+            margin="dense"
+            name="dueDate"
+            label="Due Date"
+            type="date"
+            fullWidth
+            variant="outlined"
+            value={taskForm.dueDate}
+            onChange={handleInputChange}
+            InputLabelProps={{
+              shrink: true,
+            }}
+            sx={{ mt: 2 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseTaskDialog}>Cancel</Button>
+          <Button onClick={handleTaskSubmit} variant="contained">Create Task</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Task History Dialog */}
+      <Dialog 
+        open={openHistoryDialog} 
+        onClose={handleCloseHistoryDialog}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>Task History</DialogTitle>
+        <DialogContent>
+          {selectedTaskHistory && (
+            <Box>
+              <Typography variant="h6" gutterBottom>
+                {selectedTaskHistory.title}
+              </Typography>
+              
+              <Grid container spacing={2} sx={{ mb: 3 }}>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Task ID</Typography>
+                  <Typography variant="body1">{selectedTaskHistory.task_id}</Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Current Status</Typography>
+                  <Chip 
+                    label={selectedTaskHistory.current_status} 
+                    size="small"
+                    color={
+                      selectedTaskHistory.current_status === 'completed' ? 'success' :
+                      selectedTaskHistory.current_status === 'in_progress' ? 'info' :
+                      selectedTaskHistory.current_status === 'received' ? 'warning' : 'default'
+                    }
+                  />
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Assigned To</Typography>
+                  <Typography variant="body1">{selectedTaskHistory.assigned_to}</Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Submitter</Typography>
+                  <Typography variant="body1">
+                    {selectedTaskHistory.submitter} ({selectedTaskHistory.submitter_type})
+                  </Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Transport Channel</Typography>
+                  <Typography variant="body1">{selectedTaskHistory.transport_channel}</Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Created At</Typography>
+                  <Typography variant="body1">
+                    {selectedTaskHistory.created_at ? 
+                      new Date(selectedTaskHistory.created_at).toLocaleString() : 
+                      'N/A'}
+                  </Typography>
+                </Grid>
+              </Grid>
+
+              <Typography variant="subtitle1" gutterBottom sx={{ mt: 2 }}>
+                Status History ({selectedTaskHistory.status_history?.length || 0} changes)
+              </Typography>
+
+              {selectedTaskHistory.status_history && selectedTaskHistory.status_history.length > 0 ? (
+                <Box>
+                  {selectedTaskHistory.status_history.map((entry, index) => (
+                    <Paper 
+                      key={index} 
+                      sx={{ 
+                        p: 2, 
+                        mb: 1,
+                        borderLeft: 4,
+                        borderColor: 
+                          entry.status === 'completed' ? 'success.main' :
+                          entry.status === 'in_progress' ? 'info.main' :
+                          entry.status === 'received' ? 'warning.main' : 'grey.500'
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Chip 
+                          label={entry.status} 
+                          size="small"
+                          color={
+                            entry.status === 'completed' ? 'success' :
+                            entry.status === 'in_progress' ? 'info' :
+                            entry.status === 'received' ? 'warning' : 'default'
+                          }
+                        />
+                        <Typography variant="caption" color="textSecondary">
+                          {entry.datetime ? new Date(entry.datetime).toLocaleString() : `Timestamp: ${entry.timestamp}`}
+                        </Typography>
+                      </Box>
+                      {entry.reason && (
+                        <Typography variant="body2" sx={{ mt: 1 }}>
+                          {entry.reason}
+                        </Typography>
+                      )}
+                    </Paper>
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="textSecondary">
+                  No status history available
+                </Typography>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseHistoryDialog}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Task Progress Dialog - Shows MCP communications and detailed progress */}
+      <Dialog open={openProgressDialog} onClose={handleCloseProgressDialog} maxWidth="lg" fullWidth>
+        <DialogTitle>Task Progress & MCP Communications</DialogTitle>
+        <DialogContent sx={{ maxHeight: '70vh' }}>
+          {selectedTaskProgress && (
+            <Box>
+              {/* Task Summary */}
+              <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 3 }}>
+                {selectedTaskProgress.title || `Task: ${selectedTaskProgress.task_id}`}
+              </Typography>
+
+              <Grid container spacing={2} sx={{ mb: 4 }}>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Task ID</Typography>
+                  <Typography variant="body1">{selectedTaskProgress.task_id}</Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Status</Typography>
+                  <Chip
+                    label={selectedTaskProgress.status}
+                    size="small"
+                    color={
+                      selectedTaskProgress.status === 'completed' ? 'success' :
+                      selectedTaskProgress.status === 'in_progress' ? 'info' :
+                      selectedTaskProgress.status === 'received' ? 'warning' : 'default'
+                    }
+                  />
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Assigned To</Typography>
+                  <Typography variant="body1">{selectedTaskProgress.assigned_to || 'Unassigned'}</Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Priority</Typography>
+                  <Chip
+                    label={selectedTaskProgress.priority}
+                    size="small"
+                    color={
+                      selectedTaskProgress.priority === 'critical' ? 'error' :
+                      selectedTaskProgress.priority === 'high' ? 'warning' : 'info'
+                    }
+                  />
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Created</Typography>
+                  <Typography variant="body1">
+                    {selectedTaskProgress.created_at ?
+                      new Date(selectedTaskProgress.created_at).toLocaleString() : 'N/A'}
+                  </Typography>
+                </Grid>
+                <Grid item xs={6}>
+                  <Typography variant="subtitle2" color="textSecondary">Updated</Typography>
+                  <Typography variant="body1">
+                    {selectedTaskProgress.updated_at ?
+                      new Date(selectedTaskProgress.updated_at).toLocaleString() : 'N/A'}
+                  </Typography>
+                </Grid>
+              </Grid>
+
+              {/* Progress Bar */}
+              <Box sx={{ mb: 4 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography variant="subtitle1">Progress</Typography>
+                  <Typography variant="body2" color="primary">
+                    {selectedTaskProgress.progress_percent || 0}%
+                  </Typography>
+                </Box>
+                <LinearProgress
+                  variant="determinate"
+                  value={selectedTaskProgress.progress_percent || 0}
+                  sx={{ height: 10, borderRadius: 5 }}
+                />
+              </Box>
+
+              {/* Status History Timeline */}
+              {selectedTaskProgress.status_history && selectedTaskProgress.status_history.length > 0 && (
+                <Box sx={{ mb: 4 }}>
+                  <Typography variant="subtitle1" gutterBottom>
+                    Status History ({selectedTaskProgress.status_history.length} changes)
+                  </Typography>
+                  <Stack spacing={2}>
+                    {selectedTaskProgress.status_history.map((entry, index) => (
+                      <Paper
+                        key={index}
+                        sx={{
+                          p: 2,
+                          borderLeft: 4,
+                          borderColor:
+                            entry.status === 'completed' ? 'success.main' :
+                            entry.status === 'in_progress' ? 'info.main' :
+                            entry.status === 'received' ? 'warning.main' : 'grey.500',
+                          backgroundColor: index % 2 === 0 ? '#f5f5f5' : '#ffffff'
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Chip
+                            label={entry.status}
+                            size="small"
+                            color={
+                              entry.status === 'completed' ? 'success' :
+                              entry.status === 'in_progress' ? 'info' :
+                              entry.status === 'received' ? 'warning' : 'default'
+                            }
+                          />
+                          <Typography variant="caption" color="textSecondary">
+                            {entry.timestamp || entry.datetime ?
+                              new Date(entry.timestamp || entry.datetime).toLocaleString() : 'Unknown time'}
+                          </Typography>
+                        </Box>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
+
+              {/* MCP Communications */}
+              {selectedTaskProgress.mcp_communications && selectedTaskProgress.mcp_communications.length > 0 && (
+                <Box sx={{ mb: 4 }}>
+                  <Typography variant="subtitle1" gutterBottom color="primary">
+                    MCP Agent Communications ({selectedTaskProgress.mcp_communications.length} events)
+                  </Typography>
+                  {selectedTaskProgress.mcp_communications.map((comm, index) => (
+                    <Paper
+                      key={index}
+                      sx={{
+                        p: 2,
+                        mb: 1.5,
+                        backgroundColor:
+                          comm.type === 'llm_planning' ? '#e3f2fd' :
+                          comm.type === 'route_assignment' ? '#fff8e1' : '#e8f5e9'
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                        {comm.type === 'llm_planning' && (
+                          <SmartToyIcon fontSize="small" color="primary" />
+                        )}
+                        {comm.type === 'route_assignment' && (
+                          <RouteIcon fontSize="small" color="warning" />
+                        )}
+                        {comm.type === 'tool_execution' && (
+                          <TerminalIcon fontSize="small" color="success" />
+                        )}
+                        <Typography variant="subtitle2" sx={{ ml: 1 }}>
+                          {comm.type.toUpperCase().replace('_', ' ')}
+                        </Typography>
+                      </Box>
+
+                      {/* Agent/Tool Details */}
+                      {comm.primary_agent && (
+                        <Grid container spacing={1} sx={{ mt: 0.5 }}>
+                          <Grid item xs={3}>
+                            <Typography variant="caption" color="textSecondary">Agent:</Typography>
+                          </Grid>
+                          <Grid item xs={9}>
+                            <Chip
+                              label={comm.primary_agent}
+                              size="small"
+                              variant="outlined"
+                              sx={{ fontWeight: 'bold' }}
+                            />
+                          </Grid>
+                        </Grid>
+                      )}
+
+                      {comm.rule_id && (
+                        <Grid container spacing={1} sx={{ mt: 0.5 }}>
+                          <Grid item xs={3}>
+                            <Typography variant="caption" color="textSecondary">Rule:</Typography>
+                          </Grid>
+                          <Grid item xs={9}>
+                            <Chip label={comm.rule_id} size="small" />
+                          </Grid>
+                        </Grid>
+                      )}
+
+                      {comm.confidence && (
+                        <Grid container spacing={1} sx={{ mt: 0.5 }}>
+                          <Grid item xs={3}>
+                            <Typography variant="caption" color="textSecondary">Confidence:</Typography>
+                          </Grid>
+                          <Grid item xs={9}>
+                            <LinearProgress
+                              variant="determinate"
+                              value={comm.confidence * 100}
+                              sx={{ height: 8, borderRadius: 4 }}
+                            />
+                          </Grid>
+                        </Grid>
+                      )}
+
+                      {comm.sequence && comm.sequence.length > 0 && (
+                        <Box sx={{ mt: 1 }}>
+                          <Typography variant="caption" color="textSecondary">Task Sequence:</Typography>
+                          <Stack direction="row" spacing={1} sx={{ mt: 0.5, flexWrap: 'wrap' }}>
+                            {comm.sequence.map((item, idx) => (
+                              <Chip
+                                key={idx}
+                                label={`${idx + 1}. ${item}`}
+                                size="small"
+                                variant="outlined"
+                              />
+                            ))}
+                          </Stack>
+                        </Box>
+                      )}
+
+                      {/* Tool call details */}
+                      {comm.arguments && Object.keys(comm.arguments).length > 0 && (
+                        <Paper
+                          elevation={0}
+                          sx={{
+                            mt: 1,
+                            p: 1.5,
+                            backgroundColor: '#fafafa',
+                            overflowX: 'auto'
+                          }}
+                        >
+                          <Typography variant="caption" color="textSecondary">
+                            Arguments:
+                          </Typography>
+                          <pre style={{ margin: 0, fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                            {JSON.stringify(comm.arguments, null, 2)}
+                          </pre>
+                        </Paper>
+                      )}
+                    </Paper>
+                  ))}
+                </Box>
+              )}
+
+              {/* Full Metadata (Collapsible) */}
+              <Accordion sx={{ mt: 3 }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography variant="subtitle1">Full Task Metadata</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <pre style={{
+                    backgroundColor: '#f5f5f5',
+                    padding: '1rem',
+                    borderRadius: 4,
+                    overflowX: 'auto'
+                  }}>
+                    {JSON.stringify(selectedTaskProgress.metadata || {}, null, 2)}
+                  </pre>
+                </AccordionDetails>
+              </Accordion>
+
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseProgressDialog}>Close</Button>
+        </DialogActions>
+      </Dialog>
+    </Grid>
+  );
+};
+
+export default TaskManagement;

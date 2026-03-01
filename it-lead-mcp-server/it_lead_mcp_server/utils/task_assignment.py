@@ -67,6 +67,16 @@ class TaskAssignmentManager:
             "llm_plan": None
         }
         
+        # Step 1: Determine which agent should handle the task
+        # If assignee is IT Lead, use routing rules to determine specialized agent
+        # IT Lead's job is to coordinate, not execute tasks directly
+
+        effective_assignee = assignee
+        if assignee and assignee.lower() in ('it-lead', 'it lead', 'itlead'):
+            # When task comes to IT Lead, use routing rules to find appropriate specialist
+            print(f"DEBUG: Task assigned to IT Lead - using routing rules to determine specialized agent")
+            effective_assignee = None  # Let routing rules determine the actual handler
+
         # Step 1: Evaluate task against routing rules
         routing_context = {
             "code_diff": metadata.get("code_diff") if metadata else None,
@@ -74,7 +84,7 @@ class TaskAssignmentManager:
         }
         
         routing_decision = self.routing_engine.evaluate_task(
-            task_description, assignee, routing_context
+            task_description, effective_assignee, routing_context
         )
         
         # Step 2: Handle LLM planning if needed
@@ -96,7 +106,8 @@ class TaskAssignmentManager:
             
             # Use LLM plan for assignment
             primary_agent = llm_plan.get("primary_agent")
-            tool = llm_plan.get("tools", {}).get(primary_agent, "implement_feature")
+            # Use vibe_code_async for async LLM processing
+            tool = llm_plan.get("tools", {}).get(primary_agent, "vibe_code_async")
             priority = llm_plan.get("priority", priority)
         else:
             primary_agent = routing_decision.assign_to
@@ -250,7 +261,15 @@ class TaskAssignmentManager:
         
         # Agent-specific argument building
         if agent_id == "implementation-engineer":
-            if tool == "implement_feature":
+            # Use vibe_code_async for async processing with LLM
+            if tool == "vibe_code_async":
+                return {
+                    "task_description": task_description,
+                    "language": metadata.get("language", "python") if metadata else "python",
+                    "vibe_level": metadata.get("vibe_level", 5) if metadata else 5,
+                    "style_guide": metadata.get("style_guide", "") if metadata else ""
+                }
+            elif tool == "implement_feature" or tool == "generate_code_from_spec":
                 return {
                     "feature_requirements": task_description,
                     "architectural_guidelines": "Follow project coding standards and best practices",

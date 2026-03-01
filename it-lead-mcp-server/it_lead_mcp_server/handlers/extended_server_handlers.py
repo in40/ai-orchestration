@@ -6,9 +6,11 @@ Preserves all existing functionality while adding new capabilities
 import time
 import json
 import os
+import threading
 from typing import Dict, Any, List, Optional
 from ..utils.json_rpc import JsonRpcHandler, JsonRpcMessage
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 # Import the new handler modules
 from .strategic_planning_handlers import StrategicPlanningHandlers
@@ -838,37 +840,12 @@ class ExtendedItLeadServerHandlers:
             assignee = arguments.get("assignee", "")
             priority = arguments.get("priority", "medium")
             deadline = arguments.get("deadline", "")
-            
-            # Use the task assignment manager for intelligent routing and forwarding
-            if self.task_assignment_manager:
-                print(f"DEBUG: Using task assignment manager for intelligent routing")
-                try:
-                    # Call the task assignment manager (now sync, matching server handler pattern)
-                    assignment_result = self.task_assignment_manager.assign_and_forward_task(
-                        task_id=task_id,
-                        task_description=task_description,
-                        assignee=assignee if assignee else None,
-                        priority=priority,
-                        deadline=deadline,
-                        metadata={"tool_call": "assign_task", "original_arguments": arguments}
-                    )
-                    
-                    print(f"DEBUG: Task assignment result: {assignment_result}")
-                    return {"result": assignment_result}
-                    
-                except Exception as e:
-                    print(f"DEBUG: Error in task assignment manager: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Fall back to simple assignment
-                    return self._execute_simple_assign_task(
-                        task_id, task_description, assignee, priority, deadline, arguments
-                    )
-            else:
-                print(f"DEBUG: Task assignment manager not available, using simple assignment")
-                return self._execute_simple_assign_task(
-                    task_id, task_description, assignee, priority, deadline, arguments
-                )
+
+            # Use async assignment - stores task immediately and returns 'submitted' status
+            return self._execute_assign_task_async(
+                task_id, task_description, assignee if assignee else None,
+                priority, deadline, {"tool_call": "assign_task", "original_arguments": arguments}
+            )
 
         elif tool_name == "review_code":
             pull_request_id = arguments.get("pull_request_id", "unknown")
@@ -1250,6 +1227,101 @@ class ExtendedItLeadServerHandlers:
 
         # For any other tools, return a generic response
         return {"result": f"Executed tool '{tool_name}' with arguments: {arguments}"}
+
+    def _execute_assign_task_async(self, task_id: str, task_description: str,
+                                   assignee: str, priority: str, deadline: str,
+                                   arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute task assignment asynchronously - stores task immediately and returns 'submitted' status"""
+        # Store the task in the database with 'submitted' status first
+        if self.task_storage:
+            print(f"DEBUG: Storing task {task_id} with 'submitted' status (async mode)")
+            try:
+                success = self.task_storage.store_received_task(
+                    task_id=task_id,
+                    title=f"Task: {task_id}",
+                    description=task_description,
+                    submitter="api_user",
+                    submitter_type="api",
+                    transport_channel="streamable-http",
+                    assigned_to=assignee if assignee else "unassigned",
+                    priority=priority,
+                    deadline=deadline if deadline else None,  # Pass None for empty deadline
+                    source_server="internal",
+                    metadata={"tool_call": "assign_task", "original_arguments": arguments},
+                    status="submitted",
+                    status_reason="Task submitted for processing, LLM planning in progress"
+                )
+                print(f"DEBUG: Task stored with 'submitted' status: {success}")
+            except Exception as e:
+                print(f"DEBUG: Error storing task with 'submitted' status: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("DEBUG: task_storage is None, cannot store task")
+
+        # Start background thread for LLM planning and forwarding
+        threading.Thread(
+            target=self._background_task_processing,
+            args=(task_id, task_description, assignee),
+            daemon=True
+        ).start()
+
+        return {
+            "result": {
+                "task_id": task_id,
+                "assigned_to": assignee,
+                "priority": priority,
+                "deadline": deadline,
+                "status": "submitted",
+                "message": f"Task '{task_id}' submitted for processing. LLM planning and routing in background."
+            }
+        }
+
+    def _background_task_processing(self, task_id: str, task_description: str, assignee: str):
+        """Background thread to run LLM planning and forward task to appropriate agent"""
+        try:
+            print(f"DEBUG: Background task processing started for {task_id}")
+            
+            # Use ThreadPoolExecutor for the blocking LLM call
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self._run_llm_planning_and_forward,
+                    task_id, task_description, assignee
+                )
+                result = future.result(timeout=300)  # 5 minute timeout for LLM planning
+                
+            print(f"DEBUG: Background task processing completed for {task_id}: {result}")
+            
+        except Exception as e:
+            print(f"ERROR in background task processing for {task_id}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _run_llm_planning_and_forward(self, task_id: str, task_description: str, assignee: str):
+        """Run LLM planning and forward task - called from background thread"""
+        try:
+            if not self.task_assignment_manager:
+                print(f"DEBUG: Task assignment manager not available for {task_id}")
+                return {"error": "Task assignment manager unavailable"}
+
+            # Run the full assignment process
+            assignment_result = self.task_assignment_manager.assign_and_forward_task(
+                task_id=task_id,
+                task_description=task_description,
+                assignee=assignee if assignee else None,
+                priority="medium",
+                deadline=None,
+                metadata={"tool_call": "assign_task_async", "original_arguments": {}, "async_mode": True}
+            )
+            
+            print(f"DEBUG: LLM planning completed for {task_id}: {assignment_result.get('status', 'unknown')}")
+            return assignment_result
+            
+        except Exception as e:
+            print(f"ERROR in LLM planning for {task_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e)}
 
     def _execute_simple_assign_task(self, task_id: str, task_description: str,
                                     assignee: str, priority: str, deadline: str,
