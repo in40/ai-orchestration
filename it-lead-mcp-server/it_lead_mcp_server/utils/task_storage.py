@@ -5,6 +5,7 @@ Handles storage of received and submitted tasks in PostgreSQL or SQLite
 import json
 import time
 import sqlite3
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 import logging
 
@@ -396,14 +397,24 @@ class TaskStorage:
         try:
             cursor = self.connection.cursor()
 
-            cursor.execute("""
-                SELECT id, task_id, title, description, submitter, submitter_type, transport_channel,
-                       status, status_reason, assigned_to, priority, deadline,
-                       created_at, updated_at, assigned_at, started_at, completed_at,
-                       source_server, target_server, result, metadata, status_history
-                FROM task_registry
-                WHERE task_id = %s
-            """, (task_id,))
+            if self.use_sqlite:
+                cursor.execute("""
+                    SELECT id, task_id, title, description, submitter, submitter_type, transport_channel,
+                           status, status_reason, assigned_to, priority, deadline,
+                           created_at, updated_at, assigned_at, started_at, completed_at,
+                           source_server, target_server, result, metadata, status_history
+                    FROM task_registry
+                    WHERE task_id = ?
+                """, (task_id,))
+            else:
+                cursor.execute("""
+                    SELECT id, task_id, title, description, submitter, submitter_type, transport_channel,
+                           status, status_reason, assigned_to, priority, deadline,
+                           created_at, updated_at, assigned_at, started_at, completed_at,
+                           source_server, target_server, result, metadata, status_history
+                    FROM task_registry
+                    WHERE task_id = %s
+                """, (task_id,))
 
             row = cursor.fetchone()
             cursor.close()
@@ -572,8 +583,100 @@ class TaskStorage:
             traceback.print_exc()
             return False
 
-    def close(self):
+    def update_task_result_reference(
+        self,
+        task_id: str,
+        storage_ref: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Update task with result storage reference.
+        
+        Instead of storing full result in DB, stores reference in metadata:
+        {
+            "storage_type": "git",  # or "s3", "local", "ssh"
+            "path": "results/task-123/",
+            "commit_sha": "a1b2c3d4...",
+            "file_path": "/var/mcp-results/results/task-123/result.py"
+        }
+        
+        Args:
+            task_id: Task identifier
+            storage_ref: Storage reference dict from ResultRouter
+            metadata: Additional metadata
+            
+        Returns:
+            True if update succeeded
+        """
+        try:
+            cursor = self.connection.cursor()
 
+            # Build result reference JSON
+            result_ref = {
+                "storage_type": storage_ref.get("storage_type", "inline"),
+                "path": storage_ref.get("path", ""),
+                "commit_sha": storage_ref.get("commit_sha"),
+                "file_path": storage_ref.get("code_file") or storage_ref.get("file_path")
+            }
+            
+            # Merge with existing metadata
+            existing_meta = {}
+            task = self.get_task(task_id)
+            if task and task.get("metadata"):
+                try:
+                    existing_meta = json.loads(task["metadata"]) if isinstance(task["metadata"], str) else task["metadata"]
+                except:
+                    pass
+            
+            # Update metadata with result reference
+            existing_meta["result_reference"] = result_ref
+            existing_meta["completed_at"] = datetime.now().isoformat() if self.use_sqlite else "CURRENT_TIMESTAMP"
+            
+            if self.use_sqlite:
+                cursor.execute("""
+                    UPDATE task_registry
+                    SET metadata = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ?
+                """, (json.dumps(existing_meta), task_id))
+            else:
+                cursor.execute("""
+                    UPDATE task_registry
+                    SET metadata = jsonb_set(
+                        COALESCE(metadata, '{}'::jsonb),
+                        '{result_reference}', %s::jsonb
+                    ),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = %s
+                """, (json.dumps(result_ref), task_id))
+
+            affected_rows = cursor.rowcount
+
+            if affected_rows > 0:
+                print(f"✅ Task result reference updated: {task_id}")
+                # Update status to done (PostgreSQL) or completed (SQLite) BEFORE closing cursor
+                status_value = "done" if not self.use_sqlite else "completed"
+                if self.use_sqlite:
+                    cursor.execute("UPDATE task_registry SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                                  (status_value, task_id))
+                else:
+                    cursor.execute("UPDATE task_registry SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE task_id = %s",
+                                  (status_value, task_id))
+                self.connection.commit()
+                print(f"✅ Task {task_id} status updated to {status_value}, call_source=task_storage")
+            else:
+                print(f"⚠️ Task not found for result reference update: {task_id}")
+
+            cursor.close()
+            return affected_rows > 0
+        except Exception as e:
+            print(f"❌ Error updating task result reference: {e}")
+            import traceback
+            traceback.print_exc()
+            self.connection.rollback()
+            return False
+
+    def close(self):
         """Close the database connection"""
         if self.connection:
             self.connection.close()
