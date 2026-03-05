@@ -22,6 +22,9 @@ class TaskAssignmentManager:
         self.routing_engine = TaskRoutingEngine(llm_client, service_registry)
         self.llm_planner = LLMTaskPlanner(llm_client, service_registry)
 
+        # Initialize result router
+        self._init_result_router()
+
         # Update agent endpoints from registry if available
         if service_registry:
             try:
@@ -29,13 +32,75 @@ class TaskAssignmentManager:
                 for service in services:
                     service_name = service.get("name", "").lower()
                     endpoint = service.get("endpoint")
-                    
                     if "implementation" in service_name and endpoint:
                         self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
                     elif "requirement" in service_name and endpoint:
                         self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
             except Exception as e:
                 print(f"Error updating agent endpoints from registry: {e}")
+
+    def _init_result_router(self):
+        """Initialize result router for storing agent results"""
+        try:
+            from .result_router import get_result_router
+            self.result_router = get_result_router()
+            print("✅ Result router initialized")
+        except ImportError as e:
+            print(f"⚠️ Result router not available: {e}")
+            self.result_router = None
+        except Exception as e:
+            print(f"⚠️ Error initializing result router: {e}")
+
+    def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 10) -> Optional[Dict[str, Any]]:
+        """
+        Poll the agent's tasks/result endpoint to get async task result.
+        
+        Args:
+            agent_endpoint: Agent's MCP endpoint
+            task_id: Async task ID from the agent's response
+            max_retries: Maximum number of poll attempts
+            
+        Returns:
+            Result dict with git_url or None if polling failed
+        """
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    agent_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": f"poll-{task_id}",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "tasks/result",
+                            "arguments": {"taskId": task_id}
+                        }
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "result" in result and isinstance(result["result"], dict):
+                        result_data = result["result"]
+                        # Check if result contains git_url (from git_push_llm_response)
+                        if result_data.get("git_url"):
+                            print(f"✅ Async task result retrieved: {result_data['git_url']}")
+                            return result_data
+                        # Check for error
+                        if result_data.get("error"):
+                            print(f"❌ Async task error: {result_data['error']}")
+                            return None
+            except Exception as e:
+                print(f"⚠️ Poll attempt {attempt + 1} failed: {e}")
+            
+            # Wait before next poll
+            time.sleep(2)
+        
+        print(f"⚠️ Failed to retrieve async task result after {max_retries} attempts")
+        return None
 
     def assign_and_forward_task(self, task_id: str, task_description: str,
                                       assignee: Optional[str] = None,
@@ -86,9 +151,19 @@ class TaskAssignmentManager:
         routing_decision = self.routing_engine.evaluate_task(
             task_description, effective_assignee, routing_context
         )
+        print(f"DEBUG: routing_decision: assign_to={routing_decision.assign_to}, tool={routing_decision.tool}, confidence={routing_decision.confidence}, requires_llm_planning={routing_decision.requires_llm_planning}")
+        
+        # Set primary_agent based on routing decision
+        primary_agent = routing_decision.assign_to
+        print(f"DEBUG: effective_assignee={effective_assignee}, primary_agent={primary_agent}")
         
         # Step 2: Handle LLM planning if needed
+        # Step 2: Handle LLM planning if needed
         if routing_decision.requires_llm_planning:
+            print(f"🔍 LLM planning REQUIRED for task {task_id}")
+            print(f"   Reason: {routing_decision.llm_reason}")
+            print(f"   Confidence: {routing_decision.confidence}")
+            
             llm_plan = self.llm_planner.plan_task_assignment(
                 task_description,
                 {
@@ -100,19 +175,29 @@ class TaskAssignmentManager:
                     "conflicting_assignees": routing_decision.metadata.get("conflicting_assignees", [])
                 }
             )
-            
+
             result["requires_llm_planning"] = True
             result["llm_plan"] = llm_plan
             
-            # Use LLM plan for assignment
-            primary_agent = llm_plan.get("primary_agent")
+            print(f"✅ LLM planning completed for task {task_id}")
+            print(f"   LLM plan keys: {list(llm_plan.keys())}")
+            print(f"   LLM plan content: {json.dumps(llm_plan, indent=2)}")
+            
+            # Try to get primary_agent (with fallback to recommended_agent)
+            primary_agent = llm_plan.get("primary_agent") or llm_plan.get("recommended_agent")
+            print(f"   primary_agent from LLM: {primary_agent}")
+            
             # Use vibe_code_async for async LLM processing
             tool = llm_plan.get("tools", {}).get(primary_agent, "vibe_code_async")
+            print(f"   tool: {tool}")
             priority = llm_plan.get("priority", priority)
+            print(f"   priority: {priority}")
         else:
+            print(f"✅ LLM planning NOT required for task {task_id}")
             primary_agent = routing_decision.assign_to
             tool = routing_decision.tool
             priority = routing_decision.priority or priority
+            print(f"DEBUG: routing_decision: assign_to={primary_agent}, tool={tool}, priority={priority}")
             llm_plan = None
         
         # Step 3: Store task in database with initial status
@@ -149,7 +234,25 @@ class TaskAssignmentManager:
         
         # Step 4: Forward task to agent if agent is available
         if primary_agent:
-            agent_endpoint = self.routing_engine.get_agent_endpoint(primary_agent)
+            # Validate that primary_agent is a known agent
+            known_agents = ["implementation-engineer", "requirements-engineer", "code-reviewer", 
+                           "qa-test-engineer", "security-engineer", "devops-engineer", "it-lead"]
+            
+            # Normalize primary_agent for comparison
+            normalized_agent = primary_agent.lower().replace(" ", "-").replace("_", "-")
+            
+            if normalized_agent not in known_agents:
+                print(f"⚠️  Warning: Unknown agent '{primary_agent}' - falling back to implementation-engineer")
+                print(f"   This may happen when LLM planning returns an invalid agent name")
+                primary_agent = "implementation-engineer"
+                tool = "vibe_code_async"
+                agent_endpoint = self.routing_engine.get_agent_endpoint(primary_agent)
+            else:
+                agent_endpoint = self.routing_engine.get_agent_endpoint(primary_agent)
+                print(f"DEBUG: agent_endpoint for {primary_agent}: {agent_endpoint}")
+
+            # Initialize forward_result for later use
+            forward_result = {"success": False, "error": "No agent endpoint available"}
 
             if agent_endpoint:
                 # Forward task to agent (sync call)
@@ -164,13 +267,92 @@ class TaskAssignmentManager:
                     result["status"] = "forwarded"
                     result["message"] = f"Task assigned and forwarded to {primary_agent}"
                     
-                    # Update task status in database
+                    # Update task status to in_progress (which represents forwarded state in PostgreSQL)
                     if self.task_storage:
+                        status_value = "in_progress"
                         self._update_task_status(
-                            task_id, "forwarded",
+                            task_id, status_value,
                             f"Task forwarded to {primary_agent} at {agent_endpoint}",
                             {"agent_endpoint": agent_endpoint, "tool_used": tool}
                         )
+                        print(f"✅ Task {task_id} status updated to {status_value}")
+                    
+                    # Store agent result
+                    if self.task_storage:
+                        agent_response = forward_result.get("response", {})
+                        result_data = agent_response.get("result", {})
+                        
+                        # Check if agent returned an async task ID (e.g., vibe_code_async response)
+                        # The agent returns {"taskId": "...", "status": "submitted"} for async tasks
+                        # We need to poll for the actual result with git_url
+                        async_task_id = None
+                        if isinstance(result_data, dict):
+                            async_task_id = result_data.get("taskId")
+                            if async_task_id and result_data.get("status") == "submitted":
+                                print(f"⏳ Async task submitted: {async_task_id}, polling for result...")
+                                async_result = self._poll_async_task_result(agent_endpoint, async_task_id)
+                                if async_result:
+                                    result_data = async_result
+                                    print(f"✅ Async result retrieved, continuing with processing...")
+                                else:
+                                    print(f"⚠️ Async result polling failed, proceeding with inline storage")
+                        
+                        # Check if agent returned Git URL directly (agent-driven Git push)
+                        git_url = None
+                        if isinstance(result_data, dict):
+                            git_url = result_data.get("git_url") or result_data.get("code_url") or result_data.get("git_path")
+                        
+                        if git_url:
+                            # Agent returned Git URL directly - store as git reference
+                            storage_ref = {
+                                "storage_type": "git",
+                                "git_url": git_url,
+                                "storage_path": git_url
+                            }
+                            print(f"✅ Agent returned Git URL: {git_url}")
+                        elif result_data and self.result_router:
+                            # Fallback to ResultRouter for backward compatibility
+                            storage_ref = self.result_router.route_result(
+                                task_id=task_id,
+                                result_data=result_data,
+                                agent=primary_agent,
+                                tool=tool,
+                                metadata={
+                                    "tool_call": "assign_task",
+                                    "agent_endpoint": agent_endpoint
+                                }
+                            )
+                            print(f"✅ Result stored via ResultRouter: {storage_ref.get('storage_type')}")
+                        else:
+                            # No storage available, store result inline
+                            storage_ref = {
+                                "storage_type": "inline",
+                                "result": str(result_data)[:500]
+                            }
+                        
+                        # Update task with storage reference
+                        self.task_storage.update_task_result_reference(
+                            task_id=task_id,
+                            storage_ref=storage_ref,
+                            metadata={
+                                "storage_reference": storage_ref,
+                                "routing_decision": {
+                                    "matched_rule_id": routing_decision.matched_rule_id,
+                                    "confidence": routing_decision.confidence,
+                                    "requires_llm_planning": routing_decision.requires_llm_planning
+                                }
+                            }
+                        )
+                    
+                    # Update task status to done/completed
+                    if self.task_storage:
+                        status_value = "done" if not self.task_storage.use_sqlite else "completed"
+                        self._update_task_status(
+                            task_id, status_value,
+                            f"Task completed by {primary_agent}. Result stored at: {git_url or 'inline'}",
+                            {"agent_endpoint": agent_endpoint, "tool_used": tool, "storage_type": storage_ref.get("storage_type")}
+                        )
+                        print(f"✅ Task {task_id} marked as {status_value}")
                 else:
                     result["status"] = "assigned_pending"
                     result["assigned_to"] = primary_agent
@@ -185,6 +367,7 @@ class TaskAssignmentManager:
                 result["status"] = "assigned"
                 result["assigned_to"] = primary_agent
                 result["message"] = f"Task assigned to {primary_agent} (agent not currently available for forwarding)"
+                print(f"DEBUG: Task {task_id} not forwarded - forward_result.success={forward_result.get('success')}, forward_result.error={forward_result.get('error')}")
                 
                 if self.task_storage:
                     self._update_task_status(
@@ -210,6 +393,7 @@ class TaskAssignmentManager:
         """Forward a task to a specific agent via MCP (sync HTTP)"""
         
         agent_endpoint = self.routing_engine.get_agent_endpoint(agent_id)
+        print(f"DEBUG: _forward_task_to_agent: agent_id={agent_id}, tool={tool}, endpoint={agent_endpoint}")
         
         if not agent_endpoint:
             return {"success": False, "error": f"Agent {agent_id} endpoint not found"}
@@ -334,8 +518,43 @@ class TaskAssignmentManager:
                            status_reason: str, extra_metadata: Optional[Dict[str, Any]] = None):
         """Update task status in the database"""
         if not self.task_storage:
+            print(f"⚠️  _update_task_status: task_storage is None for task {task_id}")
             return
         
-        # Note: We would need to add an update_task_status method to TaskStorage
-        # For now, this is a placeholder
-        print(f"Updating task {task_id} status to {status}: {status_reason}")
+        try:
+            cursor = self.task_storage.connection.cursor()
+            
+            # Prepare status history entry
+            status_history_entry = {
+                "status": status,
+                "timestamp": time.time(),
+                "reason": status_reason
+            }
+            
+            print(f"📝 _update_task_status: task_id={task_id}, status={status}, use_sqlite={self.task_storage.use_sqlite}, call_source=task_assignment")
+            
+            # Update status, status_reason, and append to status_history column
+            if self.task_storage.use_sqlite:
+                # For SQLite, update status_history as JSON string in metadata
+                sql = """UPDATE task_registry SET status = ?, status_reason = ?, metadata = json_set(metadata, '$.status_history', ?) WHERE task_id = ?"""
+                params = (status, status_reason, json.dumps([status_history_entry]), task_id)
+            else:
+                # For PostgreSQL, update status and append to status_history column
+                sql = """UPDATE task_registry 
+                    SET status = %s, 
+                        status_reason = %s,
+                        status_history = status_history || %s::jsonb
+                    WHERE task_id = %s"""
+                params = (status, status_reason, json.dumps([status_history_entry]), task_id)
+            
+            print(f"📝 SQL: {sql}")
+            print(f"📝 Params: {params}")
+            cursor.execute(sql, params)
+            self.task_storage.connection.commit()
+            cursor.close()
+            print(f"✅ Updated task {task_id} status to {status}: {status_reason}")
+        except Exception as e:
+            print(f"❌ Error updating task status: {e}")
+            import traceback
+            traceback.print_exc()
+            self.task_storage.connection.rollback()
