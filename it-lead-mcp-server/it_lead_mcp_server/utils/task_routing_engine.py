@@ -1,6 +1,11 @@
 """
 Task Routing Engine for IT Lead MCP Server
 Evaluates tasks against routing rules and determines agent assignment
+
+ARCHITECTURE NOTE:
+This routing engine uses the MCP Registry Client to discover agent endpoints via MCP protocol.
+It does NOT directly access the registry database - it communicates with the central MCP
+Registry Server (port 3031) via HTTP POST to /mcp endpoint, following proper MCP architecture.
 """
 import re
 import json
@@ -36,26 +41,80 @@ class RoutingDecision:
 
 class TaskRoutingEngine:
     """Evaluates tasks against routing rules and determines agent assignment"""
-    
-    def __init__(self, llm_client=None, service_registry=None):
+
+    def __init__(self, llm_client=None, service_registry=None, mcp_registry_client=None):
         self.llm_client = llm_client
-        self.service_registry = service_registry
+        self.service_registry = service_registry  # Deprecated: kept for backward compatibility
+        self.mcp_registry_client = mcp_registry_client  # NEW: MCP protocol-based registry client
         self.rules = TASK_ROUTING_RULES
         self.agent_endpoints = AGENT_ENDPOINTS.copy()
         self.agent_tool_mapping = AGENT_TOOL_MAPPING.copy()
-        
-        # Update agent endpoints from registry if available
-        if service_registry:
+
+        # Update agent endpoints from MCP Registry Server via MCP protocol
+        if mcp_registry_client:
+            self._update_agent_endpoints_from_mcp_registry()
+        elif service_registry:
+            # Fallback to old direct DB access (deprecated)
+            print("⚠️  Using deprecated direct DB registry access - should use MCP Registry Client instead")
             self._update_agent_endpoints_from_registry()
-    
+
+    def _update_agent_endpoints_from_mcp_registry(self):
+        """
+        Update agent endpoints from the central MCP Registry Server via MCP protocol.
+        
+        This is the CORRECT way to discover agents - by calling registry/list
+        on the MCP Registry Server (port 3031) via HTTP POST to /mcp.
+        """
+        if not self.mcp_registry_client:
+            return
+            
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=True)
+            print(f"📋 Discovered {len(services)} services from MCP Registry Server")
+            
+            for service in services:
+                service_name = service.get("name", "").lower()
+                endpoint = service.get("endpoint")
+                
+                # Skip the registry server itself
+                if "registry" in service_name and "mcp registry" in service_name:
+                    continue
+                    
+                # Map service names to agent IDs
+                if "implementation" in service_name and endpoint:
+                    old_endpoint = self.agent_endpoints.get("implementation-engineer")
+                    self.agent_endpoints["implementation-engineer"] = endpoint
+                    print(f"✅ Found implementation-engineer: {endpoint} (was: {old_endpoint})")
+                elif "requirement" in service_name and endpoint:
+                    # Use the first requirements engineer found (prefer 127.0.0.1 over 0.0.0.0)
+                    current = self.agent_endpoints.get("requirements-engineer")
+                    if not current or ("0.0.0.0" in current and "127.0.0.1" in endpoint):
+                        self.agent_endpoints["requirements-engineer"] = endpoint
+                        print(f"✅ Found requirements-engineer: {endpoint}")
+                elif "code" in service_name and "review" in service_name and endpoint:
+                    self.agent_endpoints["code-reviewer"] = endpoint
+                    print(f"✅ Found code-reviewer: {endpoint}")
+                elif ("qa" in service_name or "test" in service_name) and endpoint:
+                    self.agent_endpoints["qa-test-engineer"] = endpoint
+                    print(f"✅ Found qa-test-engineer: {endpoint}")
+                elif "security" in service_name and endpoint:
+                    self.agent_endpoints["security-engineer"] = endpoint
+                    print(f"✅ Found security-engineer: {endpoint}")
+                elif "devops" in service_name and endpoint:
+                    self.agent_endpoints["devops-engineer"] = endpoint
+                    print(f"✅ Found devops-engineer: {endpoint}")
+                    
+        except Exception as e:
+            print(f"❌ Error updating agent endpoints from MCP Registry Server: {e}")
+
     def _update_agent_endpoints_from_registry(self):
-        """Update agent endpoints from the service registry"""
+        """Update agent endpoints from the service registry (DEPRECATED - direct DB access)"""
         try:
             services = self.service_registry.list_services()
             for service in services:
                 service_name = service.get("name", "").lower()
                 endpoint = service.get("endpoint")
-                
+
                 if "implementation" in service_name and endpoint:
                     self.agent_endpoints["implementation-engineer"] = endpoint
                 elif "requirement" in service_name and endpoint:

@@ -2,6 +2,11 @@
 Task Assignment Module for IT Lead MCP Server - FIXED VERSION
 Handles intelligent task routing and forwarding to specialized agents
 Uses background threads for async task polling
+
+ARCHITECTURE NOTE:
+This module uses the MCP Registry Client to discover agent endpoints via MCP protocol.
+It communicates with the central MCP Registry Server (port 3031) via HTTP POST to /mcp,
+following proper MCP architecture - NOT direct database access.
 """
 import json
 import time
@@ -10,18 +15,33 @@ import threading  # Added for background polling
 from typing import Dict, List, Any, Optional
 from .task_routing_engine import TaskRoutingEngine, RoutingDecision
 from .llm_task_planner import LLMTaskPlanner
+from .mcp_registry_client import McpRegistryClient  # NEW: MCP protocol-based registry client
 
 
 class TaskAssignmentManager:
     """Manages task assignment and forwarding to specialized agents"""
 
-    def __init__(self, llm_client=None, service_registry=None, task_storage=None):
+    def __init__(self, llm_client=None, service_registry=None, task_storage=None, mcp_registry_endpoint: Optional[str] = None):
         self.llm_client = llm_client
-        self.service_registry = service_registry
+        self.service_registry = service_registry  # Deprecated: kept for backward compatibility
+        
+        # NEW: Initialize MCP Registry Client for proper MCP protocol-based agent discovery
+        if mcp_registry_endpoint:
+            self.mcp_registry_client = McpRegistryClient(mcp_registry_endpoint)
+            print(f"✅ MCP Registry Client initialized: {mcp_registry_endpoint}")
+        else:
+            # Default to local MCP Registry Server on port 3031
+            self.mcp_registry_client = McpRegistryClient("http://127.0.0.1:3031/mcp")
+            print("✅ MCP Registry Client initialized (default: http://127.0.0.1:3031/mcp)")
         self.task_storage = task_storage
 
-        # Initialize routing components
-        self.routing_engine = TaskRoutingEngine(llm_client, service_registry)
+        # Initialize routing components with MCP Registry Client
+        # Pass mcp_registry_client to TaskRoutingEngine for proper agent discovery via MCP protocol
+        self.routing_engine = TaskRoutingEngine(
+            llm_client=llm_client, 
+            service_registry=service_registry,  # Deprecated, kept for backward compatibility
+            mcp_registry_client=self.mcp_registry_client  # NEW: MCP protocol-based discovery
+        )
         self.llm_planner = LLMTaskPlanner(llm_client, service_registry)
 
         # Initialize result router

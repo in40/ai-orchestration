@@ -2,22 +2,35 @@
 
 # Script to start the MCP server with various options
 # Usage: ./start_mcp_server.sh [options]
-# Set PostgreSQL password - uncomment and update the line below with your actual password
-export POSTGRES_PASSWORD="postgres"
-export PGPASSWORD="postgres"
 
 echo "Starting Vibe Coding MCP Server..."
 
-# Default values for our vibe coding server
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# Set PostgreSQL password from environment or default
+export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+export PGPASSWORD="${POSTGRES_PASSWORD}"
+
+# Default values from .env or fallback
 TRANSPORT="streamable-http"
-HOST="127.0.0.1"
-PORT=3060  # Changed to 3060 as requested
-ENABLE_REGISTRY=false   # Disabled - we are not a registry server
-REGISTER_WITH_REGISTRY=true  # Enabled as required - we register with external registry
-REGISTRY_HOST="127.0.0.1"
-REGISTRY_PORT=3031
-USE_POSTGRES=false
-MAX_CONCURRENT_REQUESTS=10
+HOST="${WEB_UI_HOST:-0.0.0.0}"
+PORT="${IMPLEMENTATION_PORT:-3060}"
+ENABLE_REGISTRY=false
+REGISTER_WITH_REGISTRY=true
+REGISTRY_HOST="${REGISTRY_HOST:-127.0.0.1}"
+REGISTRY_PORT="${REGISTRY_PORT:-3031}"
+USE_POSTGRES="${USE_POSTGRES:-true}"
+MAX_CONCURRENT_REQUESTS="${MAX_CONCURRENT_REQUESTS:-10}"
+LLM_PROVIDER_URL="${LLM_PROVIDER_URL:-http://192.168.51.237:1234/v1/chat/completions}"
+LLM_MODEL="${LLM_MODEL:-qwen3-coder-next@q5_k_xl}"
+
+# Export LLM configuration for Python process
+export LLM_PROVIDER_URL
+export LLM_MODEL
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -136,6 +149,8 @@ fi
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
   CMD="$CMD --max-concurrent-requests $MAX_CONCURRENT_REQUESTS"
 fi
+
+# Note: Implementation Engineer uses LLM internally via vibe_coder, doesn't accept CLI args
 
 echo "Executing: $CMD"
 # Ensure the PostgreSQL password environment variable is available to the Python process

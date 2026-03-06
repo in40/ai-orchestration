@@ -26,8 +26,8 @@ class ExtendedItLeadServerHandlers:
 
     def __init__(self, enable_registry: bool = True, use_postgres: bool = True,
                  postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
-                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
+                 llm_provider_url: str = None,  # REQUIRED from config
+                 llm_model: str = None,  # REQUIRED from config
                  prompts_dir: str = "."):
         # Initialize the original IT Lead tools for backward compatibility
         self.tools: List[Dict[str, Any]] = [
@@ -289,12 +289,16 @@ class ExtendedItLeadServerHandlers:
         # Initialize task assignment manager (for intelligent routing and forwarding)
         try:
             from ..utils.task_assignment import TaskAssignmentManager
+            # Use MCP Registry Client to discover agents via MCP protocol (port 3031)
+            # This is the CORRECT architecture - IT Lead communicates with Registry Server via MCP,
+            # NOT direct database access. The Registry Server (port 3031) manages the PostgreSQL DB.
             self.task_assignment_manager = TaskAssignmentManager(
                 llm_client=self.llm_client,
-                service_registry=self.service_registry,
-                task_storage=self.task_storage
+                service_registry=self.service_registry,  # Deprecated, kept for backward compatibility
+                task_storage=self.task_storage,
+                mcp_registry_endpoint="http://127.0.0.1:3031/mcp"  # MCP Registry Server endpoint
             )
-            print("✅ Task assignment manager initialized successfully")
+            print("✅ Task assignment manager initialized successfully with MCP Registry Client")
         except Exception as e:
             print(f"❌ Failed to initialize task assignment manager: {e}")
             import traceback
@@ -557,14 +561,17 @@ class ExtendedItLeadServerHandlers:
                     user=self.postgres_config.get("user", "postgres"),
                     password=self.postgres_config.get("password", "")
                 )
+                print("✅ PostgreSQL registry initialized (for local task storage)")
             else:
                 from ..utils.service_registry_db import ServiceRegistryDB
                 # Use absolute path to share registry with port 3031's Registry Server
                 self.service_registry = ServiceRegistryDB(db_path="/root/qwen/base/mcp-std-skeleton/mcp_registry.db")
+                print("✅ SQLite registry initialized (for local task storage)")
         except Exception as e:
-            print(f"Failed to initialize registry: {e}")
-            print("Registry functionality will be disabled")
+            print(f"⚠️  Failed to initialize local registry: {e}")
+            print("⚠️  Registry functionality will be disabled (will use MCP Registry Client instead)")
             self.enable_registry = False
+            self.service_registry = None
 
     def _add_registry_methods(self):
         """Add registry-specific methods to the server"""
