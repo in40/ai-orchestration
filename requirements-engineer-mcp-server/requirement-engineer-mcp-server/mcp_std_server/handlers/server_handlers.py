@@ -65,7 +65,7 @@ class McpServerHandlers:
             self._add_registry_methods()
 
     def _initialize_registry(self, use_postgres: bool):
-        """Initialize the service registry with either SQLite or PostgreSQL"""
+        """Initialize the service registry - PostgreSQL required"""
         try:
             if use_postgres and self.postgres_config:
                 from ..utils.postgres_registry_db import PostgresServiceRegistry
@@ -80,9 +80,8 @@ class McpServerHandlers:
                 from ..utils.service_registry_db import ServiceRegistryDB
                 self.service_registry = ServiceRegistryDB()
         except Exception as e:
-            print(f"Failed to initialize registry: {e}")
-            print("Registry functionality will be disabled")
-            self.enable_registry = False
+            print(f"❌ Failed to initialize registry (PostgreSQL required): {e}")
+            raise
 
     def _add_registry_methods(self):
         """Add registry-specific methods to the server"""

@@ -34,8 +34,8 @@ class ItLeadMcpServer:
                  max_concurrent_requests: int = 10,
                  enable_client_mode: bool = True, client_transport_type: str = "streamable-http",
                  client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None,
-                 llm_provider_url: str = "http://asus-tus:1234/v1/chat/completions",
-                 llm_model: str = "qwen3-4b",
+                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
+                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
                  prompts_dir: str = "."):
         self.transport_type = transport_type
         self.host = host
@@ -68,7 +68,7 @@ class ItLeadMcpServer:
 
         # LLM Configuration
         self.llm_provider_url = llm_provider_url
-        self.llm_model = llm_model
+        self.llm_model = "qwen3.5-35b-a3b@q5_k_xl"
         self.prompts_dir = prompts_dir
 
         # Initialize components
@@ -483,11 +483,11 @@ def main():
                        help='Maximum number of concurrent requests (default: 10)')
     # LLM Configuration
     parser.add_argument('--llm-provider-url',
-                       default='http://asus-tus:1234/v1/chat/completions',
-                       help='URL for the LLM provider (default: http://asus-tus:1234/v1/chat/completions)')
+                       default='http://192.168.51.237:1234/v1/chat/completions',
+                       help='URL for the LLM provider (default: http://192.168.51.237:1234/v1/chat/completions)')
     parser.add_argument('--llm-model',
-                       default='qwen3-4b',
-                       help='LLM model name (default: qwen3-4b)')
+                       default='qwen3.5-35b-a3b@q5_k_xl',
+                       help='LLM model name (default: qwen3.5-35b-a3b@q5_k_xl)')
     parser.add_argument('--prompts-dir',
                        default='.',
                        help='Directory to keep prompts (default: current directory)')

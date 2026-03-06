@@ -21,7 +21,7 @@ POSTGRES_USER="postgres"
 POSTGRES_PASSWORD="postgres"  # You should change this to a secure password in production
 MAX_CONCURRENT_REQUESTS=10
 LLM_PROVIDER_URL="http://asus-tus:1234/v1/chat/completions"
-LLM_MODEL="qwen3-4b"
+LLM_MODEL="qwen3.5-35b-a3b@q5_k_xl"
 PROMPTS_DIR="."
 
 # Parse command line options
@@ -119,7 +119,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --postgres-password PASS  PostgreSQL password [default: postgres]"
       echo "  --max-concurrent-requests NUM  Maximum number of concurrent requests [default: 10]"
       echo "  --llm-provider-url URL    URL for the LLM provider [default: http://asus-tus:1234/v1/chat/completions]"
-      echo "  --llm-model MODEL         LLM model name [default: qwen3-4b]"
+      echo "  --llm-model MODEL         LLM model name [default: qwen3.5-35b-a3b@q5_k_xl]"
       echo "  --prompts-dir DIR         Directory to keep prompts [default: current directory]"
       echo "  -h, --help               Show this help message"
       exit 0
@@ -169,25 +169,15 @@ fi
 
 echo "Configured to use PostgreSQL for task storage"
 
-# Add postgres-specific args only when using postgres
-if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_HOST" != "127.0.0.1" ]; then
+# Add postgres-specific args when using postgres (always pass them, even if default)
+if [ "$USE_POSTGRES" = true ]; then
   CMD_ARGS="$CMD_ARGS --postgres-host $POSTGRES_HOST"
-fi
-
-if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_PORT" != "5432" ]; then
   CMD_ARGS="$CMD_ARGS --postgres-port $POSTGRES_PORT"
-fi
-
-if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_DB" != "mcp_registry" ]; then
   CMD_ARGS="$CMD_ARGS --postgres-db $POSTGRES_DB"
-fi
-
-if [ "$USE_POSTGRES" = true ] && [ "$POSTGRES_USER" != "postgres" ]; then
   CMD_ARGS="$CMD_ARGS --postgres-user $POSTGRES_USER"
-fi
-
-if [ "$USE_POSTGRES" = true ] && [ -n "$POSTGRES_PASSWORD" ]; then
-  CMD_ARGS="$CMD_ARGS --postgres-password $POSTGRES_PASSWORD"
+  if [ -n "$POSTGRES_PASSWORD" ]; then
+    CMD_ARGS="$CMD_ARGS --postgres-password $POSTGRES_PASSWORD"
+  fi
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
@@ -198,7 +188,7 @@ if [ "$LLM_PROVIDER_URL" != "http://asus-tus:1234/v1/chat/completions" ]; then
   CMD_ARGS="$CMD_ARGS --llm-provider-url $LLM_PROVIDER_URL"
 fi
 
-if [ "$LLM_MODEL" != "qwen3-4b" ]; then
+if [ "$LLM_MODEL" != "qwen3.5-35b-a3b@q5_k_xl" ]; then
   CMD_ARGS="$CMD_ARGS --llm-model $LLM_MODEL"
 fi
 

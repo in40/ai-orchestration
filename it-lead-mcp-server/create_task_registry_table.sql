@@ -61,3 +61,45 @@ CREATE INDEX IF NOT EXISTS idx_task_registry_created_at ON task_registry(created
 
 -- Add comment
 COMMENT ON TABLE task_registry IS 'Task registry with full lifecycle tracking including submitter, transport channel, assignment, and status history';
+
+-- ============================================
+-- Task Results Table (New Storage System)
+-- Stores references to agent results in Git/S3
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS task_results (
+    id SERIAL PRIMARY KEY,
+    task_id VARCHAR(255) UNIQUE NOT NULL,
+    
+    -- Result type classification
+    result_type VARCHAR(50) NOT NULL CHECK (result_type IN (
+        'code', 'document', 'report', 'config', 'binary', 'mixed'
+    )),
+    
+    -- Storage location reference
+    storage_type VARCHAR(50) NOT NULL CHECK (storage_type IN (
+        'git', 's3', 'local', 'database'
+    )),
+    
+    -- Storage paths/identifiers
+    storage_path TEXT NOT NULL,  -- Git commit SHA, S3 key, local path, or 'inline'
+    file_name TEXT,              -- Original filename
+    file_size BIGINT,            -- File size in bytes
+    checksum VARCHAR(64),        -- SHA256 checksum for integrity
+    
+    -- Metadata
+    metadata JSONB DEFAULT '{}',
+    
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for efficient queries
+CREATE INDEX IF NOT EXISTS idx_task_results_task_id ON task_results(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_results_storage_type ON task_results(storage_type);
+CREATE INDEX IF NOT EXISTS idx_task_results_result_type ON task_results(result_type);
+CREATE INDEX IF NOT EXISTS idx_task_results_created_at ON task_results(created_at);
+
+-- Add comment
+COMMENT ON TABLE task_results IS 'References to agent results stored in Git/S3, with metadata for lookup and integrity';

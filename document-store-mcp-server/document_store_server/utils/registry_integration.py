@@ -1,6 +1,7 @@
 """
 Document Store Registry Integration
 Integrates Document Store MCP Server with base project service registry (port 3031)
+PostgreSQL is required for all operations.
 """
 import sys
 import os
@@ -16,8 +17,16 @@ try:
     from mcp_std_server.utils.service_registry_db import ServiceRegistryDB
     REGISTRY_AVAILABLE = True
 except ImportError as e:
-    print(f"⚠️  Warning: Could not import service registry DB: {e}")
-    REGISTRY_AVAILABLE = False
+    print(f"❌ Failed to import service registry DB (PostgreSQL required): {e}")
+    raise
+
+# Always try to connect to PostgreSQL
+try:
+    from mcp_std_server.utils.postgres_registry_db import PostgresServiceRegistry
+    REGISTRY_USE_POSTGRES = True
+except ImportError as e:
+    print(f"❌ Failed to import PostgresServiceRegistry (PostgreSQL required): {e}")
+    raise
 
 
 class DocumentStoreRegistryIntegration:
@@ -32,8 +41,24 @@ class DocumentStoreRegistryIntegration:
         self.heartbeat_thread = None
         self.running = False
 
-        if REGISTRY_AVAILABLE:
+        if REGISTRY_USE_POSTGRES:
+            # Try PostgreSQL first
+            try:
+                self.registry_db = PostgresServiceRegistry(
+                    host="localhost",
+                    port=5432,
+                    database="mcp_registry",
+                    user="postgres",
+                    password="postgres"
+                )
+            except Exception as e:
+                print(f"❌ Failed to initialize PostgreSQL registry: {e}")
+                raise
+        elif REGISTRY_AVAILABLE:
+            # Fallback to SQLite only if PostgreSQL fails - this should not happen
             self.registry_db = ServiceRegistryDB(self.db_path)
+        else:
+            raise RuntimeError("PostgreSQL is required but not available")
     
     def register(
         self,

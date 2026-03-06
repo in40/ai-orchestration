@@ -23,16 +23,20 @@ const Dashboard = () => {
   const { sendMessage, lastMessage } = useWebSocket('ws://localhost:8000/ws');
 
   useEffect(() => {
-    // Load initial data
+    // Load initial data - use dynamic planner endpoint for all agents from registry
     const loadData = async () => {
       try {
         setLoading(true);
         const [agentsResponse, tasksResponse] = await Promise.all([
-          axios.get('/api/agents'),
+          axios.get('/api/planner/agents'),
           axios.get('/api/tasks')
         ]);
-        
-        setAgents(agentsResponse.data);
+
+        // Extract agents from the response (handles both formats)
+        const agentsData = agentsResponse.data.success 
+          ? agentsResponse.data.agents || []
+          : agentsResponse.data;
+        setAgents(agentsData);
         setTasks(tasksResponse.data);
         setError(null);
       } catch (err) {
@@ -124,13 +128,13 @@ const Dashboard = () => {
                 <Box sx={{ display: 'flex', alignItems: 'center', mt: 1 }}>
                   <Box sx={{ width: '100%', mr: 1 }}>
                     <div style={{ height: 8, backgroundColor: '#e0e0e0', borderRadius: 4 }}>
-                      <div 
-                        style={{ 
-                          height: '100%', 
-                          width: `${task.progress}%`, 
+                      <div
+                        style={{
+                          height: '100%',
+                          width: `${task.progress}%`,
                           backgroundColor: task.priority === 'high' ? '#f44336' : task.priority === 'medium' ? '#ff9800' : '#4caf50',
                           borderRadius: 4
-                        }} 
+                        }}
                       />
                     </div>
                   </Box>
@@ -149,11 +153,11 @@ const Dashboard = () => {
             <Typography variant="h5" gutterBottom>Team Members</Typography>
             {agents.map((agent, index) => (
               <Box key={index} sx={{ display: 'flex', alignItems: 'center', mb: 2, p: 1 }}>
-                <Avatar sx={{ 
-                  bgcolor: agent.status === 'online' ? 'success.main' : 'grey.500', 
-                  width: 32, 
+                <Avatar sx={{
+                  bgcolor: agent.status === 'online' ? 'success.main' : 'grey.500',
+                  width: 32,
                   height: 32,
-                  mr: 2 
+                  mr: 2
                 }}>
                   {agent.name.charAt(0)}
                 </Avatar>
@@ -163,10 +167,10 @@ const Dashboard = () => {
                     Status: {agent.status} | Last seen: {new Date(agent.last_seen).toLocaleTimeString()}
                   </Typography>
                 </Box>
-                <Chip 
-                  label={agent.status} 
-                  size="small" 
-                  color={agent.status === 'online' ? 'success' : 'default'} 
+                <Chip
+                  label={agent.status}
+                  size="small"
+                  color={agent.status === 'online' ? 'success' : 'default'}
                 />
               </Box>
             ))}

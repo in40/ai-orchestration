@@ -25,7 +25,7 @@ def test_enhanced_capabilities():
         enable_registry=False,  # Disable registry for this test
         use_postgres=False,  # Use SQLite for this test
         llm_provider_url="http://asus-tus:1234/v1/chat/completions",  # This should be replaced with a real LLM endpoint
-        llm_model="qwen3-4b"
+        llm_model="qwen3.5-35b-a3b@q5_k_xl"
     )
     
     print("✅ Initialized Extended IT Lead Server Handlers")
@@ -142,7 +142,7 @@ def test_specific_enhanced_features():
         enable_registry=False,
         use_postgres=False,
         llm_provider_url="http://asus-tus:1234/v1/chat/completions",
-        llm_model="qwen3-4b"
+        llm_model="qwen3.5-35b-a3b@q5_k_xl"
     )
     
     # Test 1: Requirements decomposition (would normally call LLM)

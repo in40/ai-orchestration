@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Card,
   CardContent,
@@ -26,9 +28,11 @@ import {
   InputLabel,
   Select,
   MenuItem,
-  IconButton
+  IconButton,
+  Drawer,
+  Link
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 // Import enhanced AddTaskForm component
@@ -42,11 +46,15 @@ const TaskManagement = () => {
   const [openTaskDialog, setOpenTaskDialog] = useState(false);
   const [openHistoryDialog, setOpenHistoryDialog] = useState(false);
   const [selectedTaskHistory, setSelectedTaskHistory] = useState(null);
+  const [openFilePreview, setOpenFilePreview] = useState(false);
+  const [previewFileContent, setPreviewFileContent] = useState('');
+  const [previewFileName, setPreviewFileName] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
   // Enhanced task form state with all required fields for MCP integration
   const [enhancedTaskData, setEnhancedTaskData] = useState({
     title: '',
     description: '',
-    assignee: 'it-lead',  // Default to IT Lead for intelligent routing
+    assignee: 'IT Lead',  // Default to IT Lead for intelligent routing
     priority: 'medium',
     dueDate: '',
     tags: [],
@@ -82,7 +90,7 @@ const TaskManagement = () => {
     setEnhancedTaskData({
       title: '',
       description: '',
-      assignee: 'it-lead',
+      assignee: 'IT Lead',
       priority: 'medium',
       dueDate: '',
       tags: [],
@@ -140,6 +148,30 @@ const TaskManagement = () => {
   const handleCloseHistoryDialog = () => {
     setOpenHistoryDialog(false);
     setSelectedTaskHistory(null);
+  };
+
+  const handleOpenFilePreview = async (task) => {
+    try {
+      setPreviewLoading(true);
+      const taskId = task.task_id || task.id;
+      const filename = 'result.md'; // Default to result.md for Markdown files
+      
+      const response = await axios.get(`/api/tasks/${taskId}/files/${filename}`);
+      setPreviewFileContent(response.data.content);
+      setPreviewFileName(response.data.filename || filename);
+      setOpenFilePreview(true);
+    } catch (err) {
+      console.error('Error loading file preview:', err);
+      alert('Failed to load file preview');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleCloseFilePreview = () => {
+    setOpenFilePreview(false);
+    setPreviewFileContent('');
+    setPreviewFileName('');
   };
 
   const handleDelete = async (taskId) => {
@@ -249,15 +281,47 @@ const TaskManagement = () => {
                         </Box>
                       </TableCell>
                       <TableCell align="right">
-                      <IconButton 
-                        color="primary" 
+                      {/* View Result Button - shows for completed tasks with git_url */}
+                      {task.git_url && (task.status === 'done' || task.status === 'completed') && (
+                        <IconButton
+                          color="success"
+                          aria-label="view result"
+                          onClick={() => {
+                            const taskId = task.id;
+                            // Try to determine file extension from git_url or default to .py
+                            let ext = '.py';
+                            if (task.git_url.includes('.html')) ext = '.html';
+                            else if (task.git_url.includes('.md')) ext = '.md';
+                            else if (task.git_url.includes('.js')) ext = '.js';
+                            
+                            // Extract task UUID from git_url
+                            const uuidMatch = task.git_url.match(/results\/([a-f0-9-]+)\//);
+                            const taskUuid = uuidMatch ? uuidMatch[1] : taskId;
+                            
+                            // Option 1: Direct Git server link (if Git server has HTTP access)
+                            // const gitServerUrl = `http://192.168.51.187/results/${taskUuid}/result${ext}`;
+                            
+                            // Option 2: Web UI backend proxy (works if Web UI server is accessible)
+                            // Get current host (works from any computer accessing the Web UI)
+                            const currentHost = window.location.origin;
+                            const resultUrl = `${currentHost}/api/git/files/${taskUuid}/result${ext}`;
+                            
+                            window.open(resultUrl, '_blank');
+                          }}
+                          title="View Generated Code"
+                        >
+                          <DescriptionIcon />
+                        </IconButton>
+                      )}
+                      <IconButton
+                        color="primary"
                         aria-label="view history"
                         onClick={() => handleViewHistory(task.id)}
                       >
                         <HistoryIcon />
                       </IconButton>
-                      <IconButton 
-                        color="error" 
+                      <IconButton
+                        color="error"
                         aria-label="delete task"
                         onClick={() => handleDelete(task.id)}
                       >
@@ -306,8 +370,8 @@ const TaskManagement = () => {
                 </Grid>
                 <Grid item xs={6}>
                   <Typography variant="subtitle2" color="textSecondary">Current Status</Typography>
-                  <Chip 
-                    label={selectedTaskHistory.current_status} 
+                  <Chip
+                    label={selectedTaskHistory.current_status}
                     size="small"
                     color={
                       selectedTaskHistory.current_status === 'completed' ? 'success' :
@@ -333,11 +397,84 @@ const TaskManagement = () => {
                 <Grid item xs={6}>
                   <Typography variant="subtitle2" color="textSecondary">Created At</Typography>
                   <Typography variant="body1">
-                    {selectedTaskHistory.created_at ? 
-                      new Date(selectedTaskHistory.created_at).toLocaleString() : 
+                    {selectedTaskHistory.created_at ?
+                      new Date(selectedTaskHistory.created_at).toLocaleString() :
                       'N/A'}
                   </Typography>
                 </Grid>
+                {selectedTaskHistory.storage_type && (
+                  <Grid item xs={6}>
+                    <Typography variant="subtitle2" color="textSecondary">Storage Type</Typography>
+                    <Chip
+                      label={selectedTaskHistory.storage_type}
+                      size="small"
+                      color={selectedTaskHistory.storage_type === 'git' ? 'success' : 'default'}
+                    />
+                  </Grid>
+                )}
+                {selectedTaskHistory.git_url && (
+                  <Grid item xs={12}>
+                    <Typography variant="subtitle2" color="textSecondary">Result Location</Typography>
+                    
+                    {/* Direct Git Server Link (if Git server has HTTP interface) */}
+                    <Box sx={{ mt: 1, p: 1, bgcolor: 'primary.light', borderRadius: 1 }}>
+                      <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 0.5 }}>
+                        Git Server (SSH):
+                      </Typography>
+                      <Typography variant="body2" sx={{ wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                        {selectedTaskHistory.git_url}
+                      </Typography>
+                    </Box>
+                    
+                    {/* Web UI HTTP Access */}
+                    <Box sx={{ mt: 1, p: 1, bgcolor: 'success.light', borderRadius: 1 }}>
+                      <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 0.5 }}>
+                        HTTP Access (via Web UI):
+                      </Typography>
+                      <Link
+                        href={`${window.location.origin}/api/git/files/${selectedTaskHistory.task_id}/result.py`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        sx={{ wordBreak: 'break-all', display: 'block', mb: 1 }}
+                      >
+                        {window.location.origin}/api/git/files/{selectedTaskHistory.task_id}/result.py
+                      </Link>
+                      <Button
+                        variant="contained"
+                        size="small"
+                        startIcon={<OpenInNewIcon />}
+                        href={`${window.location.origin}/api/git/files/${selectedTaskHistory.task_id}/result.py`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Open in New Tab
+                      </Button>
+                    </Box>
+                    
+                    {/* Action Buttons */}
+                    <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<DescriptionIcon />}
+                        onClick={() => handleOpenFilePreview(selectedTaskHistory)}
+                      >
+                        Preview
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<OpenInNewIcon />}
+                        href={selectedTaskHistory.git_url.replace('ssh://', 'http://').replace(/:\d+/, '')}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        disabled={!selectedTaskHistory.git_url.includes('192.168.51')}
+                      >
+                        Git Server Web
+                      </Button>
+                    </Box>
+                  </Grid>
+                )}
               </Grid>
 
               <Typography variant="subtitle1" gutterBottom sx={{ mt: 2 }}>
@@ -393,6 +530,91 @@ const TaskManagement = () => {
           <Button onClick={handleCloseHistoryDialog}>Close</Button>
         </DialogActions>
       </Dialog>
+
+      {/* File Preview Drawer */}
+      <Drawer
+        anchor="right"
+        open={openFilePreview}
+        onClose={handleCloseFilePreview}
+        PaperProps={{
+          sx: { width: '60%', maxWidth: '800px' }
+        }}
+      >
+        <Box sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: 1, borderColor: 'divider' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <DescriptionIcon color="primary" />
+            <Typography variant="h6">{previewFileName}</Typography>
+          </Box>
+          <IconButton onClick={handleCloseFilePreview} size="small">
+            <CloseIcon />
+          </IconButton>
+        </Box>
+
+        <Box sx={{ p: 3, overflow: 'auto', height: 'calc(100% - 70px)' }}>
+          {previewLoading ? (
+            <Box display="flex" justifyContent="center" alignItems="center" height="200px">
+              <CircularProgress />
+            </Box>
+          ) : previewFileContent ? (
+            <Box
+              sx={{
+                '& h1': { fontSize: '2em', fontWeight: 600, mt: 3, mb: 2 },
+                '& h2': { fontSize: '1.5em', fontWeight: 600, mt: 2.5, mb: 1.5 },
+                '& h3': { fontSize: '1.25em', fontWeight: 600, mt: 2, mb: 1 },
+                '& p': { mb: 1.5, lineHeight: 1.7 },
+                '& code': {
+                  backgroundColor: '#f5f5f5',
+                  padding: '2px 6px',
+                  borderRadius: '3px',
+                  fontFamily: 'monospace',
+                  fontSize: '0.9em'
+                },
+                '& pre': {
+                  backgroundColor: '#f6f8fa',
+                  padding: 2,
+                  borderRadius: 1,
+                  overflow: 'auto',
+                  '& code': {
+                    backgroundColor: 'transparent',
+                    padding: 0
+                  }
+                },
+                '& ul, & ol': { mb: 1.5, pl: 3 },
+                '& li': { mb: 0.5 },
+                '& blockquote': {
+                  borderLeft: 4,
+                  borderColor: 'divider',
+                  pl: 2,
+                  my: 2,
+                  color: 'text.secondary'
+                },
+                '& table': {
+                  borderCollapse: 'collapse',
+                  width: '100%',
+                  mb: 2,
+                  '& th, & td': {
+                    border: 1,
+                    borderColor: 'divider',
+                    p: 1,
+                    textAlign: 'left'
+                  },
+                  '& th': { backgroundColor: 'action.hover' }
+                },
+                '& hr': { my: 3 },
+                '& a': { color: 'primary.main', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }
+              }}
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {previewFileContent}
+              </ReactMarkdown>
+            </Box>
+          ) : (
+            <Typography variant="body2" color="textSecondary">
+              No content available
+            </Typography>
+          )}
+        </Box>
+      </Drawer>
     </Grid>
   );
 };

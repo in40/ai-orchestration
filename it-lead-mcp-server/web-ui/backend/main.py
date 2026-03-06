@@ -1,6 +1,11 @@
 """
 Backend API service for MCP Agent Web UI
 This service acts as a simple proxy to the IT Lead MCP server
+
+Dynamic Planning Architecture:
+- Fetches all agents from MCP registry
+- Uses LLM to generate task execution plans
+- Routes tasks based on agent capabilities
 """
 
 import asyncio
@@ -15,12 +20,36 @@ from pydantic import BaseModel
 import httpx
 from datetime import datetime
 
+# Import dynamic planner
+try:
+    from .dynamic_planner import DynamicPlanner
+except ImportError:
+    from dynamic_planner import DynamicPlanner
+
+# Import result storage modules - try relative first, then absolute
+try:
+    from .git_result_storage import get_git_storage
+    from .file_result_storage import get_file_storage
+    from .result_router import get_result_router
+except ImportError:
+    try:
+        from git_result_storage import get_git_storage
+        from file_result_storage import get_file_storage
+        from result_router import get_result_router
+    except ImportError:
+        # If modules are in different location, add to path
+        import sys
+        sys.path.insert(0, '/root/qwen/base/it-lead-mcp-server/it_lead_mcp_server/utils')
+        from git_result_storage import get_git_storage
+        from file_result_storage import get_file_storage
+        from result_router import get_result_router
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global variable to hold agent status - now fetched from IT Lead server
-agent_status: Dict[str, Dict] = {}
+# Global planner instance
+_planner: Optional[DynamicPlanner] = None
 
 # IT Lead server configuration
 IT_LEAD_HOST = "localhost"
@@ -29,12 +58,26 @@ IT_LEAD_PORT = 3061
 # Store active WebSocket connections for real-time updates
 active_connections: List[WebSocket] = []
 
+def get_planner() -> DynamicPlanner:
+    """Get or create global planner instance"""
+    global _planner
+    
+    if _planner is None:
+        _planner = DynamicPlanner(
+            registry_host="127.0.0.1",
+            registry_port=3031,
+            llm_provider_url="http://192.168.51.237:1234/v1/chat/completions",
+            llm_model="qwen3-coder-next@q5_k_xl"
+        )
+    
+    return _planner
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize by fetching agent status from IT Lead server"""
-    global agent_status
-    await refresh_agent_status_from_it_lead()
-    logger.info(f"Initialized with {len(agent_status)} agents from IT Lead server")
+    """Initialize the planner on startup"""
+    global _planner
+    # Planner is lazily initialized on first use
+    logger.info("Dynamic Planning System initialized on first use")
     yield
     # Cleanup on shutdown
 
@@ -633,10 +676,21 @@ async def assign_task_endpoint(task: TaskAssignment):
     """Endpoint to assign a task via IT Lead server"""
     logger.info(f"Task assigned via IT Lead: {task.title} to {task.assignee}")
     
-    # Validate that the assignee is a known agent role
+    # Validate that the assignee is a known agent role (case-insensitive for IT Lead)
     await refresh_agent_status_from_it_lead()
-    if task.assignee not in agent_status:
+    
+    # Normalize assignee for comparison (IT Lead variations)
+    normalized_assignee = task.assignee.lower()
+    valid_assignees = {k.lower(): k for k in agent_status.keys()}
+    
+    if normalized_assignee not in valid_assignees:
         raise HTTPException(status_code=400, detail=f"Unknown agent: {task.assignee}")
+    
+    # Use canonical name for agent_status lookup
+    canonical_assignee = valid_assignees[normalized_assignee]
+    if task.assignee != canonical_assignee:
+        logger.info(f"Normalized assignee '{task.assignee}' to '{canonical_assignee}'")
+        task.assignee = canonical_assignee
     
     # Simulate task assignment
     task_dict = task.dict()
@@ -784,13 +838,16 @@ async def fetch_tasks_from_it_lead():
                     formatted_tasks = []
                     if "tasks" in tasks_result:
                         for task in tasks_result["tasks"]:
+                            metadata = task.get("metadata", {})
                             formatted_tasks.append({
                                 "id": task.get("task_id", "unknown"),
                                 "title": task.get("title", f"Task: {task.get('task_id', 'unknown')}"),
                                 "assignee": task.get("assigned_to", "Unknown"),
                                 "status": task.get("status", "pending"),
                                 "priority": task.get("priority", "medium"),
-                                "progress": task.get("progress_percentage", 0)
+                                "progress": task.get("progress_percentage", 0),
+                                "git_url": metadata.get("git_url"),
+                                "storage_type": metadata.get("storage_type")
                             })
                     return formatted_tasks
                 else:
@@ -1156,7 +1213,7 @@ async def get_all_tasks_with_progress():
 async def get_dashboard_data(request: ProjectDashboardRequest):
     """Get project dashboard data - for now, return a simple response"""
     logger.info(f"Getting dashboard data for view: {request.dashboard_view}")
-    
+
     # In a real implementation, this would call the IT Lead server
     # For now, return mock data
     return {
@@ -1172,6 +1229,312 @@ async def get_dashboard_data(request: ProjectDashboardRequest):
             "overall_progress": 68
         }
     }
+
+
+# ============================================================================
+# Dynamic Planning System Endpoints
+# ============================================================================
+
+@app.get("/api/planner/agents")
+async def get_all_agents_from_registry():
+    """
+    Get all available agents from MCP registry using dynamic discovery
+    
+    This endpoint fetches agents directly from the registry without
+    any hardcoded mappings, providing a complete view of all available agents.
+    """
+    try:
+        planner = get_planner()
+        agents = await planner.get_available_agents()
+        
+        logger.info(f"Discovered {len(agents)} agents from registry")
+        return {
+            "success": True,
+            "agents": agents,
+            "count": len(agents)
+        }
+    except Exception as e:
+        logger.error(f"Error fetching agents from registry: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch agents: {str(e)}")
+
+
+class TaskRoutingRequest(BaseModel):
+    """Request for task routing"""
+    task_id: str
+    title: str
+    description: str
+    context: Optional[dict] = None
+
+
+class TaskRoutingResponse(BaseModel):
+    """Response for task routing"""
+    success: bool
+    task_id: str
+    plan: Dict[str, Any]
+    agents: List[Dict[str, Any]]
+    routing_confidence: float
+    complexity: str
+
+
+@app.post("/api/planner/route", response_model=TaskRoutingResponse)
+async def route_task_dynamic(request: TaskRoutingRequest):
+    """
+    Route a task using dynamic planning with LLM
+    
+    This endpoint uses the dynamic planning system to:
+    1. Fetch all available agents from MCP registry
+    2. Get comprehensive capabilities for each agent
+    3. Use LLM to generate an execution plan
+    4. Select optimal agent(s) for task execution
+    
+    Returns the routing decision with explanation.
+    """
+    try:
+        planner = get_planner()
+        
+        task = {
+            "id": request.task_id,
+            "title": request.title,
+            "description": request.description,
+            "context": request.context or {}
+        }
+        
+        routing_decision = await planner.route_task(task)
+        
+        if not routing_decision.get("success"):
+            return TaskRoutingResponse(
+                success=False,
+                task_id=request.task_id,
+                plan={},
+                agents=[],
+                routing_confidence=0.0,
+                complexity="unknown"
+            )
+        
+        plan = routing_decision.get("plan", {})
+        
+        return TaskRoutingResponse(
+            success=True,
+            task_id=request.task_id,
+            plan=plan,
+            agents=routing_decision.get("agents", []),
+            routing_confidence=plan.get("confidence", 0.0),
+            complexity=plan.get("complexity", "unknown")
+        )
+    except Exception as e:
+        logger.error(f"Error routing task: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to route task: {str(e)}")
+
+
+class DynamicPlanPreviewRequest(BaseModel):
+    """Request for dynamic plan preview"""
+    task_id: str
+    title: str
+    description: str
+    context: Optional[dict] = None
+
+
+@app.post("/api/planner/preview")
+async def preview_dynamic_plan(request: DynamicPlanPreviewRequest):
+    """
+    Preview the dynamic planning process without executing the task
+    
+    This endpoint shows what the dynamic planner would do:
+    - Which agents would be selected
+    - What the execution plan would look like
+    - Why these agents were chosen
+    
+    Useful for understanding and debugging the routing decision.
+    """
+    try:
+        planner = get_planner()
+        
+        task = {
+            "id": request.task_id,
+            "title": request.title,
+            "description": request.description,
+            "context": request.context or {}
+        }
+        
+        # Get available agents
+        agents = await planner.get_available_agents()
+        
+        # Get plan preview (without executing the task)
+        plan = await planner.plan_generator.generate_task_plan(task, agents)
+        
+        return {
+            "success": True,
+            "task_id": request.task_id,
+            "plan": plan,
+            "agents": agents,
+            "preview": True
+        }
+    except Exception as e:
+        logger.error(f"Error previewing dynamic plan: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to preview plan: {str(e)}")
+
+
+@app.get("/api/planner/agents/{agent_name}")
+async def get_agent_detail_dynamic(agent_name: str):
+    """
+    Get detailed information about a specific agent from registry
+    
+    This endpoint fetches the full agent information from the registry,
+    including all capabilities, tools, resources, and prompts.
+    """
+    try:
+        planner = get_planner()
+        agents = await planner.get_available_agents()
+        
+        # Find the requested agent
+        agent = next((a for a in agents if a["name"] == agent_name), None)
+        
+        if agent is None:
+            raise HTTPException(status_code=404, detail=f"Agent not found: {agent_name}")
+        
+        return agent
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching agent detail: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch agent: {str(e)}")
+
+
+@app.get("/api/results/list")
+async def list_results(
+    task_id: Optional[str] = None,
+    agent: Optional[str] = None,
+    limit: int = 100
+):
+    """List stored results with optional filtering"""
+    try:
+        router = get_result_router()
+        results = router.list_results(task_id=task_id, agent=agent)
+        
+        # Limit results
+        return {"results": results[:limit]}
+    except Exception as e:
+        logger.error(f"Error listing results: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to list results: {str(e)}")
+
+
+@app.get("/api/results/get")
+async def get_result(task_id: str, result_type: str = "code"):
+    """Get a specific stored result"""
+    try:
+        router = get_result_router()
+        content = router.get_result(task_id, result_type)
+        
+        if content is None:
+            raise HTTPException(status_code=404, detail=f"Result not found: {task_id}")
+        
+        return {"task_id": task_id, "result": content, "type": result_type}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting result: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to get result: {str(e)}")
+
+
+@app.get("/api/results/git/history")
+async def get_git_history(task_id: str):
+    """Get Git history for a task result"""
+    try:
+        storage = get_git_storage()
+        repo = storage._get_git_repo()
+        
+        if not repo:
+            raise HTTPException(status_code=404, detail="Git repository not available")
+        
+        from git import Git
+        git = Git(storage.repo_path)
+        
+        # Get log for task directory
+        log = git.log("--oneline", f"results/{task_id}/")
+        
+        return {
+            "task_id": task_id,
+            "history": [
+                {"sha": line.split()[0], "message": " ".join(line.split()[1:])}
+                for line in log.strip().split("\n") if line
+            ]
+        }
+    except ImportError:
+        raise HTTPException(status_code=500, detail="GitPython not installed. Install with: pip install GitPython")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting git history: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to get git history: {str(e)}")
+
+
+
+
+# ============================================================================
+# HTTP Git File Access Endpoints  
+# ============================================================================
+
+@app.get("/api/git/files/{task_id:path}")
+async def get_git_file(task_id: str):
+    """Serve files from Git repository via HTTP"""
+    logger.info(f"Serving Git file: {task_id}")
+    try:
+        parts = task_id.split("/", 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail="Invalid path. Use: {task_uuid}/{filename}")
+        task_uuid, filename = parts
+        file_path = f"/tmp/mcp-vibe-coding-git/repo/results/{task_uuid}/{filename}"
+        import os
+        if not os.path.exists(file_path):
+            file_path = f"/root/qwen/base/mcp-results/results/{task_uuid}/{filename}"
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="File not found")
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        ext = '.' + filename.split('.')[-1] if '.' in filename else ''
+        ct = {'.md':'text/markdown','.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.yaml':'text/yaml','.yml':'text/yaml','.py':'text/x-python','.txt':'text/plain'}.get(ext, 'application/octet-stream')
+        from fastapi.responses import Response
+        return Response(content=content, media_type=ct, headers={"Content-Disposition": f"inline; filename={filename}"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving Git file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/git/browse/{task_id}")
+async def browse_git_directory(task_id: str):
+    """Browse task directory"""
+    logger.info(f"Browsing Git directory: {task_id}")
+    try:
+        import os
+        dir_path = f"/tmp/mcp-vibe-coding-git/repo/results/{task_id}"
+        if not os.path.exists(dir_path):
+            dir_path = f"/root/qwen/base/mcp-results/results/{task_id}"
+            if not os.path.exists(dir_path):
+                raise HTTPException(status_code=404, detail="Task not found")
+        files = []
+        for item in os.listdir(dir_path):
+            item_path = os.path.join(dir_path, item)
+            files.append({"name": item, "type": "dir" if os.path.isdir(item_path) else "file", "size": os.path.getsize(item_path) if os.path.isfile(item_path) else 0, "url": f"/api/git/files/{task_id}/{item}"})
+        return {"task_id": task_id, "files": files}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error browsing directory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

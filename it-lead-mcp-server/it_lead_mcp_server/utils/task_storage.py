@@ -257,6 +257,7 @@ class TaskStorage:
                 ))
             else:
                 # For PostgreSQL, use ON CONFLICT
+                # First check if this status already exists in history to avoid duplicates
                 cursor.execute("""
                     INSERT INTO task_registry
                     (task_id, title, description, submitter, submitter_type, transport_channel,
@@ -279,11 +280,19 @@ class TaskStorage:
                         target_server = EXCLUDED.target_server,
                         updated_at = CURRENT_TIMESTAMP,
                         metadata = EXCLUDED.metadata,
-                        status_history = task_registry.status_history || EXCLUDED.status_history
+                        status_history = CASE 
+                            WHEN EXISTS (
+                                SELECT 1 FROM jsonb_array_elements(task_registry.status_history) AS elem 
+                                WHERE elem->>'status' = %s
+                            ) 
+                            THEN task_registry.status_history 
+                            ELSE COALESCE(task_registry.status_history, '[]'::jsonb) || EXCLUDED.status_history 
+                        END
                 """, (
                     task_id, title, description, submitter, submitter_type, transport_channel,
                     assigned_to, status, status_reason, priority, deadline, source_server, target_server,
-                    json.dumps(metadata) if metadata else '{}', json.dumps([status_history_entry])
+                    json.dumps(metadata) if metadata else '{}', json.dumps([status_history_entry]),
+                    status  # Additional parameter for the EXISTS check
                 ))
 
             self.connection.commit()
@@ -676,8 +685,138 @@ class TaskStorage:
             self.connection.rollback()
             return False
 
+    def update_task_with_git_url(self, task_id: str, git_url: str) -> bool:
+        """
+        Update task with Git URL result (for background thread updates).
+        
+        This method is called by background threads to update task status
+        when async processing completes.
+        
+        Args:
+            task_id: Task identifier
+            git_url: Git URL from the agent
+            
+        Returns:
+            True if update succeeded
+        """
+        try:
+            cursor = self.connection.cursor()
+            
+            # Update status to done and add Git URL to metadata
+            cursor.execute("""
+                UPDATE task_registry
+                SET status = %s,
+                    status_reason = %s,
+                    metadata = metadata || %s::jsonb,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = %s
+            """, (
+                "done",
+                "Task completed successfully. Result stored at: " + git_url,
+                '{"storage_type": "git", "git_url": "' + git_url + '", "path": "' + git_url + '"}',
+                task_id
+            ))
+            
+            affected_rows = cursor.rowcount
+            self.connection.commit()
+            cursor.close()
+            
+            if affected_rows > 0:
+                print(f"✅ Task {task_id} updated with Git URL in background thread")
+                return True
+            else:
+                print(f"⚠️ Task {task_id} not found for Git URL update")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error updating task with Git URL: {e}")
+            import traceback
+            traceback.print_exc()
+            self.connection.rollback()
+            return False
+
     def close(self):
         """Close the database connection"""
         if self.connection:
             self.connection.close()
             print("🔒 Task storage database connection closed")
+    def update_task_status_only(self, task_id: str, status: str, status_reason: str,
+                               metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Update task status without adding duplicate history entries.
+        
+        This method is used by _update_task_status to update status
+        without duplicating entries in the status history.
+        
+        Args:
+            task_id: Task identifier
+            status: New status
+            status_reason: Reason for status change
+            metadata: Optional metadata to update
+            
+        Returns:
+            True if update succeeded
+        """
+        try:
+            cursor = self.connection.cursor()
+            
+            # Prepare metadata update
+            if metadata:
+                if self.use_sqlite:
+                    import json as json_module
+                    current_metadata = self._get_task_metadata(task_id)
+                    if current_metadata:
+                        merged_metadata = json_module.loads(current_metadata)
+                        merged_metadata.update(metadata)
+                        metadata_json = json_module.dumps(merged_metadata)
+                    else:
+                        metadata_json = json.dumps(metadata)
+                else:
+                    # For PostgreSQL, use || operator to merge JSONB
+                    metadata_json = None  # Will be handled in SQL
+            else:
+                metadata_json = None
+            
+            if self.use_sqlite:
+                cursor.execute("""
+                    UPDATE task_registry
+                    SET status = ?,
+                        status_reason = ?,
+                        metadata = COALESCE(metadata, '{}') || ?
+                    WHERE task_id = ?
+                """, (status, status_reason, json.dumps(metadata) if metadata else '{}', task_id))
+            else:
+                # PostgreSQL: merge metadata properly
+                if metadata:
+                    cursor.execute("""
+                        UPDATE task_registry
+                        SET status = %s,
+                            status_reason = %s,
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                        WHERE task_id = %s
+                    """, (status, status_reason, json.dumps(metadata), task_id))
+                else:
+                    cursor.execute("""
+                        UPDATE task_registry
+                        SET status = %s,
+                            status_reason = %s
+                        WHERE task_id = %s
+                    """, (status, status_reason, task_id))
+            
+            affected_rows = cursor.rowcount
+            self.connection.commit()
+            cursor.close()
+            
+            if affected_rows > 0:
+                print(f"✅ Task {task_id} status updated to {status}")
+                return True
+            else:
+                print(f"⚠️ Task {task_id} not found for status update")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error updating task status: {e}")
+            import traceback
+            traceback.print_exc()
+            self.connection.rollback()
+            return False

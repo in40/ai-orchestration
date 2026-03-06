@@ -43,7 +43,43 @@ TASK_ROUTING_RULES = [
             "priority": "medium",
             "metadata": {"task_type": "web_page_implementation"}
         },
+        "confidence_threshold": 0.5
+    },
+
+    {
+        "id": "rule-1.0c",
+        "name": "Frontend Implementation Request",
+        "category": "keyword",
+        "conditions": {
+            "keywords_any": ["react app", "frontend app", "frontend development", "web interface", "ui component"],
+            "keywords_all": ["implement", "build", "create"],
+            "keywords_none": ["review", "test", "deploy", "security"]
+        },
+        "action": {
+            "assign_to": "implementation-engineer",
+            "tool": "vibe_code_async",
+            "priority": "medium",
+            "metadata": {"task_type": "frontend_implementation"}
+        },
         "confidence_threshold": 0.6
+    },
+
+    {
+        "id": "rule-1.0d",
+        "name": "JavaScript/Node.js Implementation",
+        "category": "keyword",
+        "conditions": {
+            "keywords_any": ["javascript", "js", "typescript", "ts", "node", "express", "vue", "angular", "react"],
+            "keywords_all": ["implement", "build", "create", "write"],
+            "keywords_none": ["review", "audit", "test", "security scan", "deploy"]
+        },
+        "action": {
+            "assign_to": "implementation-engineer",
+            "tool": "vibe_code_async",
+            "priority": "medium",
+            "metadata": {"task_type": "javascript_implementation", "language": "javascript"}
+        },
+        "confidence_threshold": 0.7
     },
 
     {
@@ -58,7 +94,7 @@ TASK_ROUTING_RULES = [
         },
         "action": {
             "assign_to": "implementation-engineer",
-            "tool": "implement_feature",
+            "tool": "vibe_code_async",
             "priority": "medium",
             "metadata": {"task_type": "code_implementation", "language": "python"}
         },
@@ -172,7 +208,7 @@ TASK_ROUTING_RULES = [
         },
         "action": {
             "assign_to": "implementation-engineer",
-            "tool": "implement_feature",
+            "tool": "vibe_code_async",
             "priority": "medium",
             "metadata": {"task_type": "feature_implementation"}
         },
@@ -191,7 +227,7 @@ TASK_ROUTING_RULES = [
         },
         "action": {
             "assign_to": "implementation-engineer",
-            "tool": "implement_feature",
+            "tool": "vibe_code_async",
             "priority": "high",
             "metadata": {"task_type": "bug_fix"}
         },
@@ -278,7 +314,7 @@ TASK_ROUTING_RULES = [
         },
         "action": {
             "assign_to": "implementation-engineer",
-            "tool": "implement_feature",
+            "tool": "vibe_code_async",
             "priority": "medium",
             "metadata": {"task_type": "explicit_assignment"}
         },
@@ -379,11 +415,7 @@ AGENT_ENDPOINTS = {
 # Agent tool mappings
 AGENT_TOOL_MAPPING = {
     "implementation-engineer": {
-        "implement_feature": "implement_feature",
-        "generate_code_from_spec": "generate_code_from_spec",
-        "apply_coding_standards": "apply_coding_standards",
-        "generate_unit_tests": "generate_unit_tests",
-        "refactor_code": "refactor_code",
+        "vibe_code_async": "vibe_code_async",
     },
     "requirements-engineer": {
         "analyze_requirements": "analyze_requirements",

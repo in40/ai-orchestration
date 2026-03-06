@@ -15,8 +15,8 @@ class ItLeadServerHandlers:
 
     def __init__(self, enable_registry: bool = True, use_postgres: bool = True,
                  postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
-                 llm_provider_url: str = "http://asus-tus:1234/v1/chat/completions",
-                 llm_model: str = "qwen3-4b",
+                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
+                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
                  prompts_dir: str = "."):
         # IT Lead specific tools for software development
         self.tools: List[Dict[str, Any]] = [
@@ -98,6 +98,17 @@ class ItLeadServerHandlers:
                         "include_details": {"type": "boolean", "default": False, "description": "Include detailed progress information"}
                     },
                     "required": ["task_ids"]
+                }
+            },
+            {
+                "name": "get_all_tasks",
+                "description": "Get all tasks from the system",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "default": 100, "description": "Maximum number of tasks to return"},
+                        "offset": {"type": "integer", "default": 0, "description": "Offset for pagination"}
+                    }
                 }
             }
         ]
@@ -189,22 +200,23 @@ class ItLeadServerHandlers:
         self.llm_model = llm_model
         self.prompts_dir = prompts_dir
 
-        # Initialize task storage
+        # Initialize task storage - PostgreSQL only, fail if unavailable
         try:
             from ..utils.task_storage import TaskStorage
-            # Determine if we should use SQLite based on whether postgres_config is empty or not
-            use_sqlite = not (use_postgres and self.postgres_config)
+            if not use_postgres or not self.postgres_config:
+                raise ValueError("PostgreSQL is required for task storage. Configure with --use-postgres and --postgres-* options")
             self.task_storage = TaskStorage(
                 host=self.postgres_config.get("host", "localhost"),
                 port=self.postgres_config.get("port", 5432),
-                database=self.postgres_config.get("database", "mcp_registry.db"),
+                database=self.postgres_config.get("database", "mcp_registry"),
                 user=self.postgres_config.get("user", "postgres"),
                 password=self.postgres_config.get("password", ""),
-                use_sqlite=use_sqlite
+                use_sqlite=False  # Always use PostgreSQL
             )
+            print("✅ Task storage initialized with PostgreSQL")
         except Exception as e:
-            print(f"❌ Failed to initialize task storage: {e}")
-            self.task_storage = None
+            print(f"❌ Failed to initialize task storage (PostgreSQL required): {e}")
+            raise
 
         if self.enable_registry:
             # Always use SQLite for service registry to share with port 3031's Registry Server
@@ -216,7 +228,7 @@ class ItLeadServerHandlers:
             self._add_registry_methods()
 
     def _initialize_registry(self, use_postgres: bool):
-        """Initialize the service registry with either SQLite or PostgreSQL"""
+        """Initialize the service registry - PostgreSQL required"""
         try:
             if use_postgres and self.postgres_config:
                 from ..utils.postgres_registry_db import PostgresServiceRegistry
@@ -229,12 +241,10 @@ class ItLeadServerHandlers:
                 )
             else:
                 from ..utils.service_registry_db import ServiceRegistryDB
-                # Use absolute path to share registry with port 3031's Registry Server
-                self.service_registry = ServiceRegistryDB(db_path="/root/qwen/base/mcp-std-skeleton/mcp_registry.db")
+                self.service_registry = ServiceRegistryDB()
         except Exception as e:
-            print(f"Failed to initialize registry: {e}")
-            print("Registry functionality will be disabled")
-            self.enable_registry = False
+            print(f"❌ Failed to initialize registry (PostgreSQL required): {e}")
+            raise
 
     def _add_registry_methods(self):
         """Add registry-specific methods to the server"""
@@ -598,6 +608,32 @@ class ItLeadServerHandlers:
             return self.handle_list_services(arguments, "temp_id_for_tool_call")
         elif tool_name == "registry/unregister":
             return self.handle_unregister_service(arguments, "temp_id_for_tool_call")
+
+        # Add implementation for get_all_tasks
+        elif tool_name == "get_all_tasks":
+            limit = arguments.get("limit", 100)
+            offset = arguments.get("offset", 0)
+            
+            # Fetch all tasks from storage (if available)
+            if self.task_storage:
+                try:
+                    tasks_data = self.task_storage.fetch_all_tasks(limit=limit, offset=offset)
+                    return {
+                        "result": {
+                            "tasks": tasks_data
+                        }
+                    }
+                except Exception as e:
+                    print(f"Error fetching tasks: {e}")
+                    return {
+                        "error": f"Failed to fetch tasks: {str(e)}"
+                    }
+            else:
+                return {
+                    "result": {
+                        "tasks": []
+                    }
+                }
 
         # For any other tools, return a generic response
         return {"result": f"Executed tool '{tool_name}' with arguments: {arguments}"}

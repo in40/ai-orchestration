@@ -7,7 +7,8 @@
 # 3. Requirements Engineer (port 3062)
 # 4. IT Lead Server (port 3061)
 # 5. Team Management Server (port 3063)
-# 6. Web UI (port 8000/5173)
+# 6. DevOps Release Engineer (port 3071)
+# 7. Web UI (port 8000/5173)
 
 set -e
 
@@ -22,6 +23,9 @@ cleanup() {
     pkill -f "mcp_std_server" 2>/dev/null || true
     pkill -f "it_lead_mcp_server" 2>/dev/null || true
     pkill -f "team_management" 2>/dev/null || true
+    pkill -f "devops_release_engineer_mcp_server" 2>/dev/null || true
+    pkill -f "requirement-engineer" 2>/dev/null || true
+    pkill -f "mcp-vibe-coding-agent" 2>/dev/null || true
     echo "MCP System has been shut down."
     exit 0
 }
@@ -101,7 +105,7 @@ for i in {1..30}; do
 done
 
 echo ""
-echo "Step 4/6: Starting Team Management Server on port 3063..."
+echo "Step 5/7: Starting Team Management Server on port 3063..."
 echo "----------------------------------------------------------"
 cd /root/qwen/base/team-management-ui/team-management-mcp-server
 if [ -f "./start_team_management_server.sh" ]; then
@@ -121,6 +125,24 @@ if [ -f "./start_team_management_server.sh" ]; then
 else
     echo "  ⚠ Team Management startup script not found, skipping..."
 fi
+
+echo ""
+echo "Step 6/7: Starting DevOps Release Engineer Server on port 3071..."
+echo "------------------------------------------------------------------"
+cd /root/qwen/base/devops-release-engineer-mcp-server
+nohup bash ./start_devops_release_engineer_server.sh > /tmp/devops_eng.log 2>&1 &
+DEVOPS_PID=$!
+echo "  PID: $DEVOPS_PID"
+
+# Wait for DevOps Release Engineer to be ready
+echo -n "  Waiting for DevOps Release Engineer Server... "
+for i in {1..30}; do
+    if curl -s http://localhost:3071/ > /dev/null 2>&1; then
+        echo "✓"
+        break
+    fi
+    sleep 1
+done
 
 echo ""
 echo "Step 7/7: Starting Web UI (IT Lead) on ports 8000/5173..."
@@ -155,18 +177,20 @@ echo "MCP System Startup Complete!"
 echo "================================================"
 echo ""
 echo "Registry Server:           http://localhost:3031/mcp"
-echo "Implementation Engineer:    http://localhost:3060/mcp  (NEW!)"
+echo "Implementation Engineer:    http://localhost:3060/mcp"
 echo "Requirements Engineer:      http://localhost:3062/mcp"
 echo "IT Lead Server:             http://localhost:3061/mcp"
 echo "Team Management:           http://localhost:3063/mcp  (if started)"
+echo "DevOps Release Engineer:    http://localhost:3071/mcp  (NEW!)"
 echo "Web UI:                    http://localhost:5173/"
 echo ""
 echo "Process IDs:"
 echo "  Registry Server:         PID $REG_PID"
-echo "  Implementation Engineer: PID $IMPL_PID (NEW!)"
+echo "  Implementation Engineer: PID $IMPL_PID"
 echo "  Requirements Engineer:   PID $REQ_ENG_PID"
 echo "  IT Lead Server:          PID $IT_LEAD_PID"
 echo "  Team Management:         PID $TMGT_PID (if started)"
+echo "  DevOps Release Engineer: PID $DEVOPS_PID (NEW!)"
 echo "  Web UI:                  PID $WEBUI_PID (if started)"
 echo ""
 

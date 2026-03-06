@@ -12,7 +12,7 @@ try:
         register_with_registry=False,  # Don't register to avoid conflicts
         use_postgres=False,  # Explicitly set to False to use SQLite
         llm_provider_url='http://asus-tus:1234/v1/chat/completions',
-        llm_model='qwen3-4b'
+        llm_model='qwen3.5-35b-a3b@q5_k_xl'
     )
     
     print(f"Server created successfully")

@@ -26,8 +26,8 @@ class ExtendedItLeadServerHandlers:
 
     def __init__(self, enable_registry: bool = True, use_postgres: bool = True,
                  postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
-                 llm_provider_url: str = "http://asus-tus:1234/v1/chat/completions",
-                 llm_model: str = "qwen3-4b",
+                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
+                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
                  prompts_dir: str = "."):
         # Initialize the original IT Lead tools for backward compatibility
         self.tools: List[Dict[str, Any]] = [
@@ -255,29 +255,23 @@ class ExtendedItLeadServerHandlers:
         self.llm_model = llm_model
         self.prompts_dir = prompts_dir
 
-        # Initialize task storage
+        # Initialize task storage - PostgreSQL only, fail if unavailable
         try:
             from ..utils.task_storage import TaskStorage
-            # Use SQLite if use_postgres is False
-            use_sqlite = not use_postgres
-            # Set the appropriate database name based on whether we're using SQLite or PostgreSQL
-            if use_sqlite:
-                default_database = "mcp_registry.db"
-            else:
-                default_database = "mcp_registry"
-
+            if not use_postgres or not self.postgres_config:
+                raise ValueError("PostgreSQL is required for task storage. Configure with --use-postgres and --postgres-* options")
             self.task_storage = TaskStorage(
                 host=self.postgres_config.get("host", "localhost"),
                 port=self.postgres_config.get("port", 5432),
-                database=self.postgres_config.get("database", default_database),
+                database=self.postgres_config.get("database", "mcp_registry"),
                 user=self.postgres_config.get("user", "postgres"),
                 password=self.postgres_config.get("password", ""),
-                use_sqlite=use_sqlite
+                use_sqlite=False  # Always use PostgreSQL
             )
-            print("✅ Task storage initialized successfully")
+            print("✅ Task storage initialized with PostgreSQL")
         except Exception as e:
-            print(f"❌ Failed to initialize task storage: {e}")
-            self.task_storage = None
+            print(f"❌ Failed to initialize task storage (PostgreSQL required): {e}")
+            raise
 
         if self.enable_registry:
             # Always use SQLite for service registry to share with port 3031's Registry Server
@@ -1076,7 +1070,7 @@ class ExtendedItLeadServerHandlers:
                     formatted_tasks = []
                     for task in tasks:
                         print(f"DEBUG: Formatting task {task.get('task_id', 'unknown')}")
-                        formatted_tasks.append({
+                        formatted_task = {
                             "task_id": task["task_id"],
                             "title": task["title"],
                             "description": task["description"],
@@ -1087,7 +1081,11 @@ class ExtendedItLeadServerHandlers:
                             "created_at": task["created_at"],
                             "updated_at": task["updated_at"],
                             "progress_percentage": self._calculate_progress_from_status(task["status"])
-                        })
+                        }
+                        # Include metadata if available (contains git_url, storage_type, etc.)
+                        if task.get("metadata"):
+                            formatted_task["metadata"] = task["metadata"]
+                        formatted_tasks.append(formatted_task)
 
                     result = {
                         "tasks": formatted_tasks,
@@ -1232,9 +1230,13 @@ class ExtendedItLeadServerHandlers:
                                    assignee: str, priority: str, deadline: str,
                                    arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute task assignment asynchronously - stores task immediately and returns 'submitted' status"""
+        print(f"⏳ _execute_assign_task_async called for task {task_id}")
+        print(f"   Task description: {task_description[:100]}...")
+        print(f"   Assignee: {assignee}")
+        
         # Store the task in the database with 'submitted' status first
         if self.task_storage:
-            print(f"DEBUG: Storing task {task_id} with 'submitted' status (async mode)")
+            print(f"💾 Storing task {task_id} with 'submitted' status (async mode)")
             try:
                 success = self.task_storage.store_received_task(
                     task_id=task_id,
@@ -1251,15 +1253,16 @@ class ExtendedItLeadServerHandlers:
                     status="submitted",
                     status_reason="Task submitted for processing, LLM planning in progress"
                 )
-                print(f"DEBUG: Task stored with 'submitted' status: {success}")
+                print(f"✅ Task stored with 'submitted' status: {success}")
             except Exception as e:
-                print(f"DEBUG: Error storing task with 'submitted' status: {e}")
+                print(f"❌ Error storing task with 'submitted' status: {e}")
                 import traceback
                 traceback.print_exc()
         else:
-            print("DEBUG: task_storage is None, cannot store task")
+            print("❌ task_storage is None, cannot store task")
 
         # Start background thread for LLM planning and forwarding
+        print(f"🚀 Starting background thread for task {task_id}")
         threading.Thread(
             target=self._background_task_processing,
             args=(task_id, task_description, assignee),
@@ -2120,6 +2123,7 @@ class ExtendedItLeadServerHandlers:
         """Calculate progress percentage based on task status"""
         status_map = {
             "completed": 100,
+            "done": 100,
             "in_progress": 50,
             "in-progress": 50,
             "assigned": 25,

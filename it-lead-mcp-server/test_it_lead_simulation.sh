@@ -11,7 +11,7 @@ echo "Starting IT Lead MCP Server Simulation Test..."
 echo "Starting IT Lead server on port 3061..."
 cd /root/qwen/base/it-lead-mcp-server
 source venv/bin/activate
-python -m it_lead_mcp_server.server --port 3061 --registry-port 3031 --register-with-registry --llm-provider-url http://asus-tus:1234/v1/chat/completions --llm-model qwen3-4b &
+python -m it_lead_mcp_server.server --port 3061 --registry-port 3031 --register-with-registry --llm-provider-url http://asus-tus:1234/v1/chat/completions --llm-model qwen3.5-35b-a3b@q5_k_xl &
 SERVER_PID=$!
 
 # Give the server time to start

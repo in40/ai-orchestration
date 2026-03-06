@@ -393,15 +393,15 @@ def create_task_manager(use_postgres=False, **postgres_config):
             "user": getattr(settings, 'postgres_user', 'postgres'),
             "password": getattr(settings, 'postgres_password', '')
         }
-        try:
-            return PostgresTaskManager(**pg_config)
-        except Exception as e:
-            print(f"⚠️  Warning: Failed to connect to PostgreSQL for task storage: {e}")
-            print("⚠️  Falling back to in-memory task storage")
-            # Use in-memory task manager as fallback
-            from .async_task_manager import task_manager
-            return task_manager
+        return PostgresTaskManager(**pg_config)
     else:
-        # Use in-memory task manager
-        from .async_task_manager import task_manager
-        return task_manager
+        # PostgreSQL is required - this should never be reached
+        from config import settings
+        pg_config = {
+            "host": getattr(settings, 'postgres_host', 'localhost'),
+            "port": getattr(settings, 'postgres_port', 5432),
+            "database": getattr(settings, 'postgres_db', 'mcp_registry'),
+            "user": getattr(settings, 'postgres_user', 'postgres'),
+            "password": getattr(settings, 'postgres_password', '')
+        }
+        return PostgresTaskManager(**pg_config)

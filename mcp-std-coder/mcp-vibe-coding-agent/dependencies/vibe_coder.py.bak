@@ -1,6 +1,6 @@
 import httpx
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any, Dict
 from config import settings
 
 
@@ -17,7 +17,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None) -> str:
     """Call LM Studio's OpenAI-compatible endpoint using synchronous requests."""
     # Get the system prompt from the server handlers if available, otherwise use default
     system_prompt = "You are a vibe coding assistant. Generate clean, working code with brief explanations."
-    
+
     if server_handlers:
         # Look for the system prompt in the available prompts
         for p in server_handlers.prompts:
@@ -26,7 +26,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None) -> str:
                 if "content" in p:
                     system_prompt = p["content"]
                 break
-    
+
     response = requests.post(
         f"{settings.llm_base_url}/chat/completions",
         json={
@@ -38,7 +38,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None) -> str:
             "temperature": vibe / 10,  # 0.1 to 1.0
             "max_tokens": 2048
         },
-        timeout=60
+        timeout=300
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
@@ -50,7 +50,7 @@ def create_vibe_code_prompt(arguments: dict) -> str:
     language = arguments.get("language", "python")
     vibe_level = arguments.get("vibe_level", 5)
     style_guide = arguments.get("style_guide", "")
-    
+
     prompt = f"""Generate code for the following task:
 Task: {task_desc}
 Language: {language}
@@ -58,8 +58,30 @@ Vibe level (creativity): {vibe_level}/10
 Style guide: {style_guide if style_guide else 'No specific style'}
 
 Please output the code in a markdown code block, and include a short 'vibe check' comment."""
-    
+
     return prompt
+
+
+# Git helper import for agent-driven Git push
+def _get_git_helper():
+    """Get or initialize agent Git helper for pushing results to Git"""
+    try:
+        from ..utils.agent_git_helper import get_agent_git_helper
+        repo_url = getattr(settings, 'mcp_git_repo_url', None)
+        if not repo_url:
+            # Fallback to environment variable or default
+            import os
+            repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+        
+        helper = get_agent_git_helper(
+            agent_name="implementation-engineer",
+            repo_url=repo_url
+        )
+        return helper
+    except Exception as e:
+        print(f"⚠️  Warning: Git helper initialization failed: {e}")
+        print("   Falling back to returning code directly (no Git push)")
+        return None
 
 
 import asyncio
@@ -188,15 +210,18 @@ def register_vibe_coding_tool(server_handlers):
         }
     }
     
-    # Replace the example tools with the vibe coding tools
-    server_handlers.tools = [
-        vibe_code_tool,
-        vibe_code_async_tool,
-        tasks_list_tool,
-        tasks_get_tool,
-        tasks_result_tool,
-        tasks_cancel_tool
-    ]
+    # Add vibe coding tools to existing tools (not replacing) to avoid overwriting other tools
+    existing_vibe_tools = [t["name"] for t in server_handlers.tools if t.get("name").startswith(("vibe_code", "tasks/"))]
+    
+    if not existing_vibe_tools:
+        server_handlers.tools.extend([
+            vibe_code_tool,
+            vibe_code_async_tool,
+            tasks_list_tool,
+            tasks_get_tool,
+            tasks_result_tool,
+            tasks_cancel_tool
+        ])
     
     # Notify that tools have changed
     if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:
