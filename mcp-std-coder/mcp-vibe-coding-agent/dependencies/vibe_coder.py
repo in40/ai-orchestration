@@ -23,27 +23,110 @@ class CodingTask(BaseModel):
 # =============================================================================
 
 
-def extract_code_from_llm_response(response: str) -> str:
+def extract_code_from_llm_response(response: str, preferred_language: Optional[str] = None) -> str:
     """
     Extract code from LLM response.
-    
+
     Tries to find code blocks in markdown format first, falls back to full response.
-    
+    Supports language-specific code blocks like ```html, ```javascript, ```python, etc.
+
     Args:
         response: The raw LLM response string
-        
+        preferred_language: Optional hint for which language block to prefer
+
     Returns:
         Extracted code string
     """
-    # Try to find code blocks in markdown format: ```language\n...\n```
-    code_blocks = re.findall(r'```(?:\w+)?\n(.*?)```', response, re.DOTALL)
+    # Pattern to match code blocks with optional language identifier
+    # Matches: ```language\n...\n``` or ```\n...\n```
+    code_block_pattern = r'```(\w+)?\n(.*?)```'
+    matches = re.findall(code_block_pattern, response, re.DOTALL)
     
-    if code_blocks:
-        # Return the first code block found
-        return code_blocks[0].strip()
+    if matches:
+        # matches is a list of tuples: [(language1, code1), (language2, code2), ...]
+        
+        # If preferred language is specified, try to find matching block
+        if preferred_language:
+            preferred_lower = preferred_language.lower()
+            for lang, code in matches:
+                if lang and lang.lower() == preferred_lower:
+                    return code.strip()
+        
+        # If no preferred language or no match, return first code block with language tag
+        for lang, code in matches:
+            if lang:  # Prefer blocks with language specification
+                return code.strip()
+        
+        # Fallback to first code block (even without language tag)
+        return matches[0][1].strip()
     
     # If no code blocks found, return the full response
     return response.strip()
+
+
+def detect_language_from_response(response: str) -> str:
+    """
+    Detect programming language from LLM response by analyzing code blocks.
+
+    Args:
+        response: The raw LLM response string
+
+    Returns:
+        Detected language name (e.g., 'html', 'python', 'javascript')
+    """
+    # Pattern to match language identifiers in code blocks
+    lang_pattern = r'```(\w+)\n'
+    matches = re.findall(lang_pattern, response)
+    
+    if matches:
+        # Return the first language found (most likely the primary one)
+        return matches[0].lower()
+    
+    # Fallback: try to detect language from content
+    response_lower = response.lower()
+    
+    # Check for HTML indicators
+    if any(tag in response_lower for tag in ['<!doctype html', '<html', '<head>', '<body>', '<div', '<script']):
+        return 'html'
+    
+    # Check for JavaScript indicators
+    if any(kw in response_lower for kw in ['function(', 'const ', 'let ', 'var ', 'console.log', 'document.']):
+        return 'javascript'
+    
+    # Check for Python indicators
+    if any(kw in response_lower for kw in ['def ', 'import ', 'print(', 'class ', 'if __name__']):
+        return 'python'
+    
+    # Check for CSS indicators
+    if any(kw in response_lower for kw in ['{', '}', ':', ';']) and 'body {' in response_lower:
+        return 'css'
+    
+    # Check for TypeScript indicators
+    if any(kw in response_lower for kw in ['interface ', 'type ', ': string', ': number']):
+        return 'typescript'
+    
+    # Check for Java indicators
+    if any(kw in response_lower for kw in ['public class', 'public static void main', 'System.out']):
+        return 'java'
+    
+    # Check for Go indicators
+    if any(kw in response_lower for kw in ['func main()', 'package main', 'fmt.Println']):
+        return 'go'
+    
+    # Check for Rust indicators
+    if any(kw in response_lower for kw in ['fn main()', 'println!', 'let mut']):
+        return 'rust'
+    
+    # Check for Ruby indicators
+    if any(kw in response_lower for kw in ['def ', 'end', 'puts ']):
+        return 'ruby'
+    
+    # Check for PHP indicators
+    if '<?php' in response or '<?' in response:
+        return 'php'
+    
+    # Default to python
+    return 'python'
 
 
 def _run_git_command(args: List[str], cwd: Path, env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
@@ -114,15 +197,15 @@ def git_push_llm_response(
 ) -> Dict[str, Any]:
     """
     Push LLM response to Git repository and return structured result with Git URL.
-    
+
     This function is used by the vibe_code_async tool to store generated code
     in a Git repository and return the Git URL for retrieval.
-    
+
     Args:
         task_id: The async task ID for this code generation
         llm_response: The raw response from LLM (may contain markdown code blocks)
         language: The programming language (default: python)
-        
+
     Returns:
         Dict with structure:
         {
@@ -133,21 +216,27 @@ def git_push_llm_response(
             "file_path": "results/task_id/result.py"
         }
     """
-    # Extract code from LLM response
-    code = extract_code_from_llm_response(llm_response)
+    # Extract code from LLM response (using preferred language hint)
+    code = extract_code_from_llm_response(llm_response, preferred_language=language)
     
+    # Detect actual language from response if not specified or if response has language tags
+    detected_language = detect_language_from_response(llm_response)
+    # Use detected language if original was generic or if we found a specific language tag
+    if language.lower() in ['python', 'code'] or detected_language != 'python':
+        language = detected_language
+
     # Get repository URL from settings or environment
     repo_url = getattr(settings, 'mcp_git_repo_url', None)
     if not repo_url:
         repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
-    
+
     # Configure local clone path
     local_repo_path = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
-    
+
     try:
         # Clone or get the repository
         _get_or_clone_git_repo(repo_url, local_repo_path)
-        
+
         # Ensure git user configuration
         _ensure_git_config(local_repo_path)
         
@@ -275,8 +364,25 @@ def git_push_llm_response(
 
 import requests
 
-def call_llm_sync(prompt: str, vibe: int, server_handlers=None) -> str:
-    """Call LM Studio's OpenAI-compatible endpoint using synchronous requests."""
+def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 5, retry_delay: int = 10) -> str:
+    """
+    Call LM Studio's OpenAI-compatible endpoint using synchronous requests.
+    
+    Includes retry logic for transient LLM server errors.
+    
+    Args:
+        prompt: The prompt to send to the LLM
+        vibe: Creativity level (1-10)
+        server_handlers: Optional server handlers for system prompt
+        max_retries: Maximum number of retry attempts (default: 3)
+        retry_delay: Delay between retries in seconds (default: 5)
+    
+    Returns:
+        LLM response content string
+    
+    Raises:
+        Exception: If all retry attempts fail
+    """
     # Get the system prompt from the server handlers if available, otherwise use default
     system_prompt = "You are a vibe coding assistant. Generate clean, working code with brief explanations."
 
@@ -289,21 +395,37 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None) -> str:
                     system_prompt = p["content"]
                 break
 
-    response = requests.post(
-        f"{settings.llm_base_url}/chat/completions",
-        json={
-            "model": settings.llm_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": vibe / 10,  # 0.1 to 1.0
-            "max_tokens": 2048
-        },
-        timeout=300
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                f"{settings.llm_base_url}/chat/completions",
+                json={
+                    "model": settings.llm_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": vibe / 10,  # 0.1 to 1.0
+                    "max_tokens": 2048
+                },
+                timeout=300
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                print(f"⚠️ LLM call failed (attempt {attempt + 1}/{max_retries}): {e}")
+                print(f"🔄 Retrying in {retry_delay} seconds...")
+                import time
+                time.sleep(retry_delay)
+            else:
+                print(f"❌ LLM call failed after {max_retries} attempts: {e}")
+    
+    # If we get here, all retries failed
+    raise last_error
 
 
 def create_vibe_code_prompt(arguments: dict) -> str:
@@ -319,7 +441,33 @@ Language: {language}
 Vibe level (creativity): {vibe_level}/10
 Style guide: {style_guide if style_guide else 'No specific style'}
 
-Please output the code in a markdown code block, and include a short 'vibe check' comment."""
+## IMPORTANT OUTPUT FORMAT INSTRUCTIONS:
+
+1. **Wrap your code in a markdown code block with the language specified**:
+   - For HTML: Use ```html
+   - For JavaScript: Use ```javascript or ```js
+   - For Python: Use ```python
+   - For CSS: Use ```css
+   - For TypeScript: Use ```typescript or ```ts
+   - For Java: Use ```java
+   - For Go: Use ```go
+   - For Rust: Use ```rust
+   - For Ruby: Use ```ruby
+   - For PHP: Use ```php
+   - For other languages: Use the appropriate language identifier
+
+2. **Example format**:
+   ```{language.lower()}
+   // Your complete, working code here
+   ```
+
+3. **Include only the code in the code block** - do not include explanations, comments about the code, or other text inside the code block.
+
+4. **You can add explanations BEFORE or AFTER the code block**, but keep the code itself clean and isolated.
+
+5. Include a short 'vibe check' comment inside the code to show the creativity level.
+
+Please generate clean, working code that follows best practices for the {language} programming language."""
 
     return prompt
 
