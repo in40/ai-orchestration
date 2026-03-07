@@ -196,29 +196,88 @@ def test_fallback_detection():
     # Python detection
     python_response = "def main():\n    print('Hello')\n\nif __name__ == '__main__':\n    main()"
     assert detect_language_from_response(python_response) == 'python', "Python not detected"
-    
+
     # JavaScript detection
     js_response = "function test() {\n    const x = 1;\n    console.log(x);\n}"
     assert detect_language_from_response(js_response) == 'javascript', "JavaScript not detected"
-    
+
     print("✅ Fallback detection test passed!")
+
+
+def test_cleaning_natural_language():
+    """Test that natural language is cleaned from code blocks"""
+    print("\n=== Test 7: Natural Language Cleaning ===")
+
+    # Test with natural language that should be cleaned
+    response = """Sure! Here's the code you requested.
+
+```python
+# Here's the code you requested. This function does X and Y.
+def greet(name):
+    return f"Hello, {name}!"
+
+# I hope this helps! Let me know if you need modifications.
+```
+
+Enjoy coding!"""
+
+    extracted = extract_code_from_llm_response(response, preferred_language='python')
+    
+    # Should contain the actual code
+    assert 'def greet(name):' in extracted, "Code function not found"
+    
+    # Should NOT contain the natural language phrases
+    assert "Here's the code you requested" not in extracted, "Intro text not cleaned"
+    assert "I hope this helps" not in extracted, "Outro text not cleaned"
+    
+    print(f"Extracted code:\n{extracted}")
+    print("✅ Natural language cleaning test passed!")
+
+
+def test_unclosed_code_block():
+    """Test extraction of unclosed code blocks (LLM doesn't close the block)"""
+    print("\n=== Test 8: Unclosed Code Block ===")
+
+    # LLM sometimes doesn't close the code block
+    response = """Here's your code:
+
+```html
+<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body><h1>Unclosed block</h1></body>
+</html>
+"""
+
+    extracted = extract_code_from_llm_response(response, preferred_language='html')
+    
+    # Should extract the code without the opening markers
+    assert '<!DOCTYPE html>' in extracted, "HTML content not extracted"
+    assert not extracted.startswith('```'), "Should not start with backticks"
+    
+    print(f"Extracted code length: {len(extracted)} chars")
+    print("✅ Unclosed code block test passed!")
 
 
 if __name__ == "__main__":
     print("Testing improved code extraction from LLM responses...")
     print("=" * 60)
-    
+
     test_html_extraction()
     test_javascript_extraction()
     test_python_extraction()
     test_multiple_blocks()
     test_no_language_block()
     test_fallback_detection()
-    
+    test_cleaning_natural_language()
+    test_unclosed_code_block()
+
     print("\n" + "=" * 60)
     print("✅ All tests passed!")
     print("\nSummary:")
     print("- Code extraction now supports language-specific markdown blocks")
     print("- Language detection works from both code blocks and content")
     print("- Multiple code blocks can be extracted based on preferred language")
+    print("- Natural language cleaning removes intro/outro text from code blocks")
+    print("- Handles unclosed code blocks (LLM doesn't close ```)")
     print("- Fallback to full response if no code blocks found")

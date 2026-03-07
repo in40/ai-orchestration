@@ -20,6 +20,14 @@ from pydantic import BaseModel
 import httpx
 from datetime import datetime
 
+# Import configuration
+import sys
+sys.path.insert(0, '/root/qwen/base')
+from config import get_settings
+
+# Get settings
+settings = get_settings()
+
 # Import dynamic planner
 try:
     from .dynamic_planner import DynamicPlanner
@@ -51,9 +59,9 @@ logger = logging.getLogger(__name__)
 # Global planner instance
 _planner: Optional[DynamicPlanner] = None
 
-# IT Lead server configuration
-IT_LEAD_HOST = "localhost"
-IT_LEAD_PORT = 3061
+# IT Lead server configuration (from settings)
+IT_LEAD_HOST = settings.IT_LEAD_HOST
+IT_LEAD_PORT = settings.IT_LEAD_PORT
 
 # Store active WebSocket connections for real-time updates
 active_connections: List[WebSocket] = []
@@ -61,15 +69,15 @@ active_connections: List[WebSocket] = []
 def get_planner() -> DynamicPlanner:
     """Get or create global planner instance"""
     global _planner
-    
+
     if _planner is None:
         _planner = DynamicPlanner(
-            registry_host="127.0.0.1",
-            registry_port=3031,
-            llm_provider_url="http://192.168.51.237:1234/v1/chat/completions",
-            llm_model="qwen3-coder-next@q5_k_xl"
+            registry_host=settings.REGISTRY_HOST,
+            registry_port=settings.REGISTRY_PORT,
+            llm_provider_url=settings.LLM_PROVIDER_URL,
+            llm_model=settings.LLM_MODEL
         )
-    
+
     return _planner
 
 @asynccontextmanager
@@ -809,7 +817,7 @@ async def delete_task_endpoint(task_data: dict):
 async def fetch_tasks_from_it_lead():
     """Fetch actual tasks from IT Lead server's task storage"""
     logger.info("Fetching tasks from IT Lead server")
-    
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Call the IT Lead server to get all tasks using the new get_all_tasks tool
@@ -825,15 +833,15 @@ async def fetch_tasks_from_it_lead():
                     }
                 }
             )
-            
+
             if response.status_code == 200:
                 result = response.json()
                 logger.info(f"Fetched tasks response: {result}")
-                
+
                 # Extract tasks from the response
                 if "result" in result and "result" in result["result"]:
                     tasks_result = result["result"]["result"]
-                    
+
                     # Format tasks to match the expected structure
                     formatted_tasks = []
                     if "tasks" in tasks_result:
@@ -856,7 +864,7 @@ async def fetch_tasks_from_it_lead():
             else:
                 logger.error(f"Failed to fetch tasks from IT Lead: {response.status_code}")
                 return []
-                
+
     except httpx.RequestError as e:
         logger.error(f"Error connecting to IT Lead server: {str(e)}")
         return []
