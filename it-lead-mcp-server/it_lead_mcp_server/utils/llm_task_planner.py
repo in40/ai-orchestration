@@ -1,6 +1,7 @@
 """
 LLM Planning Module for IT Lead MCP Server
 Handles complex task routing decisions that rule-based system cannot resolve
+Uses dynamic MCP agent and tool discovery via MCP protocol.
 """
 import json
 import time
@@ -8,11 +9,12 @@ from typing import Dict, List, Any, Optional
 
 
 class LLMTaskPlanner:
-    """Uses LLM to plan task assignment for complex cases"""
-    
-    def __init__(self, llm_client, agent_registry=None):
+    """Uses LLM to plan task assignment for complex cases with dynamic agent discovery"""
+
+    def __init__(self, llm_client, agent_registry=None, mcp_registry_client=None):
         self.llm_client = llm_client
-        self.agent_registry = agent_registry
+        self.agent_registry = agent_registry  # Deprecated: kept for backward compatibility
+        self.mcp_registry_client = mcp_registry_client  # NEW: Dynamic discovery via MCP protocol
     
     def plan_task_assignment(self, task_description: str, 
                             routing_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -27,19 +29,25 @@ class LLMTaskPlanner:
             Planning result with agent assignment and reasoning
         """
         llm_reason = routing_context.get("llm_reason", "UNKNOWN")
-
-        # Get available tools for each agent
-        available_tools = self._get_available_tools()
+        
+        # Get available agents and tools via dynamic MCP discovery
+        if self.mcp_registry_client:
+            print(f"🔍 Using dynamic MCP agent discovery...")
+            agents_with_tools = self.mcp_registry_client.discover_all_agents_with_tools(use_cache=True)
+            print(f"📋 Discovered {len(agents_with_tools)} agents, {sum(1 for a in agents_with_tools if a['status'] == 'online')} online")
+        else:
+            print(f"⚠️  MCP Registry Client not available, using hardcoded tools (DEGRADED MODE)")
+            agents_with_tools = None
         
         # Build the prompt based on the reason for LLM planning
         if llm_reason == "NO_RULES_MATCHED":
-            prompt = self._build_no_match_prompt(task_description, routing_context, available_tools)
+            prompt = self._build_no_match_prompt(task_description, routing_context, agents_with_tools)
         elif llm_reason == "LOW_CONFIDENCE_MATCH":
-            prompt = self._build_low_confidence_prompt(task_description, routing_context, available_tools)
+            prompt = self._build_low_confidence_prompt(task_description, routing_context, agents_with_tools)
         elif llm_reason == "CONFLICTING_RULES":
-            prompt = self._build_conflict_prompt(task_description, routing_context, available_tools)
+            prompt = self._build_conflict_prompt(task_description, routing_context, agents_with_tools)
         else:
-            prompt = self._build_general_prompt(task_description, routing_context, available_tools)
+            prompt = self._build_general_prompt(task_description, routing_context, agents_with_tools)
         
         # Call LLM
         try:
@@ -54,10 +62,17 @@ class LLMTaskPlanner:
             print(f"❌ Error in LLM task planning: {e}")
             return self._get_fallback_plan(task_description, routing_context)
     
-    def _build_no_match_prompt(self, task_description: str, 
-                               routing_context: Dict[str, Any]) -> str:
+    def _build_no_match_prompt(self, task_description: str,
+                               routing_context: Dict[str, Any],
+                               agents_with_tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """Build prompt for when no rules matched"""
         failure_reasons = routing_context.get("failure_reasons", [])
+        
+        # Build agents section from dynamic discovery or use hardcoded fallback
+        if agents_with_tools:
+            agents_section = self._build_agents_section_from_discovery(agents_with_tools)
+        else:
+            agents_section = self._build_hardcoded_agents_section()
         
         return f"""You are an IT Lead Agent responsible for task assignment.
 
@@ -70,24 +85,19 @@ The rule-based routing system could not find any matching rules for this task.
 ## Why Rules Didn't Match
 {json.dumps(failure_reasons, indent=2)}
 
-## Available Agents
-1. **implementation-engineer**: Writes code, implements features, generates code from specs, applies coding standards, writes unit tests, refactors code - **ALL CODING TASKS (including frontend, web, JavaScript, React, HTML, CSS) should go here**
-2. **requirements-engineer**: Analyzes requirements, resolves ambiguities, translates business needs to technical specs
-3. **code-reviewer**: Reviews code quality, validates architecture compliance, suggests improvements
-4. **qa-test-engineer**: Generates test suites, executes automated tests, analyzes test failures
-5. **security-engineer**: Performs security analysis, scans dependencies, validates compliance
-6. **devops-engineer**: Orchestrates deployments, configures CI/CD, manages infrastructure
+{agents_section}
 
 ## Important Instructions
 - ALL coding, development, implementation, frontend, web, JavaScript, Python, React, HTML, CSS tasks MUST go to **implementation-engineer**
 - Only use other agents for non-coding tasks (requirements analysis, code review, testing, security, deployment)
 - When in doubt, choose **implementation-engineer** for any task involving code generation or implementation
+- ONLY use tools listed above for each agent - DO NOT invent tool names
 
 ## Your Task
 Analyze the task and determine:
 1. Which agent(s) should handle this task?
 2. If multiple agents, what is the recommended sequence?
-3. What specific tool should each agent use?
+3. What specific tool should each agent use? (MUST be from the list above)
 4. **What programming language/technology is requested?** (e.g., Python, HTML, JavaScript, etc.)
 5. What is the reasoning for this assignment?
 6. What priority should this task have?
@@ -119,11 +129,18 @@ Respond in valid JSON format:
 """
     
     def _build_low_confidence_prompt(self, task_description: str,
-                                     routing_context: Dict[str, Any]) -> str:
+                                     routing_context: Dict[str, Any],
+                                     agents_with_tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """Build prompt for low confidence rule match"""
         matched_rule = routing_context.get("matched_rule")
         confidence = routing_context.get("confidence", 0.0)
         
+        # Build agents section from dynamic discovery or use hardcoded fallback
+        if agents_with_tools:
+            agents_section = self._build_agents_section_from_discovery(agents_with_tools)
+        else:
+            agents_section = self._build_hardcoded_agents_section()
+
         return f"""You are an IT Lead Agent responsible for task assignment.
 
 ## Task Description
@@ -135,6 +152,8 @@ The rule-based routing system found a potential match but with low confidence.
 ## Matched Rule
 - Rule ID: {matched_rule}
 - Confidence: {confidence:.2f}
+
+{agents_section}
 
 ## Your Task
 Review this assignment and determine:
@@ -165,20 +184,17 @@ Respond in valid JSON format:
     
     def _build_conflict_prompt(self, task_description: str,
                                routing_context: Dict[str, Any],
-                               available_tools: Dict[str, List[str]] = None) -> str:
+                               agents_with_tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """Build prompt for conflicting rules"""
         matched_rules = routing_context.get("matched_rules", [])
         conflicting_assignees = routing_context.get("conflicting_assignees", [])
+        
+        # Build agents section from dynamic discovery
+        if agents_with_tools:
+            agents_section = self._build_agents_section_from_discovery(agents_with_tools)
+        else:
+            agents_section = self._build_hardcoded_agents_section()
 
-        # Build available tools section
-        if available_tools is None:
-            available_tools = {}
-        
-        tools_section = "## Available Tools\n"
-        for agent, tools in available_tools.items():
-            tools_list = ", ".join(f"`{tool}`" for tool in tools)
-            tools_section += f"- **{agent}**: {tools_list}\n"
-        
         return f"""You are an IT Lead Agent responsible for task assignment.
 
 ## Task Description
@@ -190,6 +206,8 @@ The rule-based routing system found multiple matching rules with CONFLICTING age
 ## Conflicting Assignments
 - Matched Rules: {json.dumps(matched_rules)}
 - Conflicting Agents: {conflicting_assignees}
+
+{agents_section}
 
 ## Your Task
 Resolve this conflict by determining:
@@ -205,11 +223,9 @@ Resolve this conflict by determining:
 3. **code-reviewer**: Reviews code quality
 4. **qa-test-engineer**: Testing and validation
 
-{tools_section}
-
 ## CRITICAL INSTRUCTION:
 - ALL coding, development, implementation, frontend, web, JavaScript, Python, React, HTML, CSS tasks MUST go to implementation-engineer
-- ONLY use tools listed under "Available Tools" above - DO NOT invent tool names
+- ONLY use tools listed under "Available Agents and Their Tools" above - DO NOT invent tool names
 - For implementation-engineer coding tasks, use `vibe_code_async`
 - **If task description does NOT specify a programming language/technology, assign to requirements-engineer for analysis and technology selection**
 - **Detect language from task description** (e.g., "in HTML" → HTML, "Python script" → Python, "JavaScript function" → JavaScript)
@@ -235,8 +251,15 @@ Respond in valid JSON format:
 """
     
     def _build_general_prompt(self, task_description: str,
-                              routing_context: Dict[str, Any]) -> str:
+                              routing_context: Dict[str, Any],
+                              agents_with_tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """Build general prompt for LLM planning"""
+        # Build agents section from dynamic discovery or use hardcoded fallback
+        if agents_with_tools:
+            agents_section = self._build_agents_section_from_discovery(agents_with_tools)
+        else:
+            agents_section = self._build_hardcoded_agents_section()
+        
         return f"""You are an IT Lead Agent responsible for task assignment.
 
 ## Task Description
@@ -245,13 +268,7 @@ Respond in valid JSON format:
 ## Situation
 The task requires intelligent routing analysis.
 
-## Available Agents
-1. **implementation-engineer**: Writes code, implements features, generates code from specs - **ALL CODING TASKS MUST GO HERE**
-2. **requirements-engineer**: Analyzes requirements, resolves ambiguities, decomposes tasks into actionable items
-3. **code-reviewer**: Reviews code quality, validates architecture
-4. **qa-test-engineer**: Generates test suites, executes tests
-5. **security-engineer**: Security analysis, vulnerability scanning
-6. **devops-engineer**: Deployments, CI/CD, infrastructure
+{agents_section}
 
 ## CRITICAL INSTRUCTION: ALL coding, development, implementation, frontend, web, JavaScript, Python, React, HTML, CSS tasks MUST go to implementation-engineer. Do NOT use requirements-engineer for coding tasks.
 
@@ -270,7 +287,87 @@ Respond in valid JSON format:
     "confidence": 0.0-1.0
 }}
 """
-    
+
+    def _build_agents_section_from_discovery(self, agents_with_tools: List[Dict[str, Any]]) -> str:
+        """
+        Build agents section from dynamically discovered agents and tools.
+        
+        Args:
+            agents_with_tools: List of agent info with tool schemas from MCP discovery
+        
+        Returns:
+            Formatted string for LLM prompt
+        """
+        section = "## Available Agents and Their Tools (Discovered via MCP Protocol)\n\n"
+        
+        online_agents = [a for a in agents_with_tools if a["status"] == "online"]
+        
+        if not online_agents:
+            section += "⚠️  No online agents discovered. Using fallback assignment.\n\n"
+            return section
+        
+        for i, agent in enumerate(online_agents, 1):
+            agent_name = agent["name"]
+            description = agent.get("description", "No description")
+            tools = agent.get("tools", [])
+            
+            section += f"{i}. **{agent_name}**: {description}\n"
+            
+            if tools:
+                section += "   **Available Tools**:\n"
+                for tool in tools:
+                    tool_name = tool.get("name", "unknown")
+                    tool_desc = tool.get("description", "No description")
+                    input_schema = tool.get("inputSchema", {})
+                    
+                    section += f"   - `{tool_name}`: {tool_desc}\n"
+                    
+                    # Show required parameters
+                    required = input_schema.get("required", [])
+                    properties = input_schema.get("properties", {})
+                    if required and properties:
+                        params = []
+                        for param_name in required:
+                            if param_name in properties:
+                                param_type = properties[param_name].get("type", "any")
+                                params.append(f"{param_name} ({param_type})")
+                        if params:
+                            section += f"     Required: {', '.join(params)}\n"
+            else:
+                section += "   ⚠️  No tools discovered for this agent\n"
+            
+            section += "\n"
+        
+        return section
+
+    def _build_hardcoded_agents_section(self) -> str:
+        """
+        Build hardcoded agents section (fallback when MCP discovery fails).
+        
+        Returns:
+            Formatted string for LLM prompt
+        """
+        return """## Available Agents (Hardcoded Fallback)
+1. **implementation-engineer**: Writes code, implements features, generates code from specs, applies coding standards, writes unit tests, refactors code - **ALL CODING TASKS (including frontend, web, JavaScript, React, HTML, CSS) should go here**
+   **Available Tools**: `vibe_code_async`, `vibe_code`, `implement_feature`, `generate_code_from_spec`, `generate_unit_tests`
+
+2. **requirements-engineer**: Analyzes requirements, resolves ambiguities, translates business needs to technical specs
+   **Available Tools**: `analyze_requirements`, `requirements_tracker`
+
+3. **code-reviewer**: Reviews code quality, validates architecture compliance, suggests improvements
+   **Available Tools**: `review_code`, `static_analysis`
+
+4. **qa-test-engineer**: Generates test suites, executes automated tests, analyzes test failures
+   **Available Tools**: `test_execution_suite`, `generate_test_suite`, `browser_testing`
+
+5. **security-engineer**: Performs security analysis, scans dependencies, validates compliance
+   **Available Tools**: `perform_security_analysis`, `sast_scan`
+
+6. **devops-engineer**: Orchestrates deployments, configures CI/CD, manages infrastructure
+   **Available Tools**: `orchestrate_deployments`, `ci_cd_pipeline`
+
+"""
+
     def _parse_llm_response(self, response: str, task_description: str,
                            routing_context: Dict[str, Any]) -> Dict[str, Any]:
         """Parse LLM response and return structured planning result"""
@@ -346,7 +443,16 @@ Respond in valid JSON format:
         }
 
     def _get_available_tools(self) -> Dict[str, List[str]]:
-        """Get available tools for each agent from the service registry"""
+        """
+        Get available tools for each agent from the service registry.
+        
+        DEPRECATED: Use mcp_registry_client.discover_all_agents_with_tools() instead.
+        This method is kept for backward compatibility only.
+        
+        Returns:
+            Dict of agent names to tool lists
+        """
+        print("⚠️  WARNING: _get_available_tools() is deprecated. Use mcp_registry_client.discover_all_agents_with_tools() instead.")
         available_tools = {}
         
         if self.agent_registry:

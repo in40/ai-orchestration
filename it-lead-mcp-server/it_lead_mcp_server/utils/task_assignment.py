@@ -38,11 +38,16 @@ class TaskAssignmentManager:
         # Initialize routing components with MCP Registry Client
         # Pass mcp_registry_client to TaskRoutingEngine for proper agent discovery via MCP protocol
         self.routing_engine = TaskRoutingEngine(
-            llm_client=llm_client, 
+            llm_client=llm_client,
             service_registry=service_registry,  # Deprecated, kept for backward compatibility
             mcp_registry_client=self.mcp_registry_client  # NEW: MCP protocol-based discovery
         )
-        self.llm_planner = LLMTaskPlanner(llm_client, service_registry)
+        # Pass MCP Registry Client to LLM Planner for dynamic agent/tool discovery
+        self.llm_planner = LLMTaskPlanner(
+            llm_client=llm_client,
+            agent_registry=service_registry,  # Deprecated, kept for backward compatibility
+            mcp_registry_client=self.mcp_registry_client  # NEW: Dynamic discovery via MCP protocol
+        )
 
         # Initialize result router
         self._init_result_router()
