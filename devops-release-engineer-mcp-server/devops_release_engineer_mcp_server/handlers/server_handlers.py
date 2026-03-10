@@ -170,6 +170,28 @@ class DevOpsReleaseEngineerHandlers:
                 }
             },
             {
+                "name": "start_deployment",
+                "description": "Start a stopped deployment container",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID or name to start"}
+                    },
+                    "required": ["container_id"]
+                }
+            },
+            {
+                "name": "delete_deployment",
+                "description": "Permanently delete a deployment container and its data",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID or name to delete"}
+                    },
+                    "required": ["container_id"]
+                }
+            },
+            {
                 "name": "list_deployments",
                 "description": "List all active deployments with their status and URLs",
                 "inputSchema": {
@@ -403,6 +425,10 @@ class DevOpsReleaseEngineerHandlers:
             return self._deploy_web_application(arguments)
         elif tool_name == "stop_deployment":
             return self._stop_deployment(arguments)
+        elif tool_name == "start_deployment":
+            return self._start_deployment(arguments)
+        elif tool_name == "delete_deployment":
+            return self._delete_deployment(arguments)
         elif tool_name == "list_deployments":
             return self._list_deployments(arguments)
         elif tool_name == "get_deployment_status":
@@ -641,19 +667,19 @@ CMD ["python", "result.py"]
     def _stop_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Stop and remove a deployment"""
         import subprocess
-        
+
         task_id = arguments.get("task_id")
         container_name = f"deploy-{task_id}"
-        
+
         try:
             # Stop container
             subprocess.run(["docker", "stop", container_name], check=True, capture_output=True)
             # Remove container
             subprocess.run(["docker", "rm", container_name], check=True, capture_output=True)
-            
+
             # Update database
             self._update_deployment_status(task_id, "stopped")
-            
+
             return {
                 "success": True,
                 "task_id": task_id,
@@ -661,6 +687,44 @@ CMD ["python", "result.py"]
             }
         except Exception as e:
             return {"error": f"Failed to stop deployment: {str(e)}"}
+
+    def _start_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Start a stopped deployment"""
+        import subprocess
+
+        container_id = arguments.get("container_id")
+
+        try:
+            # Start container
+            subprocess.run(["docker", "start", container_id], check=True, capture_output=True)
+
+            return {
+                "success": True,
+                "container_id": container_id,
+                "message": f"Deployment {container_id} started successfully"
+            }
+        except Exception as e:
+            return {"error": f"Failed to start deployment: {str(e)}"}
+
+    def _delete_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete a deployment permanently"""
+        import subprocess
+
+        container_id = arguments.get("container_id")
+
+        try:
+            # Stop if running
+            subprocess.run(["docker", "stop", container_id], capture_output=True)
+            # Remove container
+            subprocess.run(["docker", "rm", container_id], check=True, capture_output=True)
+
+            return {
+                "success": True,
+                "container_id": container_id,
+                "message": f"Deployment {container_id} deleted successfully"
+            }
+        except Exception as e:
+            return {"error": f"Failed to delete deployment: {str(e)}"}
 
     def _list_deployments(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """List all deployments"""

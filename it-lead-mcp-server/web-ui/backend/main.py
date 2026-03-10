@@ -481,6 +481,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def handle_task_assignment_via_it_lead(task_data: dict):
     """Handle enhanced task assignment by calling IT Lead server with full context"""
     logger.info(f"Assigning task via IT Lead: {task_data}")
+    logger.info(f"Task context: {task_data.get('context', {})}")
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:  # Increased timeout for complex tasks
@@ -495,9 +496,10 @@ async def handle_task_assignment_via_it_lead(task_data: dict):
             # Add optional fields if present
             if task_data.get("dueDate"):
                 base_arguments["deadline"] = task_data.get("dueDate")
-            
+
             # Include full context metadata for intelligent routing
             context = task_data.get("context", {})
+            logger.info(f"Context received: {context}")
             if context:
                 base_arguments["metadata"] = {
                     "tags": context.get("tags", []),
@@ -505,12 +507,16 @@ async def handle_task_assignment_via_it_lead(task_data: dict):
                     "programming_language": context.get("programming_language"),
                     "framework": context.get("framework"),
                     "acceptance_criteria": context.get("acceptance_criteria"),
-                    "business_context": context.get("business_context")
+                    "business_context": context.get("business_context"),
+                    "deploy_after_implementation": context.get("deploy_after_implementation", False)
                 }
+                logger.info(f"Built metadata with deploy_after_implementation={base_arguments['metadata'].get('deploy_after_implementation')}")
 
             # Add dependencies if present
             if task_data.get("dependencies"):
                 base_arguments["metadata"]["dependencies"] = task_data.get("dependencies")
+
+            logger.info(f"Sending to IT Lead: base_arguments={base_arguments}")
 
             response = await client.post(
                 f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
@@ -855,6 +861,7 @@ async def fetch_tasks_from_it_lead():
                                 "priority": task.get("priority", "medium"),
                                 "progress": task.get("progress_percentage", 0),
                                 "git_url": metadata.get("git_url"),
+                                "deployment_url": metadata.get("deployment_url"),
                                 "storage_type": metadata.get("storage_type")
                             })
                     return formatted_tasks
@@ -872,6 +879,50 @@ async def fetch_tasks_from_it_lead():
         logger.error(f"Unexpected error fetching tasks: {str(e)}")
         return []
 
+async def fetch_deployments_from_it_lead(status_filter: str = "running"):
+    """Fetch deployments from IT Lead server (which proxies to DevOps Engineer)"""
+    logger.info(f"Fetching deployments from IT Lead server (status_filter={status_filter})")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Call IT Lead's list_deployments tool (which proxies to DevOps)
+            response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "fetch-deployments",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": status_filter}
+                    }
+                }
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"Fetched deployments response: {result}")
+
+                # Extract deployments from the response
+                if "result" in result:
+                    deployments_result = result["result"]
+                    deployments = deployments_result.get("deployments", [])
+                    logger.info(f"Found {len(deployments)} deployments")
+                    return deployments
+                else:
+                    logger.warning("Response doesn't contain expected structure")
+                    return []
+            else:
+                logger.error(f"Failed to fetch deployments from IT Lead: {response.status_code}")
+                return []
+
+    except httpx.RequestError as e:
+        logger.error(f"Error connecting to IT Lead server: {str(e)}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error fetching deployments: {str(e)}")
+        return []
+
 
 @app.get("/api/tasks")
 async def get_tasks():
@@ -885,6 +936,19 @@ async def get_tasks():
         return []
 
     return tasks
+
+
+@app.get("/api/deployments")
+async def get_deployments(status_filter: str = "running"):
+    """Get list of deployed applications via IT Lead server (proxies to DevOps Engineer)"""
+    deployments = await fetch_deployments_from_it_lead(status_filter=status_filter)
+
+    # Return deployments list
+    if not deployments:
+        logger.info("No deployments retrieved, returning empty list")
+        return []
+
+    return deployments
 
 
 @app.get("/api/tasks/{task_id}/progress")
@@ -1543,6 +1607,302 @@ async def browse_git_directory(task_id: str):
     except Exception as e:
         logger.error(f"Error browsing directory: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tasks/{task_id}/redeploy")
+async def redeploy_task(task_id: str):
+    """Redeploy a task that has a git_url but no active deployment"""
+    logger.info(f"Redeploying task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # First get the task to fetch git_url
+            tasks_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"get-task-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_all_tasks",
+                        "arguments": {"status_filter": None}
+                    }
+                }
+            )
+            
+            if tasks_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to fetch task information")
+            
+            tasks_result = tasks_response.json()
+            tasks = tasks_result.get("result", {}).get("tasks", [])
+            task = next((t for t in tasks if t.get("task_id") == task_id), None)
+            
+            if not task:
+                raise HTTPException(status_code=404, detail="Task not found")
+            
+            git_url = task.get("metadata", {}).get("git_url")
+            if not git_url:
+                raise HTTPException(status_code=400, detail="Task has no git_url")
+            
+            # Call DevOps to deploy from git
+            deploy_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"deploy-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "deploy_web_application",
+                        "arguments": {
+                            "task_id": task_id,
+                            "git_url": git_url,
+                            "container_port": 5000
+                        }
+                    }
+                }
+            )
+            
+            if deploy_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to deploy")
+            
+            deploy_result = deploy_response.json()
+            
+            return {
+                "success": True,
+                "message": "Task redeployed successfully",
+                "deployment": deploy_result.get("result", {})
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error redeploying task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/deployments/{task_id}/start")
+async def start_deployment(task_id: str):
+    """Start a stopped deployment"""
+    logger.info(f"Starting deployment for task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Get deployment info
+            deployment = await get_deployment_info(task_id)
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+            
+            container_id = deployment.get("container_id")
+            if not container_id:
+                raise HTTPException(status_code=400, detail="No container ID found")
+            
+            # Start the container via DevOps
+            start_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"start-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "start_deployment",
+                        "arguments": {"container_id": container_id}
+                    }
+                }
+            )
+            
+            if start_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to start deployment")
+            
+            return {
+                "success": True,
+                "message": "Deployment started successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting deployment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/deployments/{task_id}/stop")
+async def stop_deployment(task_id: str):
+    """Stop a running deployment"""
+    logger.info(f"Stopping deployment for task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            deployment = await get_deployment_info(task_id)
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+            
+            container_id = deployment.get("container_id")
+            if not container_id:
+                raise HTTPException(status_code=400, detail="No container ID found")
+            
+            stop_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"stop-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "stop_deployment",
+                        "arguments": {"container_id": container_id}
+                    }
+                }
+            )
+            
+            if stop_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to stop deployment")
+            
+            return {
+                "success": True,
+                "message": "Deployment stopped successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error stopping deployment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/deployments/{task_id}")
+async def delete_deployment(task_id: str):
+    """Delete/remove a deployment"""
+    logger.info(f"Deleting deployment for task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            deployment = await get_deployment_info(task_id)
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+            
+            container_id = deployment.get("container_id")
+            if not container_id:
+                raise HTTPException(status_code=400, detail="No container ID found")
+            
+            delete_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"delete-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "delete_deployment",
+                        "arguments": {"container_id": container_id}
+                    }
+                }
+            )
+            
+            if delete_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to delete deployment")
+            
+            return {
+                "success": True,
+                "message": "Deployment deleted successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting deployment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tasks/refresh-status")
+async def refresh_task_status():
+    """Refresh all task statuses from IT Lead server"""
+    logger.info("Refreshing task statuses from IT Lead server")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Trigger IT Lead to refresh task statuses
+            refresh_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "refresh-tasks",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_all_tasks",
+                        "arguments": {"status_filter": None}
+                    }
+                }
+            )
+            
+            if refresh_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to refresh tasks")
+            
+            return {
+                "success": True,
+                "message": "Task statuses refreshed successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing task statuses: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/deployments/refresh")
+async def refresh_deployments():
+    """Refresh deployment list from DevOps Engineer"""
+    logger.info("Refreshing deployments from DevOps Engineer")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            refresh_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "refresh-deployments",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            if refresh_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to refresh deployments")
+            
+            return {
+                "success": True,
+                "message": "Deployments refreshed successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing deployments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_deployment_info(task_id: str) -> dict:
+    """Helper to get deployment info for a task"""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": f"get-deployment-{task_id}",
+                "method": "tools/call",
+                "params": {
+                    "name": "get_deployment",
+                    "arguments": {"task_id": task_id}
+                }
+            }
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("result", {})
+    return {}
+
 
 if __name__ == "__main__":
     import uvicorn

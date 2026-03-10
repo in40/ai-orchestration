@@ -32,7 +32,7 @@ import {
   Drawer,
   Link
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 // Import enhanced AddTaskForm component
@@ -187,6 +187,36 @@ const TaskManagement = () => {
     }
   };
 
+  const handleRefreshTasks = async () => {
+    try {
+      setLoading(true);
+      await axios.post('/api/tasks/refresh-status');
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      console.error("Error refreshing tasks:", err);
+      alert("Failed to refresh tasks");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRedeploy = async (task) => {
+    const taskId = task.task_id || task.id;
+    if (!window.confirm(`Redeploy task ${taskId}? This will create a new deployment from the existing git code.`)) return;
+    
+    try {
+      const response = await axios.post(`/api/tasks/${taskId}/redeploy`);
+      alert(response.data.message || "Task redeployed successfully!");
+      // Refresh tasks to show updated deployment
+      const tasksResponse = await axios.get('/api/tasks');
+      setTasks(tasksResponse.data);
+    } catch (err) {
+      console.error("Error redeploying task:", err);
+      alert(`Failed to redeploy: ${err.response?.data?.detail || 'Unknown error'}`);
+    }
+  };
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" height="50vh">
@@ -206,13 +236,23 @@ const TaskManagement = () => {
       <Grid item xs={12}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
           <Typography variant="h4">Task Management</Typography>
-          <Button 
-            variant="contained" 
-            startIcon={<AddIcon />}
-            onClick={handleAddTask}
-          >
-            Add Task
-          </Button>
+          <Box>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshIcon />}
+              onClick={handleRefreshTasks}
+              sx={{ mr: 1 }}
+            >
+              Refresh
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={handleAddTask}
+            >
+              Add Task
+            </Button>
+          </Box>
         </Box>
       </Grid>
 
@@ -288,29 +328,38 @@ const TaskManagement = () => {
                           aria-label="view result"
                           onClick={() => {
                             const taskId = task.id;
-                            // Try to determine file extension from git_url or default to .py
-                            let ext = '.py';
-                            if (task.git_url.includes('.html')) ext = '.html';
-                            else if (task.git_url.includes('.md')) ext = '.md';
-                            else if (task.git_url.includes('.js')) ext = '.js';
-                            
-                            // Extract task UUID from git_url
+                            const ext = task.git_url.includes('.html') ? '.html' : task.git_url.includes('.md') ? '.md' : task.git_url.includes('.js') ? '.js' : '.py';
                             const uuidMatch = task.git_url.match(/results\/([a-f0-9-]+)\//);
                             const taskUuid = uuidMatch ? uuidMatch[1] : taskId;
-                            
-                            // Option 1: Direct Git server link (if Git server has HTTP access)
-                            // const gitServerUrl = `http://192.168.51.187/results/${taskUuid}/result${ext}`;
-                            
-                            // Option 2: Web UI backend proxy (works if Web UI server is accessible)
-                            // Get current host (works from any computer accessing the Web UI)
                             const currentHost = window.location.origin;
                             const resultUrl = `${currentHost}/api/git/files/${taskUuid}/result${ext}`;
-                            
                             window.open(resultUrl, '_blank');
                           }}
                           title="View Generated Code"
                         >
                           <DescriptionIcon />
+                        </IconButton>
+                      )}
+                      {/* View Deployed App Button - shows for tasks with deployment_url */}
+                      {task.deployment_url && (
+                        <IconButton
+                          color="secondary"
+                          aria-label="view deployed app"
+                          onClick={() => window.open(task.deployment_url, '_blank')}
+                          title="View Deployed App"
+                        >
+                          <LaunchIcon />
+                        </IconButton>
+                      )}
+                      {/* Redeploy Button - shows for tasks with git_url but no deployment */}
+                      {task.git_url && !task.deployment_url && (task.status === 'done' || task.status === 'completed') && (
+                        <IconButton
+                          color="primary"
+                          aria-label="redeploy"
+                          onClick={() => handleRedeploy(task)}
+                          title="Redeploy Task"
+                        >
+                          <BuildIcon />
                         </IconButton>
                       )}
                       <IconButton
