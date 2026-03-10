@@ -338,32 +338,35 @@ JSON Output:"""
             "fallback": True
         }
     
-    async def _call_llm(self, prompt: str, max_retries: int = 3, base_timeout: int = 60, max_timeout: int = 300) -> str:
-        """Call LLM with prompt and exponential backoff retry
+    async def _call_llm(self, prompt: str, max_retries: int = 2, base_timeout: int = 300, max_timeout: int = 600) -> str:
+        """Call LLM with prompt - optimized for long-running LLM requests
+        
+        IMPORTANT: Do NOT retry on timeout! The LLM is still generating the response
+        on the server side. Retrying creates duplicate requests and wastes tokens.
         
         Args:
             prompt: The prompt to send to LLM
-            max_retries: Maximum number of retry attempts (default: 3)
-            base_timeout: Initial timeout in seconds (default: 60)
-            max_timeout: Maximum timeout in seconds (default: 300 = 5 minutes)
+            max_retries: Max retries for TRANSIENT errors only (network, 503, etc.)
+                        Does NOT retry on timeout - that would waste tokens!
+            base_timeout: Initial timeout in seconds (default: 300 = 5 min)
+            max_timeout: Maximum timeout in seconds (default: 600 = 10 min)
         
         Returns:
             LLM response content
         
         Raises:
-            Exception: If all retries fail
+            Exception: If request fails (timeout or error)
         """
-        import time
-        
         last_error = None
         
         for attempt in range(max_retries):
             try:
-                # Calculate timeout with exponential backoff
-                # Attempt 0: 60s, Attempt 1: 120s, Attempt 2: 240s (capped at max_timeout)
-                timeout = min(base_timeout * (2 ** attempt), max_timeout)
+                # Use LONG timeout - LLM can take 5-10 minutes under load
+                # DO NOT use short timeouts - timeout means LLM is still working!
+                timeout = min(base_timeout * (1.5 ** attempt), max_timeout)
                 
                 print(f"🔄 LLM call attempt {attempt + 1}/{max_retries} (timeout: {timeout}s)")
+                print(f"   ⚠️  If this times out, DO NOT retry - LLM is still generating!")
                 
                 payload = {
                     "model": self.llm_model,
@@ -371,8 +374,8 @@ JSON Output:"""
                         {"role": "system", "content": "You are an intelligent task router. Always respond with valid JSON." },
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.3,  # Low temperature for more deterministic output
-                    "max_tokens": 2000
+                    "temperature": 0.3,
+                    "max_tokens": 4000  # Increased for complex planning
                 }
 
                 response = await asyncio.to_thread(
@@ -389,20 +392,31 @@ JSON Output:"""
                 else:
                     print(f"⚠️ LLM returned empty content on attempt {attempt + 1}")
                     last_error = Exception("LLM returned empty content")
+                    # Empty content is a real error, safe to retry
                     
             except Exception as e:
+                error_str = str(e).lower()
                 last_error = e
-                print(f"❌ LLM call failed on attempt {attempt + 1}: {e}")
                 
-                # Don't sleep after the last attempt
+                # Check if it's a timeout - DO NOT RETRY!
+                if "timeout" in error_str or "timed out" in error_str:
+                    print(f"❌ LLM call TIMED OUT after {timeout}s - DO NOT RETRY!")
+                    print(f"   The LLM is still generating the response on the server.")
+                    print(f"   Retrying would create a duplicate request and waste tokens.")
+                    print(f"   Increase base_timeout or check LLM server health.")
+                    # Break immediately - don't waste tokens on duplicate request!
+                    break
+                
+                # Transient errors (network, 503) - safe to retry
+                print(f"❌ LLM call failed on attempt {attempt + 1} (transient): {e}")
+                
                 if attempt < max_retries - 1:
-                    # Exponential backoff: 2s, 4s, 8s...
                     wait_time = 2 ** (attempt + 1)
-                    print(f"⏳ Waiting {wait_time}s before retry...")
+                    print(f"⏳ Waiting {wait_time}s before retry (transient error)...")
                     await asyncio.sleep(wait_time)
         
-        # All retries failed
-        print(f"❌ All {max_retries} LLM call attempts failed")
+        # All retries failed or timeout occurred
+        print(f"❌ LLM call failed: {last_error}")
         raise last_error
 
 

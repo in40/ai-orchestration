@@ -829,22 +829,25 @@ class RequirementEngineerHandlers(McpServerHandlers):
                     }
                 ],
                 "temperature": 0.7,
-                "max_tokens": 2048
+                "max_tokens": 4096  # Increased for complex requirements
             }
 
-            # Make the request to the LLM with retry and exponential backoff
-            max_retries = 3
-            base_timeout = 60
-            max_timeout = 300  # 5 minutes max
+            # Make the request to the LLM with LONG timeout
+            # IMPORTANT: Do NOT use short timeouts - LLM can take 5-10 minutes under load
+            # If timeout occurs, the LLM is STILL GENERATING on the server side
+            # Retrying would create duplicate requests and waste tokens!
+            max_retries = 2  # Only for transient errors, NOT timeouts
+            base_timeout = 300  # 5 minutes base timeout
+            max_timeout = 600  # 10 minutes max
             last_error = None
             
             for attempt in range(max_retries):
                 try:
-                    # Calculate timeout with exponential backoff
-                    # Attempt 0: 60s, Attempt 1: 120s, Attempt 2: 240s (capped at max_timeout)
-                    timeout = min(base_timeout * (2 ** attempt), max_timeout)
+                    # Use LONG timeout - LLM can take 5-10 minutes under load
+                    timeout = min(base_timeout * (1.5 ** attempt), max_timeout)
                     
                     print(f"🔄 LLM call attempt {attempt + 1}/{max_retries} (timeout: {timeout}s)")
+                    print(f"   ⚠️  If this times out, DO NOT RETRY - LLM is still generating!")
                     
                     response = requests.post(url, json=payload, timeout=timeout)
 
@@ -859,24 +862,36 @@ class RequirementEngineerHandlers(McpServerHandlers):
                         else:
                             print(f"⚠️ LLM returned empty content on attempt {attempt + 1}")
                             last_error = Exception("LLM returned empty content")
+                            # Empty content is a real error, safe to retry
                     else:
                         print(f"❌ LLM API request failed with status {response.status_code}: {response.text}")
                         last_error = Exception(f"LLM API request failed: {response.status_code}")
+                        # HTTP errors are safe to retry
                         
                 except Exception as e:
+                    error_str = str(e).lower()
                     last_error = e
-                    print(f"❌ LLM call failed on attempt {attempt + 1}: {str(e)}")
                     
-                    # Don't sleep after the last attempt
+                    # Check if it's a timeout - DO NOT RETRY!
+                    if "timeout" in error_str or "timed out" in error_str:
+                        print(f"❌ LLM call TIMED OUT after {timeout}s - DO NOT RETRY!")
+                        print(f"   The LLM is still generating the response on the server.")
+                        print(f"   Retrying would create a duplicate request and waste tokens.")
+                        print(f"   Increase base_timeout or check LLM server health.")
+                        # Break immediately - don't waste tokens!
+                        break
+                    
+                    # Transient errors (network, connection) - safe to retry
+                    print(f"❌ LLM call failed on attempt {attempt + 1} (transient): {str(e)}")
+                    
                     if attempt < max_retries - 1:
-                        # Exponential backoff: 2s, 4s, 8s...
                         wait_time = 2 ** (attempt + 1)
-                        print(f"⏳ Waiting {wait_time}s before retry...")
+                        print(f"⏳ Waiting {wait_time}s before retry (transient error)...")
                         time.sleep(wait_time)
             
-            # All retries failed
-            print(f"❌ All {max_retries} LLM call attempts failed")
-            return {"error": f"Error calling LLM after {max_retries} retries: {str(last_error)}"}
+            # All retries failed or timeout occurred
+            print(f"❌ All LLM call attempts failed")
+            return {"error": f"Error calling LLM: {str(last_error)}"}
 
     def _read_resource(self, resource: Dict[str, Any]) -> Dict[str, Any]:
         """Read content from a specific requirement engineering resource"""
