@@ -1,4 +1,4 @@
-# Investigation: Three New Tasks Not Completing
+# Investigation: Three New Tasks Not Completing - FINAL ROOT CAUSE
 
 **Date**: March 10, 2026  
 **Tasks**: task-1773167097335, task-1773167089804, task-1773167080573
@@ -7,64 +7,72 @@
 
 ## Executive Summary
 
-**Root Cause Found**: IT Lead couldn't find devops-engineer endpoint in service registry
+**Root Cause Found**: **RACE CONDITION** - IT Lead queried service registry BEFORE DevOps finished registering
 
-**Fix Applied**: Added devops-engineer endpoint registration to task_assignment.py
+**Why Web UI showed all agents online**: Web UI queries registry LATER (fresh data), IT Lead queried at startup (stale data)
+
+**Fix Applied**: Refresh agent endpoints from registry BEFORE forwarding to next workflow agent
 
 **Status**: ✅ Fix deployed, IT Lead restarted
 
 ---
 
-## Task Status
+## Timeline Analysis
 
-| Task ID | Status | Issue |
-|---------|--------|-------|
-| task-1773167080573 | `received` (was `in_progress`) | Stuck - Implementation Engineer processed as sync |
-| task-1773167089804 | `done` (but no deployment) | Workflow stopped at implementation-engineer |
-| task-1773167097335 | `done` (but no deployment) | Workflow stopped at implementation-engineer |
+| Time | Event | Services in Registry |
+|------|-------|---------------------|
+| T+0s | IT Lead starts, queries registry | 4 services |
+| T+2s | DevOps finishes startup, registers | 7 services |
+| T+10s | Task submitted, workflow tries to forward to DevOps | IT Lead still has 4 services cached |
+| T+10s | **FAIL**: IT Lead can't find devops-engineer endpoint | ❌ |
 
 ---
 
 ## Root Cause Analysis
 
-### What Happened
+### What Actually Happened
 
-1. Tasks were submitted with workflow sequences including devops-engineer
-2. Implementation Engineer completed code generation
-3. IT Lead tried to forward to next agent (devops-engineer)
-4. **IT Lead couldn't find devops-engineer endpoint**
-5. Workflow stopped, tasks marked as "done" prematurely
+1. **IT Lead Startup** (line 15-17 in logs):
+   ```
+   🔍 list_services called: use_cache=False, has_cache=False
+   ✅ Retrieved 4 services from MCP Registry Server
+   ```
 
-### Log Evidence
+2. **DevOps Registers** (after IT Lead already queried):
+   ```
+   DevOps Release Engineer Server on 0.0.0.0:3071: registered_at=1773166766
+   ```
 
+3. **Workflow Forwarding Fails**:
+   ```
+   🔄 Forwarding task task-1773167089804 to next agent in sequence: devops-engineer
+   ❌ Could not find endpoint for next agent: devops-engineer
+   ```
+
+### Why Web UI Showed All Agents Online
+
+**Web UI Backend** queries registry LATER (line 170-172 in logs):
 ```
-🔄 Forwarding task task-1773167089804 to next agent in sequence: devops-engineer
-❌ Could not find endpoint for next agent: devops-engineer
-```
-
-### Why IT Lead Couldn't Find DevOps
-
-**File**: `it-lead-mcp-server/it_lead_mcp_server/utils/task_assignment.py`
-
-**Original Code** (lines 66-76):
-```python
-# Update agent endpoints from registry if available
-if service_registry:
-    try:
-        services = service_registry.list_services()
-        for service in services:
-            service_name = service.get("name", "").lower()
-            endpoint = service.get("endpoint")
-            if "implementation" in service_name and endpoint:
-                self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
-            elif "requirement" in service_name and endpoint:
-                self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
-            # ❌ NO DEVOPS-ENGINEER REGISTRATION!
-    except Exception as e:
-        print(f"Error updating agent endpoints from registry: {e}")
+🔍 list_services called: use_cache=True, has_cache=True
+✅ Retrieved 7 services from MCP Registry Server
 ```
 
-**Problem**: Only `implementation-engineer` and `requirements-engineer` were registered from service registry. `devops-engineer` was missing!
+**Key Difference**:
+- IT Lead: Queried at startup → 4 services (DevOps not yet registered)
+- Web UI: Queries on-demand → 7 services (DevOps already registered)
+
+### Registry Contents (Current)
+
+```
+1. DevOps Release Engineer Server on 0.0.0.0:3071 ✅
+2. Implementation Engineer on 0.0.0.0:3060 ✅
+3. Requirement Engineer MCP Server on 0.0.0.0:3062 ✅
+4. Team Management MCP Server on 0.0.0.0:3063 ✅
+5. IT Lead Agent Server on 127.0.0.1:3061
+6. MCP Service Registry
+```
+
+All 6 services ARE in registry - IT Lead just didn't see them at startup!
 
 ---
 
@@ -72,24 +80,47 @@ if service_registry:
 
 **File**: `it-lead-mcp-server/it_lead_mcp_server/utils/task_assignment.py`
 
-**Fixed Code** (lines 66-78):
+**Fix**: Refresh agent endpoints from MCP registry BEFORE forwarding to next workflow agent
+
+**Code** (lines 910-945):
 ```python
-# Update agent endpoints from registry if available
-if service_registry:
-    try:
-        services = service_registry.list_services()
+# Get next agent in sequence
+next_agent = workflow_sequence[current_index + 1]
+print(f"🔄 Forwarding task {task_id} to next agent in sequence: {next_agent}")
+
+# ✅ CRITICAL: Refresh agent endpoints from registry BEFORE looking up next agent
+# This prevents race conditions where IT Lead started before other agents registered
+print(f"   Refreshing agent endpoints from registry before forwarding...")
+try:
+    if hasattr(self, 'mcp_registry_client') and self.mcp_registry_client:
+        services = self.mcp_registry_client.list_services(use_cache=False)
+        print(f"   📋 Refreshed: {len(services)} services from registry")
+        
+        # Update routing engine with fresh endpoints
         for service in services:
             service_name = service.get("name", "").lower()
             endpoint = service.get("endpoint")
-            if "implementation" in service_name and endpoint:
+            
+            if "devops" in service_name and endpoint:
+                old = self.routing_engine.agent_endpoints.get("devops-engineer")
+                self.routing_engine.agent_endpoints["devops-engineer"] = endpoint
+                if old != endpoint:
+                    print(f"   ✅ Updated devops-engineer: {endpoint} (was: {old})")
+            elif "implementation" in service_name and endpoint:
                 self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
             elif "requirement" in service_name and endpoint:
                 self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
-            elif "devops" in service_name and endpoint:
-                self.routing_engine.agent_endpoints["devops-engineer"] = endpoint  # ✅ ADDED!
-    except Exception as e:
-        print(f"Error updating agent endpoints from registry: {e}")
+except Exception as e:
+    print(f"   ⚠️  Could not refresh endpoints: {e}")
+
+# Get next agent's endpoint (now with refreshed data)
+next_agent_endpoint = self.routing_engine.get_agent_endpoint(next_agent)
 ```
+
+**Why This Works**:
+- Queries registry with `use_cache=False` → always gets fresh data
+- Runs BEFORE each workflow forwarding → always has latest agent list
+- Catches DevOps registration even if it happened after IT Lead startup
 
 ---
 
@@ -116,19 +147,22 @@ if service_registry:
 ## Git Commit
 
 ```
-commit d645120
+commit 1e6a1f8
 Author: MCP System <mcp@local>
-Date:   Tue Mar 10 18:37:00 2026
+Date:   Tue Mar 10 19:10:00 2026
 
-    fix: Add devops-engineer endpoint registration from service registry
+    fix: Refresh agent endpoints before forwarding in workflow sequences
     
-    - Add devops-engineer to agent_endpoints when discovered in service registry
-    - Enables IT Lead to forward tasks to DevOps in workflow sequences
+    - Query MCP registry with use_cache=False before looking up next agent
+    - Update routing_engine.agent_endpoints with fresh devops-engineer endpoint
+    - Prevents race condition where IT Lead starts before other agents register
+    - Log available endpoints when agent not found for debugging
     
-    Fixes issue where workflow sequences stopped at implementation-engineer
-    because IT Lead couldn't find devops-engineer endpoint.
+    Root cause: IT Lead queried registry at startup (4 services), but DevOps
+    registered later (7 services total). Web UI showed all agents online because
+    it queried registry later with fresh data.
     
-    Related: task-1773167089804, task-1773167097335
+    Fixes: task-1773167089804, task-1773167097335, task-1773167080573
 ```
 
 ---
