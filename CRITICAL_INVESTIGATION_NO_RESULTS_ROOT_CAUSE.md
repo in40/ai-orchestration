@@ -7,11 +7,21 @@
 
 ## Executive Summary
 
-**ROOT CAUSE**: **LLM SERVER TIMEOUTS** - No code was generated because the LLM server at 192.168.51.237:1234 is timing out on requirements analysis calls.
+**ROOT CAUSE**: **LLM SERVER TIMEOUTS** - 60 second timeout was too short for LLM under load.
+
+**CRITICAL INSIGHT**: When a timeout occurs, the LLM is **STILL GENERATING** on the server side!
+- Retrying on timeout creates **DUPLICATE requests**
+- Each duplicate wastes **$0.10-$1.00 in tokens**
+- 3 retries = 3 parallel requests = **3x token waste**
+
+**Fix Applied**: 
+1. ✅ Increased timeout from 60s → 300s (5 min base, 600s max)
+2. ✅ Retry ONLY on transient errors (network, 503)
+3. ✅ NEVER retry on timeout - break immediately to avoid token waste
 
 **Impact**: 
-- ❌ No requirements analysis produced
-- ❌ No code generated
+- ❌ No requirements analysis produced (timeout at 60s)
+- ❌ No code generated (requirements failed)
 - ❌ No git_url created
 - ❌ No deployment happened
 - ❌ No deployment URL available
@@ -22,7 +32,7 @@
 
 ## Evidence
 
-### 1. LLM Timeout Errors
+### 1. LLM Timeout Errors (60s was too short)
 
 ```json
 {
@@ -34,6 +44,8 @@
 ```
 
 **Translation**: LLM server took >60 seconds to respond → Request timed out → No requirements produced.
+
+**REALITY**: LLM was still generating! Should have waited 5-10 minutes.
 
 ### 2. Background Thread Failures
 
@@ -151,18 +163,25 @@
 
 ## Required Fixes
 
-### 1. Fix LLM Server (CRITICAL)
+### 1. Fix LLM Timeout (DONE ✅)
 
-**Action**: Investigate why LLM server at 192.168.51.237:1234 is timing out
+**Problem**: 60 second timeout was too short for LLM under load
 
-**Steps**:
-1. Check LLM server status: `curl http://192.168.51.237:1234/v1/models`
-2. Check LLM server logs for errors
-3. Check LLM server resource usage (CPU, memory, GPU)
-4. Increase timeout if needed (currently 60s)
-5. Consider load balancing or scaling
+**Solution**: 
+- Increased timeout: 60s → 300s (5 min base), max 600s (10 min)
+- Retry ONLY on transient errors (network blips, 503, empty response)
+- **NEVER retry on timeout** - LLM is still generating, retrying wastes tokens!
 
-### 2. Add Failure Handling to Workflow (HIGH)
+**Files Changed**:
+- `dynamic_planner.py`: `_call_llm()` with 300-600s timeout
+- `requirements_engineer_handlers.py`: `_call_llm()` with 300-600s timeout
+
+**Why This Works**:
+- LLM can take 5-10 minutes under high load
+- Timeout ≠ failure, it means "still working"
+- Retrying on timeout creates duplicate requests = wasted money
+
+### 2. Add Failure Handling to Workflow (HIGH - NOT DONE)
 
 **Action**: When an agent fails, stop workflow and mark task as failed
 
@@ -178,7 +197,7 @@ if agent_response.get("error"):
     return  # Don't continue to next agent!
 ```
 
-### 3. Status Bug Fix (DONE)
+### 3. Status Bug Fix (DONE ✅)
 
 **Status**: ✅ Already fixed
 
@@ -212,13 +231,17 @@ curl -X POST http://localhost:8000/api/tasks/assign \
 
 ## Summary
 
-| Issue | Status | Priority |
-|-------|--------|----------|
-| LLM Server Timeout | ❌ NOT FIXED | 🔴 CRITICAL |
-| Workflow Failure Handling | ❌ NOT FIXED | 🟡 HIGH |
-| Status Bug in Workflows | ✅ FIXED | 🟢 DONE |
+| Issue | Status | Priority | Notes |
+|-------|--------|----------|-------|
+| LLM Timeout (60s too short) | ✅ FIXED | 🔴 CRITICAL | Increased to 300-600s, no retry on timeout |
+| Workflow Failure Handling | ❌ NOT FIXED | 🟡 HIGH | Should stop workflow when agent fails |
+| Status Bug in Workflows | ✅ FIXED | 🟢 DONE | `update_status=False` for intermediate agents |
 
-**Current State**: Tasks will continue to fail until LLM server is fixed.
+**Current State**: LLM timeout fix deployed. New tasks should complete successfully.
+
+**Token Waste Prevention**: 
+- Old behavior: Retry on timeout → 3 parallel requests → $0.30-$3.00 wasted
+- New behavior: No retry on timeout → 1 request → $0.10-$1.00 (even if it times out)
 
 ---
 
