@@ -147,6 +147,24 @@ done
 echo ""
 echo "Step 7/7: Starting Web UI (IT Lead) on ports 8000/5173..."
 echo "----------------------------------------------------------"
+
+# CRITICAL: Kill any existing Web UI processes before starting
+echo "  Cleaning up existing Web UI processes..."
+pkill -9 -f "uvicorn.*main:app" 2>/dev/null || true
+pkill -9 -f "vite.*5173" 2>/dev/null || true
+pkill -9 -f "start_ui.sh" 2>/dev/null || true
+sleep 2
+
+# Verify ports are free
+if ss -tlnp 2>/dev/null | grep -q ":8000 "; then
+    echo "  ⚠️  Port 8000 is still in use, waiting..."
+    sleep 3
+fi
+if ss -tlnp 2>/dev/null | grep -q ":5173 "; then
+    echo "  ⚠️  Port 5173 is still in use, waiting..."
+    sleep 3
+fi
+
 cd /root/qwen/base/it-lead-mcp-server
 if [ -f "./start_ui.sh" ]; then
     nohup bash ./start_ui.sh \
@@ -168,7 +186,7 @@ if [ -f "./start_ui.sh" ]; then
     done
     echo "✓"
 else
-    echo "  ⚠ Web UI startup script (start_ui.sh) not found, skipping..."
+    echo "  ⚠️  Web UI startup script (start_ui.sh) not found, skipping..."
 fi
 
 echo ""
