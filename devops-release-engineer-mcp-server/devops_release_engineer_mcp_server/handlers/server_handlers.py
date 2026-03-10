@@ -504,6 +504,51 @@ class DevOpsReleaseEngineerHandlers:
                     container_port = detected_port
                     break
 
+            # ✅ CRITICAL VALIDATION: Check for localhost binding in Flask/web apps
+            # This prevents deployment of apps that won't be accessible from outside container
+            localhost_binding_detected = False
+            deployment_will_fail = False
+            
+            # Check for Flask app.run() without host='0.0.0.0'
+            if 'app.run(' in content:
+                if 'host=' not in content:
+                    localhost_binding_detected = True
+                    deployment_will_fail = True
+                    print(f"❌ VALIDATION FAILED: Flask app.run() missing host='0.0.0.0'")
+                    print(f"   Deployment would FAIL - app would bind to 127.0.0.1 only")
+                elif "host='0.0.0.0'" not in content and 'host="0.0.0.0"' not in content:
+                    # Check if host is set to localhost or 127.0.0.1
+                    if "host='127.0.0.1'" in content or 'host="127.0.0.1"' in content:
+                        localhost_binding_detected = True
+                        deployment_will_fail = True
+                        print(f"❌ VALIDATION FAILED: Flask app.run(host='127.0.0.1') detected")
+                        print(f"   Deployment would FAIL - app binds to localhost only")
+                    elif "host='localhost'" in content or 'host="localhost"' in content:
+                        localhost_binding_detected = True
+                        deployment_will_fail = True
+                        print(f"❌ VALIDATION FAILED: Flask app.run(host='localhost') detected")
+                        print(f"   Deployment would FAIL - app binds to localhost only")
+            
+            # Check for http.server/TCPServer binding to localhost
+            if "HTTPServer(('localhost'" in content or 'HTTPServer(("localhost"' in content:
+                localhost_binding_detected = True
+                deployment_will_fail = True
+                print(f"❌ VALIDATION FAILED: HTTPServer binding to localhost detected")
+            if "HTTPServer(('127.0.0.1'" in content or 'HTTPServer(("127.0.0.1"' in content:
+                localhost_binding_detected = True
+                deployment_will_fail = True
+                print(f"❌ VALIDATION FAILED: HTTPServer binding to 127.0.0.1 detected")
+            
+            # If localhost binding detected, abort deployment
+            if deployment_will_fail:
+                print(f"🚫 Deployment ABORTED - code must be fixed first")
+                print(f"   Fix: Change app.run() to app.run(host='0.0.0.0', port=PORT)")
+                return {
+                    "error": f"Deployment aborted: Web server binds to localhost. "
+                             f"Code must use host='0.0.0.0' for Docker compatibility. "
+                             f"Fix: app.run(host='0.0.0.0', port=PORT)"
+                }
+            
             if container_port != 5000:
                 print(f"⚠️  Non-standard port detected: {container_port} (default is 5000)")
             else:

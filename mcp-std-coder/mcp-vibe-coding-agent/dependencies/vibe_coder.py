@@ -700,11 +700,17 @@ You MUST respond with a valid JSON object with the following structure:
 5. **Ensure the code is complete and working** - include all necessary parts
 6. **IMPORTANT: Ensure your complete JSON response is sent** - do not truncate the output
 7. For longer code, ensure ALL code is included - the response must be complete
-8. **For web servers/APIs: Use PORT environment variable or port 5000**:
-   - Python: `PORT = int(os.environ.get("PORT", 5000))`
-   - Node.js: `const PORT = process.env.PORT || 5000`
-   - Always bind to `0.0.0.0` not `localhost` for Docker compatibility
-   - Example: `HTTPServer(('0.0.0.0', PORT), Handler)` or `app.run(host='0.0.0.0', port=PORT)`
+8. **🚨 CRITICAL: Web servers MUST bind to 0.0.0.0 for Docker deployment 🚨**
+   - **Flask**: `app.run(host='0.0.0.0', port=PORT, debug=True)` ❌ NEVER use `app.run()` alone
+   - **FastAPI/uvicorn**: `uvicorn.run(app, host='0.0.0.0', port=PORT)`
+   - **http.server**: `HTTPServer(('0.0.0.0', PORT), Handler)`
+   - **socketserver**: `TCPServer(('0.0.0.0', PORT), Handler)` or `TCPServer(('', PORT), Handler)`
+   - **Node.js/Express**: `app.listen(PORT, '0.0.0.0')`
+   - **NEVER bind to**: `127.0.0.1`, `localhost`, or `127.0.0.1` - these will FAIL in Docker!
+   - **Port selection**: Use `PORT = int(os.environ.get("PORT", 5000))` or default to 5000
+9. **Include main block** for Python scripts:
+   - `if __name__ == "__main__":` with server startup code
+   - Ensure the server actually starts and runs (e.g., `app.run()` or `httpd.serve_forever()`)
 
 ## EXAMPLE RESPONSE
 
