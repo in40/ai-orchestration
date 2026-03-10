@@ -16,8 +16,8 @@ class DevOpsReleaseEngineerHandlers:
 
     def __init__(self, enable_registry: bool = False, use_postgres: bool = False,
                  postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
-                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
+                 llm_provider_url: Optional[str] = None,
+                 llm_model: Optional[str] = None,
                  prompts_dir: str = "."):
         # DevOps Release Engineer tools - no example tools for this domain-specific server
         self.tools: List[Dict[str, Any]] = [
@@ -142,6 +142,53 @@ class DevOpsReleaseEngineerHandlers:
                     },
                     "required": ["platform", "stages"]
                 }
+            },
+            {
+                "name": "deploy_web_application",
+                "description": "Deploy a Python web application from Git repository using Docker container isolation",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task identifier"},
+                        "git_url": {"type": "string", "description": "Git URL to fetch result.py from"},
+                        "result_path": {"type": "string", "description": "Path to result.py in git repo"},
+                        "memory_limit": {"type": "string", "default": "256m", "description": "Memory limit for container"},
+                        "cpu_limit": {"type": "string", "default": "0.5", "description": "CPU limit for container"}
+                    },
+                    "required": ["task_id", "git_url", "result_path"]
+                }
+            },
+            {
+                "name": "stop_deployment",
+                "description": "Stop and remove a deployed application container",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task identifier of deployment to stop"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+            {
+                "name": "list_deployments",
+                "description": "List all active deployments with their status and URLs",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status_filter": {"type": "string", "default": "running", "description": "Filter by status (running, stopped, all)"}
+                    }
+                }
+            },
+            {
+                "name": "get_deployment_status",
+                "description": "Get status and health of a specific deployment",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task identifier"}
+                    },
+                    "required": ["task_id"]
+                }
             }
         ]
 
@@ -234,7 +281,17 @@ class DevOpsReleaseEngineerHandlers:
         # Client handlers for server-initiated requests
         self.client_handlers = client_handlers
 
-        # LLM Configuration
+        # LLM Configuration - MUST come from environment or command line, NO defaults
+        import os
+        if not llm_provider_url:
+            llm_provider_url = os.environ.get("LLM_PROVIDER_URL")
+            if not llm_provider_url:
+                raise ValueError("LLM_PROVIDER_URL environment variable not set - must be defined in .env file")
+        if not llm_model:
+            llm_model = os.environ.get("LLM_MODEL")
+            if not llm_model:
+                raise ValueError("LLM_MODEL environment variable not set - must be defined in .env file")
+        
         self.llm_provider_url = llm_provider_url
         self.llm_model = llm_model
         self.prompts_dir = prompts_dir
@@ -341,12 +398,351 @@ class DevOpsReleaseEngineerHandlers:
         """Execute a specific tool with given arguments"""
         tool_name = tool["name"]
 
-        # Execute tool using LLM via LM Studio API
+        # Handle deployment tools directly (no LLM)
+        if tool_name == "deploy_web_application":
+            return self._deploy_web_application(arguments)
+        elif tool_name == "stop_deployment":
+            return self._stop_deployment(arguments)
+        elif tool_name == "list_deployments":
+            return self._list_deployments(arguments)
+        elif tool_name == "get_deployment_status":
+            return self._get_deployment_status(arguments)
+
+        # Execute other tools using LLM via LM Studio API
         try:
             result = self._execute_tool_with_llm(tool_name, arguments)
             return {"result": result}
         except Exception as e:
             return {"error": f"Failed to execute tool: {str(e)}"}
+
+    def _deploy_web_application(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Deploy a Python web application using Docker"""
+        import subprocess
+        import uuid
+        import os
+        import tempfile
+        import re
+        
+        task_id = arguments.get("task_id")
+        git_url = arguments.get("git_url")
+        result_path = arguments.get("result_path")
+        memory_limit = arguments.get("memory_limit", "256m")
+        cpu_limit = arguments.get("cpu_limit", "0.5")
+        
+        try:
+            # Extract UUID from git URL
+            # Format: ssh://sorokin@192.168.51.187/home/sorokin/mcp-results/tree/main/results/<uuid>/result.py
+            uuid_match = re.search(r'/results/([a-f0-9-]+)/', git_url)
+            if not uuid_match:
+                return {"error": "Could not extract UUID from git URL"}
+            
+            result_uuid = uuid_match.group(1)
+            
+            # Extract base git repo URL
+            # Convert ssh://user@host/path/to/repo/tree/main/results/uuid/file.py to ssh://user@host/path/to/repo.git
+            # Match everything up to the repo name (before /tree/main/)
+            if "/tree/main/" in git_url:
+                git_repo_url = git_url.split("/tree/main/")[0] + ".git"
+            else:
+                git_repo_url = "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"
+            
+            print(f"Deploying from repo: {git_repo_url}, UUID: {result_uuid}")
+            
+            # Create temp directory for deployment
+            deploy_dir = f"/tmp/deploy-{task_id}"
+            os.makedirs(deploy_dir, exist_ok=True)
+            
+            # Clone/fetch from git (shallow clone for speed)
+            git_workdir = f"/tmp/git-fetch-{task_id}"
+            subprocess.run(["rm", "-rf", git_workdir], check=True)
+            subprocess.run([
+                "git", "clone", "--depth", "1",
+                git_repo_url,
+                git_workdir
+            ], check=True, capture_output=True, timeout=30)
+            
+            # Copy result.py to deploy directory
+            result_file = os.path.join(git_workdir, "results", result_uuid, "result.py")
+            if not os.path.exists(result_file):
+                return {"error": f"result.py not found at {result_file}"}
+            
+            import shutil
+            shutil.copy(result_file, os.path.join(deploy_dir, "result.py"))
+            
+            # Detect dependencies from imports
+            with open(os.path.join(deploy_dir, "result.py"), 'r') as f:
+                content = f.read()
+
+            dependencies = ["flask"]  # Default
+            if "fastapi" in content:
+                dependencies.append("fastapi")
+                dependencies.append("uvicorn")
+            if "django" in content:
+                dependencies.append("django")
+
+            # Detect PORT from generated code
+            # Look for patterns like: PORT = 8080, PORT=3000, port = 5000, etc.
+            container_port = 5000  # Default fallback
+            port_patterns = [
+                r'PORT\s*=\s*(\d+)',           # PORT = 8080
+                r'port\s*=\s*(\d+)',           # port = 8080
+                r'PORT\s*=\s*int\(os\.environ\.get\(["\']PORT["\']\s*,\s*(\d+)\)\)',  # PORT = int(os.environ.get("PORT", 8080))
+                r'server\.listen\((\d+)\)',    # server.listen(3000) - Node.js style
+                r'app\.run\(.*port\s*=\s*(\d+)',  # app.run(port=5000)
+            ]
+            for pattern in port_patterns:
+                port_match = re.search(pattern, content)
+                if port_match:
+                    detected_port = int(port_match.group(1))
+                    print(f"✅ Detected PORT={detected_port} from result.py (pattern: {pattern})")
+                    container_port = detected_port
+                    break
+            
+            if container_port != 5000:
+                print(f"⚠️  Non-standard port detected: {container_port} (default is 5000)")
+            else:
+                print(f"ℹ️  Using default PORT=5000 (no custom port detected in code)")
+
+            # Create Dockerfile with detected port
+            dockerfile_content = f"""FROM python:3.11-slim
+WORKDIR /app
+COPY result.py .
+RUN pip install {' '.join(dependencies)}
+EXPOSE {container_port}
+CMD ["python", "result.py"]
+"""
+            with open(os.path.join(deploy_dir, "Dockerfile"), 'w') as f:
+                f.write(dockerfile_content)
+
+            # Find available host port
+            host_port = self._find_available_port()
+            
+            # Build Docker image
+            image_name = f"deploy-{task_id}"
+            container_name = f"deploy-{task_id}"
+            
+            subprocess.run([
+                "docker", "build", "-t", image_name, deploy_dir
+            ], check=True, capture_output=True, timeout=120)
+            
+            # Run container
+            subprocess.run([
+                "docker", "run", "-d",
+                "--name", container_name,
+                "-p", f"{host_port}:{container_port}",
+                "--memory", memory_limit,
+                "--cpus", cpu_limit,
+                "--restart", "unless-stopped",
+                image_name
+            ], check=True, capture_output=True, timeout=30)
+            
+            # Store deployment in database
+            deployment_url = f"http://192.168.51.216:{host_port}/"
+            self._store_deployment(task_id, container_name, container_port, host_port, 
+                                   deployment_url, git_url, image_name, memory_limit, cpu_limit)
+            
+            # Cleanup
+            subprocess.run(["rm", "-rf", git_workdir], check=True)
+            subprocess.run(["rm", "-rf", deploy_dir], check=True)
+            
+            return {
+                "success": True,
+                "task_id": task_id,
+                "container_id": container_name,
+                "host_port": host_port,
+                "deployment_url": deployment_url,
+                "message": f"Application deployed successfully at {deployment_url}"
+            }
+            
+        except subprocess.TimeoutExpired as e:
+            return {"error": f"Docker command timed out: {str(e)}"}
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode() if e.stderr else str(e)
+            return {"error": f"Docker command failed: {stderr}"}
+        except Exception as e:
+            return {"error": f"Deployment failed: {str(e)}"}
+
+    def _stop_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Stop and remove a deployment"""
+        import subprocess
+        
+        task_id = arguments.get("task_id")
+        container_name = f"deploy-{task_id}"
+        
+        try:
+            # Stop container
+            subprocess.run(["docker", "stop", container_name], check=True, capture_output=True)
+            # Remove container
+            subprocess.run(["docker", "rm", container_name], check=True, capture_output=True)
+            
+            # Update database
+            self._update_deployment_status(task_id, "stopped")
+            
+            return {
+                "success": True,
+                "task_id": task_id,
+                "message": f"Deployment {task_id} stopped successfully"
+            }
+        except Exception as e:
+            return {"error": f"Failed to stop deployment: {str(e)}"}
+
+    def _list_deployments(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """List all deployments"""
+        status_filter = arguments.get("status_filter", "running")
+        
+        try:
+            deployments = self._get_deployments(status_filter)
+            return {
+                "deployments": deployments,
+                "count": len(deployments)
+            }
+        except Exception as e:
+            return {"error": f"Failed to list deployments: {str(e)}"}
+
+    def _get_deployment_status(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Get deployment status"""
+        import subprocess
+        
+        task_id = arguments.get("task_id")
+        container_name = f"deploy-{task_id}"
+        
+        try:
+            # Check if container is running
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Status}}", container_name],
+                capture_output=True, text=True
+            )
+            
+            status = result.stdout.strip() if result.returncode == 0 else "not_found"
+            
+            # Get deployment info from database
+            deployment = self._get_deployment(task_id)
+            
+            return {
+                "task_id": task_id,
+                "container_status": status,
+                "deployment_status": deployment.get("status", "unknown") if deployment else "not_found",
+                "deployment_url": deployment.get("deployment_url") if deployment else None
+            }
+        except Exception as e:
+            return {"error": f"Failed to get status: {str(e)}"}
+
+    def _find_available_port(self, min_port=5001, max_port=5100) -> int:
+        """Find an available port"""
+        import socket
+        
+        for port in range(min_port, max_port):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                if result != 0:
+                    return port
+            except:
+                return port
+        raise Exception("No available ports")
+
+    def _store_deployment(self, task_id, container_id, container_port, host_port, 
+                          deployment_url, git_url, docker_image, memory_limit, cpu_limit):
+        """Store deployment in database"""
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host="127.0.0.1",
+                database="mcp_registry",
+                user="postgres",
+                password="postgres"
+            )
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO task_deployments 
+                (task_id, container_id, container_port, host_port, deployment_url, 
+                 git_commit_sha, docker_image, memory_limit, cpu_limit)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (task_id) DO UPDATE SET
+                    container_id = EXCLUDED.container_id,
+                    host_port = EXCLUDED.host_port,
+                    deployment_url = EXCLUDED.deployment_url,
+                    status = 'running',
+                    created_at = CURRENT_TIMESTAMP
+            """, (task_id, container_id, container_port, host_port, deployment_url,
+                  git_url.split('/')[-2] if git_url else None, docker_image, memory_limit, cpu_limit))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Warning: Could not store deployment: {e}")
+
+    def _update_deployment_status(self, task_id, status):
+        """Update deployment status in database"""
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host="127.0.0.1",
+                database="mcp_registry",
+                user="postgres",
+                password="postgres"
+            )
+            cursor = conn.cursor()
+            if status == "stopped":
+                cursor.execute("""
+                    UPDATE task_deployments 
+                    SET status = %s, stopped_at = CURRENT_TIMESTAMP 
+                    WHERE task_id = %s
+                """, (status, task_id))
+            else:
+                cursor.execute("""
+                    UPDATE task_deployments SET status = %s WHERE task_id = %s
+                """, (status, task_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Warning: Could not update deployment status: {e}")
+
+    def _get_deployments(self, status_filter="running"):
+        """Get deployments from database"""
+        try:
+            import psycopg2
+            from datetime import datetime, date
+            conn = psycopg2.connect(
+                host="127.0.0.1",
+                database="mcp_registry",
+                user="postgres",
+                password="postgres"
+            )
+            cursor = conn.cursor()
+            if status_filter == "all":
+                cursor.execute("SELECT * FROM task_deployments ORDER BY created_at DESC")
+            else:
+                cursor.execute("SELECT * FROM task_deployments WHERE status = %s ORDER BY created_at DESC",
+                             (status_filter,))
+            columns = [desc[0] for desc in cursor.description]
+            deployments = []
+            for row in cursor.fetchall():
+                dep_dict = dict(zip(columns, row))
+                # Convert datetime objects to ISO format strings for JSON serialization
+                for key, value in dep_dict.items():
+                    if isinstance(value, (datetime, date)):
+                        dep_dict[key] = value.isoformat()
+                deployments.append(dep_dict)
+            cursor.close()
+            conn.close()
+            return deployments
+        except Exception as e:
+            print(f"Warning: Could not get deployments: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def _get_deployment(self, task_id):
+        """Get single deployment from database"""
+        deployments = self._get_deployments("all")
+        for d in deployments:
+            if d.get("task_id") == task_id:
+                return d
+        return None
 
     def _execute_tool_with_llm(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool using LLM API through LM Studio"""
