@@ -507,47 +507,72 @@ class DevOpsReleaseEngineerHandlers:
             # ✅ CRITICAL VALIDATION: Check for localhost binding in Flask/web apps
             # This prevents deployment of apps that won't be accessible from outside container
             localhost_binding_detected = False
-            deployment_will_fail = False
+            code_modified = False
             
             # Check for Flask app.run() without host='0.0.0.0'
             if 'app.run(' in content:
                 if 'host=' not in content:
+                    # Fix: Add host='0.0.0.0' to app.run()
                     localhost_binding_detected = True
-                    deployment_will_fail = True
-                    print(f"❌ VALIDATION FAILED: Flask app.run() missing host='0.0.0.0'")
-                    print(f"   Deployment would FAIL - app would bind to 127.0.0.1 only")
+                    code_modified = True
+                    print(f"⚠️  DETECTED: Flask app.run() missing host='0.0.0.0'")
+                    print(f"   Auto-fixing: Adding host='0.0.0.0' to app.run()...")
+                    # Replace app.run(...) with app.run(host='0.0.0.0', ...)
+                    import re
+                    content = re.sub(
+                        r'app\.run\(([^)]*)\)',
+                        lambda m: f"app.run(host='0.0.0.0', {m.group(1)})" if m.group(1).strip() else "app.run(host='0.0.0.0')",
+                        content
+                    )
+                    print(f"   ✅ Fixed: app.run() now includes host='0.0.0.0'")
                 elif "host='0.0.0.0'" not in content and 'host="0.0.0.0"' not in content:
                     # Check if host is set to localhost or 127.0.0.1
                     if "host='127.0.0.1'" in content or 'host="127.0.0.1"' in content:
                         localhost_binding_detected = True
-                        deployment_will_fail = True
-                        print(f"❌ VALIDATION FAILED: Flask app.run(host='127.0.0.1') detected")
-                        print(f"   Deployment would FAIL - app binds to localhost only")
+                        code_modified = True
+                        print(f"⚠️  DETECTED: Flask app.run(host='127.0.0.1')")
+                        print(f"   Auto-fixing: Replacing host='127.0.0.1' with host='0.0.0.0'...")
+                        content = content.replace("host='127.0.0.1'", "host='0.0.0.0'")
+                        content = content.replace('host="127.0.0.1"', 'host="0.0.0.0"')
+                        print(f"   ✅ Fixed: host changed to '0.0.0.0'")
                     elif "host='localhost'" in content or 'host="localhost"' in content:
                         localhost_binding_detected = True
-                        deployment_will_fail = True
-                        print(f"❌ VALIDATION FAILED: Flask app.run(host='localhost') detected")
-                        print(f"   Deployment would FAIL - app binds to localhost only")
+                        code_modified = True
+                        print(f"⚠️  DETECTED: Flask app.run(host='localhost')")
+                        print(f"   Auto-fixing: Replacing host='localhost' with host='0.0.0.0'...")
+                        content = content.replace("host='localhost'", "host='0.0.0.0'")
+                        content = content.replace('host="localhost"', 'host="0.0.0.0"')
+                        print(f"   ✅ Fixed: host changed to '0.0.0.0'")
             
             # Check for http.server/TCPServer binding to localhost
             if "HTTPServer(('localhost'" in content or 'HTTPServer(("localhost"' in content:
                 localhost_binding_detected = True
-                deployment_will_fail = True
-                print(f"❌ VALIDATION FAILED: HTTPServer binding to localhost detected")
+                code_modified = True
+                print(f"⚠️  DETECTED: HTTPServer binding to localhost")
+                print(f"   Auto-fixing: Replacing 'localhost' with '0.0.0.0'...")
+                content = content.replace("HTTPServer(('localhost'", "HTTPServer(('0.0.0.0',")
+                content = content.replace('HTTPServer(("localhost"', 'HTTPServer(("0.0.0.0",')
+                print(f"   ✅ Fixed: HTTPServer now binds to '0.0.0.0'")
             if "HTTPServer(('127.0.0.1'" in content or 'HTTPServer(("127.0.0.1"' in content:
                 localhost_binding_detected = True
-                deployment_will_fail = True
-                print(f"❌ VALIDATION FAILED: HTTPServer binding to 127.0.0.1 detected")
+                code_modified = True
+                print(f"⚠️  DETECTED: HTTPServer binding to 127.0.0.1")
+                print(f"   Auto-fixing: Replacing '127.0.0.1' with '0.0.0.0'...")
+                content = content.replace("HTTPServer(('127.0.0.1'", "HTTPServer(('0.0.0.0',")
+                content = content.replace('HTTPServer(("127.0.0.1"', 'HTTPServer(("0.0.0.0",')
+                print(f"   ✅ Fixed: HTTPServer now binds to '0.0.0.0'")
             
-            # If localhost binding detected, abort deployment
-            if deployment_will_fail:
-                print(f"🚫 Deployment ABORTED - code must be fixed first")
-                print(f"   Fix: Change app.run() to app.run(host='0.0.0.0', port=PORT)")
-                return {
-                    "error": f"Deployment aborted: Web server binds to localhost. "
-                             f"Code must use host='0.0.0.0' for Docker compatibility. "
-                             f"Fix: app.run(host='0.0.0.0', port=PORT)"
-                }
+            # If code was modified, save the fixed version
+            if code_modified:
+                print(f"💾 Saving fixed code to result.py...")
+                with open(os.path.join(deploy_dir, "result.py"), 'w') as f:
+                    f.write(content)
+                print(f"   ✅ Code fixed and saved")
+                
+                # Also update the git result with the fix
+                print(f"📝 Note: Code was auto-fixed for Docker compatibility")
+                print(f"   Original code had localhost binding, which would fail in Docker")
+                print(f"   Fixed code now binds to 0.0.0.0 for proper container networking")
             
             if container_port != 5000:
                 print(f"⚠️  Non-standard port detected: {container_port} (default is 5000)")
