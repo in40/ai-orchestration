@@ -146,7 +146,7 @@ async def test_async_task_functionality():
                             
                             if "result" in result_data and "result" in result_data["result"]:
                                 print("\n=== GENERATED CODE ===")
-                                print(result_data["result"]["result"])
+                                print(result_data["result"])
                                 print("=====================")
     
     except Exception as e:

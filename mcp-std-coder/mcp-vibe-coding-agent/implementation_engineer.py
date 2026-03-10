@@ -472,8 +472,9 @@ def register_implementation_engineer_tools(server_handlers):
         server_handlers.notification_manager.mark_tools_changed()
 
     # Enhance the _execute_tool method to handle Implementation Engineer tools
-    original_execute_tool = server_handlers._execute_tool
-
+    # Store reference to existing wrapper (if any) to chain properly
+    existing_execute_tool = getattr(server_handlers, '_execute_tool', None)
+    
     def enhanced_execute_tool(tool, arguments):
         tool_name = tool["name"]
 
@@ -520,7 +521,10 @@ def register_implementation_engineer_tools(server_handlers):
                 return {"error": f"Failed to execute refactor_code: {str(e)}"}
 
         else:
-            # Call the original method for other tools
-            return original_execute_tool(tool, arguments)
+            # Call the existing wrapper (which may handle vibe coding tools) or original method
+            if existing_execute_tool is not None:
+                return existing_execute_tool(tool, arguments)
+            else:
+                return server_handlers._execute_tool(tool, arguments)
 
     server_handlers._execute_tool = enhanced_execute_tool

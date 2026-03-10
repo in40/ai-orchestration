@@ -56,6 +56,6 @@ class MockLlmClient:
             # If not JSON, return as text
             return {"response": response, "parsed": False}
     
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, temperature: float = 0.7) -> str:
         """Generate content using the LLM"""
-        return self.call_llm(prompt)
+        return self.call_llm(prompt, temperature=temperature)

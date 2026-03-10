@@ -240,7 +240,7 @@ class PostgresTaskManager:
             cursor = self.connection.cursor()
             cursor.execute("""
                 UPDATE async_tasks
-                SET status = %s, result_data = %s, updated_at = %s, expires_at = %s
+                SET status = %s, progress = 100, result_data = %s, updated_at = %s, expires_at = %s
                 WHERE task_id = %s
             """, (
                 TaskStatus.COMPLETED.value,
@@ -359,15 +359,15 @@ class PostgresTaskManager:
 
     def submit_for_processing(self, task_id: str, llm_call_func):
         """Submit task for background processing"""
+        
         def process_task():
-            # First update status to working
-            self.update_task_status(task_id, TaskStatus.WORKING, 10)
-
             try:
+                # First update status to working
+                self.update_task_status(task_id, TaskStatus.WORKING, 10)
+                
                 # Get the task input data
                 task = self.get_task(task_id)
                 if not task:
-                    print(f"❌ Task {task_id} not found during processing")
                     return
 
                 # Call the LLM function with the input data
@@ -393,15 +393,15 @@ def create_task_manager(use_postgres=False, **postgres_config):
             "user": getattr(settings, 'postgres_user', 'postgres'),
             "password": getattr(settings, 'postgres_password', '')
         }
-        try:
-            return PostgresTaskManager(**pg_config)
-        except Exception as e:
-            print(f"⚠️  Warning: Failed to connect to PostgreSQL for task storage: {e}")
-            print("⚠️  Falling back to in-memory task storage")
-            # Use in-memory task manager as fallback
-            from .async_task_manager import task_manager
-            return task_manager
+        return PostgresTaskManager(**pg_config)
     else:
-        # Use in-memory task manager
-        from .async_task_manager import task_manager
-        return task_manager
+        # PostgreSQL is required - this should never be reached
+        from config import settings
+        pg_config = {
+            "host": getattr(settings, 'postgres_host', 'localhost'),
+            "port": getattr(settings, 'postgres_port', 5432),
+            "database": getattr(settings, 'postgres_db', 'mcp_registry'),
+            "user": getattr(settings, 'postgres_user', 'postgres'),
+            "password": getattr(settings, 'postgres_password', '')
+        }
+        return PostgresTaskManager(**pg_config)

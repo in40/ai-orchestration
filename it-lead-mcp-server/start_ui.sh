@@ -14,7 +14,7 @@ IT_LEAD_PORT=3061
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT=3031
 LLM_PROVIDER_URL="http://asus-tus:1234/v1/chat/completions"
-LLM_MODEL="qwen3-4b"
+LLM_MODEL="qwen3.5-35b-a3b@q5_k_xl"
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --registry-host HOST     Host for registry server [default: 127.0.0.1]"
       echo "  --registry-port PORT     Port for registry server [default: 3031]"
       echo "  --llm-provider-url URL   URL for the LLM provider [default: http://asus-tus:1234/v1/chat/completions]"
-      echo "  --llm-model MODEL        LLM model name [default: qwen3-4b]"
+      echo "  --llm-model MODEL        LLM model name [default: qwen3.5-35b-a3b@q5_k_xl]"
       echo "  -h, --help              Show this help message"
       exit 0
       ;;
@@ -90,19 +90,27 @@ echo ""
 cleanup() {
     echo ""
     echo "Shutting down Web UI..."
-    # Kill all background processes
-    jobs -p | xargs -r kill 2>/dev/null
+    # Kill backend process if it's still running
+    if kill -0 $WEB_BACKEND_PID 2>/dev/null; then
+        kill -TERM $WEB_BACKEND_PID 2>/dev/null || true
+        wait $WEB_BACKEND_PID 2>/dev/null || true
+    fi
+    # Kill frontend process if it's still running
+    if kill -0 $WEB_FRONTEND_PID 2>/dev/null; then
+        kill -TERM $WEB_FRONTEND_PID 2>/dev/null || true
+        wait $WEB_FRONTEND_PID 2>/dev/null || true
+    fi
     exit 0
 }
 
 # Trap SIGINT and SIGTERM
 trap cleanup INT TERM
 
-# Start Web UI backend in the background
+# Start Web UI backend in the background with nohup to protect from signals
 echo "Starting Web UI backend on ${WEB_BACKEND_HOST}:${WEB_BACKEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/backend
 source venv/bin/activate
-uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" &
+nohup uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" > /tmp/backend.log 2>&1 &
 WEB_BACKEND_PID=$!
 
 echo "Web Backend PID: ${WEB_BACKEND_PID}"
@@ -110,10 +118,10 @@ echo "Web Backend PID: ${WEB_BACKEND_PID}"
 # Wait a moment for the backend to start
 sleep 3
 
-# Start Web UI frontend in the background
+# Start Web UI frontend in the background with nohup to protect from signals
 echo "Starting Web UI frontend on port ${WEB_FRONTEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/frontend
-npm run dev -- --port "${WEB_FRONTEND_PORT}" &
+nohup npm run dev -- --port "${WEB_FRONTEND_PORT}" > /tmp/frontend.log 2>&1 &
 WEB_FRONTEND_PID=$!
 
 echo "Web Frontend PID: ${WEB_FRONTEND_PID}"

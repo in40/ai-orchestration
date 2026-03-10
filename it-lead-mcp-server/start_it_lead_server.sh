@@ -13,7 +13,7 @@ ENABLE_REGISTRY=true
 REGISTER_WITH_REGISTRY=true
 REGISTRY_HOST="127.0.0.1"
 REGISTRY_PORT=3031
-USE_POSTGRES=true  # Changed to true to use PostgreSQL by default
+USE_POSTGRES=false  # Changed to false to use SQLite by default (matching Registry Server)
 POSTGRES_HOST="127.0.0.1"
 POSTGRES_PORT=5432
 POSTGRES_DB="mcp_registry"
@@ -21,7 +21,7 @@ POSTGRES_USER="postgres"
 POSTGRES_PASSWORD="postgres"  # You should change this to a secure password in production
 MAX_CONCURRENT_REQUESTS=10
 LLM_PROVIDER_URL="http://asus-tus:1234/v1/chat/completions"
-LLM_MODEL="qwen3-4b"
+LLM_MODEL="qwen3.5-35b-a3b@q5_k_xl"
 PROMPTS_DIR="."
 
 # Parse command line options
@@ -119,7 +119,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --postgres-password PASS  PostgreSQL password [default: postgres]"
       echo "  --max-concurrent-requests NUM  Maximum number of concurrent requests [default: 10]"
       echo "  --llm-provider-url URL    URL for the LLM provider [default: http://asus-tus:1234/v1/chat/completions]"
-      echo "  --llm-model MODEL         LLM model name [default: qwen3-4b]"
+      echo "  --llm-model MODEL         LLM model name [default: qwen3.5-35b-a3b@q5_k_xl]"
       echo "  --prompts-dir DIR         Directory to keep prompts [default: current directory]"
       echo "  -h, --help               Show this help message"
       exit 0
@@ -164,11 +164,20 @@ if [ "$REGISTRY_PORT" != "3031" ]; then
 fi
 
 if [ "$USE_POSTGRES" = true ]; then
-  CMD_ARGS="$CMD_ARGS --use-postgres --postgres-host $POSTGRES_HOST --postgres-port $POSTGRES_PORT --postgres-db $POSTGRES_DB --postgres-user $POSTGRES_USER --postgres-password $POSTGRES_PASSWORD"
-  echo "Configured to use PostgreSQL for task storage (host: $POSTGRES_HOST, port: $POSTGRES_PORT, db: $POSTGRES_DB)"
-else
-  # When USE_POSTGRES is false, we don't pass --use-postgres flag, so it defaults to SQLite
-  echo "Configured to use SQLite for task storage"
+  CMD_ARGS="$CMD_ARGS --use-postgres"
+fi
+
+echo "Configured to use PostgreSQL for task storage"
+
+# Add postgres-specific args when using postgres (always pass them, even if default)
+if [ "$USE_POSTGRES" = true ]; then
+  CMD_ARGS="$CMD_ARGS --postgres-host $POSTGRES_HOST"
+  CMD_ARGS="$CMD_ARGS --postgres-port $POSTGRES_PORT"
+  CMD_ARGS="$CMD_ARGS --postgres-db $POSTGRES_DB"
+  CMD_ARGS="$CMD_ARGS --postgres-user $POSTGRES_USER"
+  if [ -n "$POSTGRES_PASSWORD" ]; then
+    CMD_ARGS="$CMD_ARGS --postgres-password $POSTGRES_PASSWORD"
+  fi
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
@@ -179,7 +188,7 @@ if [ "$LLM_PROVIDER_URL" != "http://asus-tus:1234/v1/chat/completions" ]; then
   CMD_ARGS="$CMD_ARGS --llm-provider-url $LLM_PROVIDER_URL"
 fi
 
-if [ "$LLM_MODEL" != "qwen3-4b" ]; then
+if [ "$LLM_MODEL" != "qwen3.5-35b-a3b@q5_k_xl" ]; then
   CMD_ARGS="$CMD_ARGS --llm-model $LLM_MODEL"
 fi
 
@@ -189,4 +198,10 @@ fi
 
 echo "Executing: python -c \"import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()\""
 export PYTHONPATH=".:$PYTHONPATH"
+
+# Set PostgreSQL password via environment variable for authentication
+if [ "$USE_POSTGRES" = true ] && [ -n "$POSTGRES_PASSWORD" ]; then
+  export PGPASSWORD="$POSTGRES_PASSWORD"
+fi
+
 python -c "import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()"

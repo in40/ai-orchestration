@@ -1,6 +1,11 @@
 """
 Task Routing Engine for IT Lead MCP Server
 Evaluates tasks against routing rules and determines agent assignment
+
+ARCHITECTURE NOTE:
+This routing engine uses the MCP Registry Client to discover agent endpoints via MCP protocol.
+It does NOT directly access the registry database - it communicates with the central MCP
+Registry Server (port 3031) via HTTP POST to /mcp endpoint, following proper MCP architecture.
 """
 import re
 import json
@@ -36,26 +41,80 @@ class RoutingDecision:
 
 class TaskRoutingEngine:
     """Evaluates tasks against routing rules and determines agent assignment"""
-    
-    def __init__(self, llm_client=None, service_registry=None):
+
+    def __init__(self, llm_client=None, service_registry=None, mcp_registry_client=None):
         self.llm_client = llm_client
-        self.service_registry = service_registry
+        self.service_registry = service_registry  # Deprecated: kept for backward compatibility
+        self.mcp_registry_client = mcp_registry_client  # NEW: MCP protocol-based registry client
         self.rules = TASK_ROUTING_RULES
         self.agent_endpoints = AGENT_ENDPOINTS.copy()
         self.agent_tool_mapping = AGENT_TOOL_MAPPING.copy()
-        
-        # Update agent endpoints from registry if available
-        if service_registry:
+
+        # Update agent endpoints from MCP Registry Server via MCP protocol
+        if mcp_registry_client:
+            self._update_agent_endpoints_from_mcp_registry()
+        elif service_registry:
+            # Fallback to old direct DB access (deprecated)
+            print("⚠️  Using deprecated direct DB registry access - should use MCP Registry Client instead")
             self._update_agent_endpoints_from_registry()
-    
+
+    def _update_agent_endpoints_from_mcp_registry(self):
+        """
+        Update agent endpoints from the central MCP Registry Server via MCP protocol.
+        
+        This is the CORRECT way to discover agents - by calling registry/list
+        on the MCP Registry Server (port 3031) via HTTP POST to /mcp.
+        """
+        if not self.mcp_registry_client:
+            return
+            
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=True)
+            print(f"📋 Discovered {len(services)} services from MCP Registry Server")
+            
+            for service in services:
+                service_name = service.get("name", "").lower()
+                endpoint = service.get("endpoint")
+                
+                # Skip the registry server itself
+                if "registry" in service_name and "mcp registry" in service_name:
+                    continue
+                    
+                # Map service names to agent IDs
+                if "implementation" in service_name and endpoint:
+                    old_endpoint = self.agent_endpoints.get("implementation-engineer")
+                    self.agent_endpoints["implementation-engineer"] = endpoint
+                    print(f"✅ Found implementation-engineer: {endpoint} (was: {old_endpoint})")
+                elif "requirement" in service_name and endpoint:
+                    # Use the first requirements engineer found (prefer 127.0.0.1 over 0.0.0.0)
+                    current = self.agent_endpoints.get("requirements-engineer")
+                    if not current or ("0.0.0.0" in current and "127.0.0.1" in endpoint):
+                        self.agent_endpoints["requirements-engineer"] = endpoint
+                        print(f"✅ Found requirements-engineer: {endpoint}")
+                elif "code" in service_name and "review" in service_name and endpoint:
+                    self.agent_endpoints["code-reviewer"] = endpoint
+                    print(f"✅ Found code-reviewer: {endpoint}")
+                elif ("qa" in service_name or "test" in service_name) and endpoint:
+                    self.agent_endpoints["qa-test-engineer"] = endpoint
+                    print(f"✅ Found qa-test-engineer: {endpoint}")
+                elif "security" in service_name and endpoint:
+                    self.agent_endpoints["security-engineer"] = endpoint
+                    print(f"✅ Found security-engineer: {endpoint}")
+                elif "devops" in service_name and endpoint:
+                    self.agent_endpoints["devops-engineer"] = endpoint
+                    print(f"✅ Found devops-engineer: {endpoint}")
+                    
+        except Exception as e:
+            print(f"❌ Error updating agent endpoints from MCP Registry Server: {e}")
+
     def _update_agent_endpoints_from_registry(self):
-        """Update agent endpoints from the service registry"""
+        """Update agent endpoints from the service registry (DEPRECATED - direct DB access)"""
         try:
             services = self.service_registry.list_services()
             for service in services:
                 service_name = service.get("name", "").lower()
                 endpoint = service.get("endpoint")
-                
+
                 if "implementation" in service_name and endpoint:
                     self.agent_endpoints["implementation-engineer"] = endpoint
                 elif "requirement" in service_name and endpoint:
@@ -117,49 +176,62 @@ class TaskRoutingEngine:
     def _handle_explicit_assignee(self, assignee: str, task_description: str,
                                   context: Dict[str, Any]) -> RoutingDecision:
         """Handle explicit assignee in task assignment"""
-        # Normalize assignee
+        # Normalize assignee for lookup but keep original name for storage/display
         assignee_lower = assignee.lower().replace(" ", "-").replace("_", "-")
         
-        # Map common variations
+        # Map common variations to (proper_name_for_storage, normalized_name_for_lookup)
         assignee_mapping = {
-            "implementation-engineer": "implementation-engineer",
-            "implementation-engineer-agent": "implementation-engineer",
-            "implementation": "implementation-engineer",
-            "requirements-engineer": "requirements-engineer",
-            "requirements-engineer-agent": "requirements-engineer",
-            "requirements": "requirements-engineer",
-            "code-reviewer": "code-reviewer",
-            "code-reviewer-agent": "code-reviewer",
-            "reviewer": "code-reviewer",
-            "qa-test-engineer": "qa-test-engineer",
-            "qa-test-engineer-agent": "qa-test-engineer",
-            "qa": "qa-test-engineer",
-            "tester": "qa-test-engineer",
-            "security-engineer": "security-engineer",
-            "security-engineer-agent": "security-engineer",
-            "security": "security-engineer",
-            "devops-engineer": "devops-engineer",
-            "devops-engineer-agent": "devops-engineer",
-            "devops": "devops-engineer",
+            "it-lead": ("IT Lead", "assign_task"),
+            "implementation-engineer": ("Implementation Engineer", "implement_feature"),
+            "implementation-engineer-agent": ("Implementation Engineer", "implement_feature"),
+            "implementation": ("Implementation Engineer", "implement_feature"),
+            "requirements-engineer": ("Requirements Engineer", "analyze_requirements"),
+            "requirements-engineer-agent": ("Requirements Engineer", "analyze_requirements"),
+            "requirements": ("Requirements Engineer", "analyze_requirements"),
+            "code-reviewer": ("Code Reviewer", "review_code"),
+            "code-reviewer-agent": ("Code Reviewer", "review_code"),
+            "reviewer": ("Code Reviewer", "review_code"),
+            "qa-test-engineer": ("QA Test Engineer", "generate_test_suite"),
+            "qa-test-engineer-agent": ("QA Test Engineer", "generate_test_suite"),
+            "qa": ("QA Test Engineer", "generate_test_suite"),
+            "tester": ("QA Test Engineer", "generate_test_suite"),
+            "security-engineer": ("Security Engineer", "perform_security_analysis"),
+            "security-engineer-agent": ("Security Engineer", "perform_security_analysis"),
+            "security": ("Security Engineer", "perform_security_analysis"),
+            "devops-engineer": ("DevOps Engineer", "orchestrate_deployments"),
+            "devops-engineer-agent": ("DevOps Engineer", "orchestrate_deployments"),
+            "devops": ("DevOps Engineer", "orchestrate_deployments"),
         }
         
-        normalized_assignee = assignee_mapping.get(assignee_lower, assignee_lower)
+        # Check if assignee exists in mapping
+        result = assignee_mapping.get(assignee_lower)
         
-        # Check if agent is available
-        agent_endpoint = self.agent_endpoints.get(normalized_assignee)
+        if result:
+            proper_name, tool = result
+            return RoutingDecision(
+                success=True,
+                assign_to=proper_name,  # Use proper name for storage and display
+                tool=tool,
+                priority="medium",
+                confidence=1.0,
+                matched_rule_id="explicit-assignee",
+                requires_llm_planning=False,
+                metadata={"explicit_assignment": True}
+            )
         
-        # Determine appropriate tool based on task description
+        # Fallback: use normalized assignee as-is (for backward compatibility)
+        normalized_assignee = assignee_lower
         tool = self._determine_tool_for_assignee(normalized_assignee, task_description)
-        
+
         return RoutingDecision(
             success=True,
-            assign_to=normalized_assignee,
+            assign_to=normalized_assignee,  # Keep original for backward compatibility
             tool=tool,
             priority="medium",
             confidence=1.0,
             matched_rule_id="explicit-assignee",
             requires_llm_planning=False,
-            metadata={"explicit_assignment": True, "agent_endpoint": agent_endpoint}
+            metadata={"explicit_assignment": True}
         )
     
     def _determine_tool_for_assignee(self, assignee: str, task_description: str) -> str:
@@ -366,7 +438,7 @@ class TaskRoutingEngine:
             matched_phases = 0
             for phase in phases:
                 phase_keywords = phase.get("keywords", [])
-                if any(kw.lower() in task_description.lower() for kw in phase_keyword):
+                if any(kw.lower() in task_description.lower() for kw in phase_keywords):
                     matched_phases += 1
             
             if matched_phases < len(phases) * 0.5:
@@ -388,7 +460,7 @@ class TaskRoutingEngine:
         """Evaluate explicit assignee rule"""
         assignee_explicit = conditions.get("assignee_explicit")
         
-        if assignee_explicit:
+        if assignee_explicit and (context.get("explicit_assignee") == assignee_explicit):
             # This rule is for explicit assignee matching
             # The actual matching happens in _handle_explicit_assignee
             return RuleMatchResult(

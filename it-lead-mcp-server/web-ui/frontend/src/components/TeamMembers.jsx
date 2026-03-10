@@ -9,7 +9,10 @@ import {
   Box,
   Button,
   CircularProgress,
-  Alert
+  Alert,
+  Tabs,
+  Tab,
+  Divider
 } from '@mui/material';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
@@ -19,16 +22,24 @@ const TeamMembers = () => {
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [tabValue, setTabValue] = useState(0);
 
+  // Load agents from registry using dynamic discovery
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true);
-        const response = await axios.get('/api/agents');
-        setAgents(response.data);
-        setError(null);
+        // Use the new dynamic planning endpoint to get all agents from registry
+        const response = await axios.get('/api/planner/agents');
+        
+        if (response.data.success) {
+          setAgents(response.data.agents || []);
+          setError(null);
+        } else {
+          setError('Failed to load team members');
+        }
       } catch (err) {
-        setError('Failed to load team members');
+        setError('Failed to load team members from registry');
         console.error('Error loading team members:', err);
       } finally {
         setLoading(false);
@@ -83,10 +94,12 @@ const TeamMembers = () => {
               
               <Typography variant="subtitle2" gutterBottom>Capabilities:</Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
-                {agent.capabilities.slice(0, 5).map((capability, idx) => (
-                  <Chip key={idx} label={capability} size="small" variant="outlined" />
-                ))}
-                {agent.capabilities.length > 5 && (
+                {/* Handle both formats: array of strings or array of objects */}
+                {agent.capabilities && agent.capabilities.slice(0, 5).map((capability, idx) => {
+                  const capabilityName = typeof capability === 'string' ? capability : capability.name;
+                  return <Chip key={idx} label={capabilityName} size="small" variant="outlined" />;
+                })}
+                {agent.capabilities && agent.capabilities.length > 5 && (
                   <Chip label={`+${agent.capabilities.length - 5} more`} size="small" variant="outlined" />
                 )}
               </Box>

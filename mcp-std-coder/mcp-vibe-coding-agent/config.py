@@ -14,11 +14,11 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
 
     # LM Studio configuration
-    llm_base_url: str = "http://asus-tus:1234/v1"
-    llm_model: str = "qwen3-4b"
+    llm_base_url: str = "http://192.168.51.237:1234/v1"
+    llm_model: str = "qwen3.5-35b-a3b@q5_k_xl"
 
     # PostgreSQL configuration for persistent task storage
-    postgres_host: str = "localhost"
+    postgres_host: str = "127.0.0.1"
     postgres_port: int = 5432
     postgres_db: str = "mcp_registry"
     postgres_user: str = "postgres"

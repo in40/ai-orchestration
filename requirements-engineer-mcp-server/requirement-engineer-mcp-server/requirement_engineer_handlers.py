@@ -5,6 +5,7 @@ Implements all requirement engineering tools, resources, and prompts
 import time
 import json
 import requests
+import re
 from typing import Dict, Any, List, Optional
 from mcp_std_server.utils.json_rpc import JsonRpcHandler, JsonRpcMessage
 from mcp_std_server.handlers.server_handlers import McpServerHandlers
@@ -106,6 +107,51 @@ class RequirementEngineerHandlers(McpServerHandlers):
         
         # Extend the tools list with requirement engineering tools
         self.tools.extend(requirement_engineering_tools)
+    def _get_git_helper(self):
+        """Get or initialize agent Git helper for pushing results to Git"""
+        try:
+            from mcp_std_server.utils.agent_git_helper import get_agent_git_helper
+            import os
+            repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+            
+            helper = get_agent_git_helper(
+                agent_name="requirements-engineer",
+                repo_url=repo_url
+            )
+            return helper
+        except Exception as e:
+            print(f"⚠️  Warning: Git helper initialization failed: {e}")
+            print("   Falling back to returning result directly (no Git push)")
+            return None
+
+    def _push_result_to_git(self, task_id: str, content: str, content_type: str = "document", filename: str = "result") -> Dict[str, Any]:
+        """Push result to Git and return Git URL"""
+        git_helper = self._get_git_helper()
+        if git_helper:
+            try:
+                if content_type == "document":
+                    result = git_helper.store_document_result(
+                        task_id=task_id,
+                        content=content,
+                        document_type="markdown",
+                        filename=filename
+                    )
+                else:
+                    result = git_helper.store_result(
+                        task_id=task_id,
+                        content=content,
+                        filename=filename,
+                        content_type=content_type
+                    )
+                
+                if result["success"]:
+                    return {"git_url": result["git_url"], "success": True}
+                else:
+                    print(f"⚠️  Git push failed: {result.get('error')}")
+            except Exception as e:
+                print(f"⚠️  Git push error: {e}")
+        return {"git_url": None, "success": False, "content": content}
+
         
         # Add requirement engineering resources
         requirement_resources = [
@@ -183,7 +229,7 @@ class RequirementEngineerHandlers(McpServerHandlers):
 
         # Create a task record for tracking
         task_id = f"req-eng-{int(time.time())}-{tool_name}"
-        self.task_storage.create_task(task_id, tool_name, arguments, "started")
+        # self.task_storage.create_task(task_id, tool_name, arguments, "started")  # Skipped: IT Lead handles task storage
 
         try:
             # Handle requirement engineering tools
@@ -202,14 +248,14 @@ class RequirementEngineerHandlers(McpServerHandlers):
                 result = super()._execute_tool(tool, arguments)
 
             # Update task status to completed
-            self.task_storage.update_task_status(task_id, "completed", result)
+            # self.task_storage.update_task_status(task_id, "completed", result)  # Skipped: IT Lead handles task storage
             
             return result
             
         except Exception as e:
             # Update task status to failed
             error_msg = str(e)
-            self.task_storage.update_task_status(task_id, "failed", {"error": error_msg})
+            # self.task_storage.update_task_status(task_id, "failed", {"error": error_msg})  # Skipped: errors re-raised for IT Lead to handle
             raise e
 
     def _analyze_requirements(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -756,11 +802,11 @@ class RequirementEngineerHandlers(McpServerHandlers):
         """
         try:
             # LM Studio endpoint details from the requirements
-            url = "http://asus-tus:1234/v1/chat/completions"
+            url = "http://192.168.51.237:1234/v1/chat/completions"
             
             # Prepare the payload for the LLM API
             payload = {
-                "model": "qwen3-4b",  # From requirements
+                "model": "qwen3.5-35b-a3b@q5_k_xl",  # From requirements
                 "messages": [
                     {
                         "role": "user",
@@ -1051,7 +1097,7 @@ Please return a document containing:
         try:
             # Try to make a simple call to the LLM
             import requests
-            url = "http://asus-tus:1234/v1/models"
+            url = "http://192.168.51.237:1234/v1/models"
             response = requests.get(url, timeout=5)
             if response.status_code == 200:
                 return "ok"
