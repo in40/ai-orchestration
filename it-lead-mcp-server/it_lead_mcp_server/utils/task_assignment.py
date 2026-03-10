@@ -356,14 +356,23 @@ class TaskAssignmentManager:
             
             # Also check for deploy_after_implementation flag in metadata
             deploy_flag = False
+            print(f"🔍 Checking deploy_after_implementation flag...")
+            print(f"   metadata keys: {list(metadata.keys()) if metadata else 'None'}")
+            print(f"   metadata.deploy_after_implementation: {metadata.get('deploy_after_implementation') if metadata else 'N/A'}")
+            
             if metadata and metadata.get("deploy_after_implementation", False):
                 deploy_flag = True
+                print(f"   ✅ Found deploy_after_implementation in metadata directly")
             elif metadata and metadata.get("original_arguments"):
                 orig_args = metadata.get("original_arguments", {})
+                print(f"   original_arguments keys: {list(orig_args.keys())}")
+                print(f"   original_arguments.metadata.deploy_after_implementation: {orig_args.get('metadata', {}).get('deploy_after_implementation')}")
                 if orig_args.get("metadata", {}).get("deploy_after_implementation", False):
                     deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.metadata")
                 elif orig_args.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
                     deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.metadata")
             
             if needs_deployment or deploy_flag:
                 print(f"🚀 DEPLOYMENT DETECTED in rule-based routing!")
