@@ -72,6 +72,8 @@ class TaskAssignmentManager:
                         self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
                     elif "requirement" in service_name and endpoint:
                         self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
+                    elif "devops" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["devops-engineer"] = endpoint
             except Exception as e:
                 print(f"Error updating agent endpoints from registry: {e}")
 
