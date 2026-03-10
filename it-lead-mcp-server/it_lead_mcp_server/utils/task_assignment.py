@@ -524,43 +524,89 @@ class TaskAssignmentManager:
                         else:
                             # Sync task or error, handle inline
                             print(f"⚠️ Task {task_id} is not async or already completed, handling inline")
-                            if self.task_storage:
-                                storage_ref = {
-                                    "storage_type": "inline",
-                                    "result": str(result_data)[:500] if result_data else "No result"
-                                }
-                                self.task_storage.update_task_result_reference(
-                                    task_id=task_id,
-                                    storage_ref=storage_ref,
-                                    metadata={
-                                        "routing_decision": {
-                                            "matched_rule_id": routing_decision.matched_rule_id,
-                                            "confidence": routing_decision.confidence,
-                                            "requires_llm_planning": routing_decision.requires_llm_planning
+                            print(f"   forward_result keys: {list(forward_result.keys())}")
+                            print(f"   forward_result.success: {forward_result.get('success')}")
+                            print(f"   forward_result.error: {forward_result.get('error')}")
+                            
+                            # Extract result_data from response
+                            agent_response = forward_result.get("response", {})
+                            result_data = agent_response.get("result", {})
+                            
+                            # ✅ CRITICAL FIX: Check for workflow sequence even if agent returned error or unexpected response
+                            workflow_sequence = llm_plan.get("workflow_sequence", []) if llm_plan else []
+                            
+                            if workflow_sequence and len(workflow_sequence) > 1:
+                                print(f"🔄 Task {task_id} has workflow sequence: {workflow_sequence}")
+                                print(f"   Checking if we should forward to next agent...")
+                                
+                                # Extract git_url from result_data if available
+                                sync_git_url = None
+                                if isinstance(result_data, dict):
+                                    sync_git_url = result_data.get("git_url")
+                                
+                                # Check if agent returned success OR if we have a git_url
+                                if forward_result.get("success") or sync_git_url:
+                                    print(f"   ✅ Agent completed successfully, git_url={sync_git_url}")
+                                    # Store result if we have one
+                                    if result_data and self.task_storage:
+                                        storage_ref = {
+                                            "storage_type": "inline" if not sync_git_url else "git",
+                                            "result": str(result_data)[:500] if result_data else "No result",
+                                            "git_url": sync_git_url
                                         }
-                                    }
-                                )
-                                print(f"✅ Sync task {task_id} result stored")
-
-                                # Handle workflow sequence for sync tasks BEFORE marking as done
-                                workflow_sequence = llm_plan.get("workflow_sequence", []) if llm_plan else []
-                                if workflow_sequence and len(workflow_sequence) > 1:
-                                    # There are more agents in the workflow, don't mark as done yet
-                                    print(f"🔄 Sync task {task_id} has workflow sequence, calling workflow handler")
-                                    # Extract git_url from result_data if available
-                                    sync_git_url = None
-                                    if isinstance(result_data, dict):
-                                        sync_git_url = result_data.get("git_url")
+                                        self.task_storage.update_task_result_reference(
+                                            task_id=task_id,
+                                            storage_ref=storage_ref,
+                                            metadata={
+                                                "routing_decision": {
+                                                    "matched_rule_id": routing_decision.matched_rule_id,
+                                                    "confidence": routing_decision.confidence,
+                                                    "requires_llm_planning": routing_decision.requires_llm_planning
+                                                }
+                                            }
+                                        )
+                                    
+                                    # ✅ Forward to next agent in workflow
                                     self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, sync_git_url)
                                 else:
-                                    # No workflow sequence, mark as done
-                                    status_value = "done"
-                                    self._update_task_status(
-                                        task_id, status_value,
-                                        "Task completed (sync processing)",
-                                        {"storage_type": "inline"}
+                                    # Agent failed but we have workflow sequence - log and mark task for manual review
+                                    error_msg = forward_result.get("error", "Unknown error")
+                                    print(f"   ❌ Agent failed but workflow sequence exists: {error_msg}")
+                                    print(f"   ⚠️  Task requires manual intervention")
+                                    
+                                    if self.task_storage:
+                                        self.task_storage.update_task_status(
+                                            task_id, "failed",
+                                            f"Agent {primary_agent} failed in workflow: {error_msg}. Manual review required."
+                                        )
+                            else:
+                                # No workflow sequence, handle as simple sync task
+                                if result_data and self.task_storage:
+                                    storage_ref = {
+                                        "storage_type": "inline",
+                                        "result": str(result_data)[:500] if result_data else "No result"
+                                    }
+                                    self.task_storage.update_task_result_reference(
+                                        task_id=task_id,
+                                        storage_ref=storage_ref,
+                                        metadata={
+                                            "routing_decision": {
+                                                "matched_rule_id": routing_decision.matched_rule_id,
+                                                "confidence": routing_decision.confidence,
+                                                "requires_llm_planning": routing_decision.requires_llm_planning
+                                            }
+                                        }
                                     )
-                                    print(f"✅ Sync task {task_id} marked as done")
+                                    print(f"✅ Sync task {task_id} result stored")
+                                
+                                # Mark as done
+                                status_value = "done"
+                                self._update_task_status(
+                                    task_id, status_value,
+                                    "Task completed (sync processing)",
+                                    {"storage_type": "inline"}
+                                )
+                                print(f"✅ Sync task {task_id} marked as done")
 
                 else:
                     result["status"] = "assigned_pending"
