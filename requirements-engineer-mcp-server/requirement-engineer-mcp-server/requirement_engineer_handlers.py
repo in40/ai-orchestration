@@ -16,18 +16,33 @@ class RequirementEngineerHandlers(McpServerHandlers):
     """Handles requirement engineering specific MCP server methods"""
 
     def __init__(self, enable_registry: bool = False, use_postgres: bool = False,
-                 postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None):
+                 postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
+                 llm_model: Optional[str] = None, llm_provider_url: Optional[str] = None):
         # Initialize the parent class
         super().__init__(enable_registry, use_postgres, postgres_config, client_handlers)
+
+        # Store LLM configuration - MUST come from environment, NO defaults
+        import os
+        if not llm_model:
+            llm_model = os.environ.get("LLM_MODEL")
+            if not llm_model:
+                raise ValueError("LLM_MODEL environment variable not set - must be defined in .env file")
+        self.llm_model = llm_model
         
+        if not llm_provider_url:
+            llm_provider_url = os.environ.get("LLM_PROVIDER_URL")
+            if not llm_provider_url:
+                raise ValueError("LLM_PROVIDER_URL environment variable not set - must be defined in .env file")
+        self.llm_provider_url = llm_provider_url
+
         # Clear default example tools and replace with requirement engineering tools
         self.tools = []
         self.resources = []
         self.prompts = []
-        
+
         # Add requirement engineering tools
         self._add_requirement_engineering_tools()
-        
+
         # Initialize task storage for tracking requirements tasks
         if use_postgres and postgres_config:
             self.task_storage = TaskStorage(use_postgres=True, postgres_config=postgres_config)
@@ -801,12 +816,12 @@ class RequirementEngineerHandlers(McpServerHandlers):
         Uses the LM Studio endpoint as specified in the requirements.
         """
         try:
-            # LM Studio endpoint details from the requirements
-            url = "http://192.168.51.237:1234/v1/chat/completions"
-            
+            # Use configured LLM endpoint and model
+            url = self.llm_provider_url
+
             # Prepare the payload for the LLM API
             payload = {
-                "model": "qwen3.5-35b-a3b@q5_k_xl",  # From requirements
+                "model": self.llm_model,
                 "messages": [
                     {
                         "role": "user",
@@ -816,23 +831,52 @@ class RequirementEngineerHandlers(McpServerHandlers):
                 "temperature": 0.7,
                 "max_tokens": 2048
             }
+
+            # Make the request to the LLM with retry and exponential backoff
+            max_retries = 3
+            base_timeout = 60
+            max_timeout = 300  # 5 minutes max
+            last_error = None
             
-            # Make the request to the LLM
-            response = requests.post(url, json=payload, timeout=60)
+            for attempt in range(max_retries):
+                try:
+                    # Calculate timeout with exponential backoff
+                    # Attempt 0: 60s, Attempt 1: 120s, Attempt 2: 240s (capped at max_timeout)
+                    timeout = min(base_timeout * (2 ** attempt), max_timeout)
+                    
+                    print(f"🔄 LLM call attempt {attempt + 1}/{max_retries} (timeout: {timeout}s)")
+                    
+                    response = requests.post(url, json=payload, timeout=timeout)
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        content = result["choices"][0]["message"]["content"]
+                        
+                        if content:
+                            print(f"✅ LLM call succeeded on attempt {attempt + 1}")
+                            # Extract JSON from the response
+                            return self._extract_json_from_response(content)
+                        else:
+                            print(f"⚠️ LLM returned empty content on attempt {attempt + 1}")
+                            last_error = Exception("LLM returned empty content")
+                    else:
+                        print(f"❌ LLM API request failed with status {response.status_code}: {response.text}")
+                        last_error = Exception(f"LLM API request failed: {response.status_code}")
+                        
+                except Exception as e:
+                    last_error = e
+                    print(f"❌ LLM call failed on attempt {attempt + 1}: {str(e)}")
+                    
+                    # Don't sleep after the last attempt
+                    if attempt < max_retries - 1:
+                        # Exponential backoff: 2s, 4s, 8s...
+                        wait_time = 2 ** (attempt + 1)
+                        print(f"⏳ Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
             
-            if response.status_code == 200:
-                result = response.json()
-                content = result["choices"][0]["message"]["content"]
-                
-                # Extract JSON from the response
-                return self._extract_json_from_response(content)
-            else:
-                print(f"LLM API request failed with status {response.status_code}: {response.text}")
-                return {"error": f"LLM API request failed: {response.status_code}"}
-                
-        except Exception as e:
-            print(f"Error calling LLM: {str(e)}")
-            return {"error": f"Error calling LLM: {str(e)}"}
+            # All retries failed
+            print(f"❌ All {max_retries} LLM call attempts failed")
+            return {"error": f"Error calling LLM after {max_retries} retries: {str(last_error)}"}
 
     def _read_resource(self, resource: Dict[str, Any]) -> Dict[str, Any]:
         """Read content from a specific requirement engineering resource"""

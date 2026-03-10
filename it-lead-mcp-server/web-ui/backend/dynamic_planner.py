@@ -338,25 +338,72 @@ JSON Output:"""
             "fallback": True
         }
     
-    async def _call_llm(self, prompt: str) -> str:
-        """Call LLM with prompt"""
-        payload = {
-            "model": self.llm_model,
-            "messages": [
-                {"role": "system", "content": "You are an intelligent task router. Always respond with valid JSON." },
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.3,  # Low temperature for more deterministic output
-            "max_tokens": 2000
-        }
+    async def _call_llm(self, prompt: str, max_retries: int = 3, base_timeout: int = 60, max_timeout: int = 300) -> str:
+        """Call LLM with prompt and exponential backoff retry
         
-        response = await asyncio.to_thread(
-            lambda: __import__('requests').post(self.llm_provider_url, json=payload, timeout=60)
-        )
-        response.raise_for_status()
+        Args:
+            prompt: The prompt to send to LLM
+            max_retries: Maximum number of retry attempts (default: 3)
+            base_timeout: Initial timeout in seconds (default: 60)
+            max_timeout: Maximum timeout in seconds (default: 300 = 5 minutes)
         
-        result = response.json()
-        return result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        Returns:
+            LLM response content
+        
+        Raises:
+            Exception: If all retries fail
+        """
+        import time
+        
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Calculate timeout with exponential backoff
+                # Attempt 0: 60s, Attempt 1: 120s, Attempt 2: 240s (capped at max_timeout)
+                timeout = min(base_timeout * (2 ** attempt), max_timeout)
+                
+                print(f"🔄 LLM call attempt {attempt + 1}/{max_retries} (timeout: {timeout}s)")
+                
+                payload = {
+                    "model": self.llm_model,
+                    "messages": [
+                        {"role": "system", "content": "You are an intelligent task router. Always respond with valid JSON." },
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.3,  # Low temperature for more deterministic output
+                    "max_tokens": 2000
+                }
+
+                response = await asyncio.to_thread(
+                    lambda: __import__('requests').post(self.llm_provider_url, json=payload, timeout=timeout)
+                )
+                response.raise_for_status()
+
+                result = response.json()
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                if content:
+                    print(f"✅ LLM call succeeded on attempt {attempt + 1}")
+                    return content
+                else:
+                    print(f"⚠️ LLM returned empty content on attempt {attempt + 1}")
+                    last_error = Exception("LLM returned empty content")
+                    
+            except Exception as e:
+                last_error = e
+                print(f"❌ LLM call failed on attempt {attempt + 1}: {e}")
+                
+                # Don't sleep after the last attempt
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 2s, 4s, 8s...
+                    wait_time = 2 ** (attempt + 1)
+                    print(f"⏳ Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+        
+        # All retries failed
+        print(f"❌ All {max_retries} LLM call attempts failed")
+        raise last_error
 
 
 class DynamicPlanner:
@@ -367,11 +414,25 @@ class DynamicPlanner:
     
     def __init__(
         self,
-        registry_host: str = "127.0.0.1",
-        registry_port: int = 3031,
-        llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-        llm_model: str = "qwen3.5-35b-a3b@q5_k_xl"
+        registry_host: str,
+        registry_port: int,
+        llm_provider_url: str,
+        llm_model: str
     ):
+        """
+        Initialize DynamicPlanner with configuration from .env
+        
+        All parameters MUST be provided - no hardcoded defaults.
+        Use settings from config module:
+            from config import get_settings
+            settings = get_settings()
+            planner = DynamicPlanner(
+                registry_host=settings.REGISTRY_HOST,
+                registry_port=settings.REGISTRY_PORT,
+                llm_provider_url=settings.LLM_PROVIDER_URL,
+                llm_model=settings.LLM_MODEL
+            )
+        """
         self.registry_client = RegistryClient(registry_host, registry_port)
         self.plan_generator = TaskPlanGenerator(llm_provider_url, llm_model)
     
