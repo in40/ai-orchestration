@@ -909,11 +909,40 @@ class TaskAssignmentManager:
         # Get next agent in sequence
         next_agent = workflow_sequence[current_index + 1]
         print(f"🔄 Forwarding task {task_id} to next agent in sequence: {next_agent}")
-        
-        # Get next agent's endpoint
+
+        # ✅ CRITICAL: Refresh agent endpoints from registry BEFORE looking up next agent
+        # This prevents race conditions where IT Lead started before other agents registered
+        print(f"   Refreshing agent endpoints from registry before forwarding...")
+        try:
+            if hasattr(self, 'mcp_registry_client') and self.mcp_registry_client:
+                services = self.mcp_registry_client.list_services(use_cache=False)
+                print(f"   📋 Refreshed: {len(services)} services from registry")
+                
+                # Update routing engine with fresh endpoints
+                for service in services:
+                    service_name = service.get("name", "").lower()
+                    endpoint = service.get("endpoint")
+                    
+                    if "registry" in service_name and "mcp registry" in service_name:
+                        continue
+                    
+                    if "devops" in service_name and endpoint:
+                        old = self.routing_engine.agent_endpoints.get("devops-engineer")
+                        self.routing_engine.agent_endpoints["devops-engineer"] = endpoint
+                        if old != endpoint:
+                            print(f"   ✅ Updated devops-engineer: {endpoint} (was: {old})")
+                    elif "implementation" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
+                    elif "requirement" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
+        except Exception as e:
+            print(f"   ⚠️  Could not refresh endpoints: {e}")
+
+        # Get next agent's endpoint (now with refreshed data)
         next_agent_endpoint = self.routing_engine.get_agent_endpoint(next_agent)
         if not next_agent_endpoint:
             print(f"❌ Could not find endpoint for next agent: {next_agent}")
+            print(f"   Available endpoints: {self.routing_engine.agent_endpoints}")
             return
         
         # Get tool for next agent from LLM plan
