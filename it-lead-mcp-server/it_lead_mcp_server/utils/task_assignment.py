@@ -556,6 +556,8 @@ class TaskAssignmentManager:
                                             "result": str(result_data)[:500] if result_data else "No result",
                                             "git_url": sync_git_url
                                         }
+                                        # ✅ CRITICAL FIX: Don't update status to 'done' for workflow sequences!
+                                        # Keep status as 'in_progress' until ALL agents in workflow complete
                                         self.task_storage.update_task_result_reference(
                                             task_id=task_id,
                                             storage_ref=storage_ref,
@@ -565,9 +567,10 @@ class TaskAssignmentManager:
                                                     "confidence": routing_decision.confidence,
                                                     "requires_llm_planning": routing_decision.requires_llm_planning
                                                 }
-                                            }
+                                            },
+                                            update_status=False  # Don't set to 'done' - workflow still in progress!
                                         )
-                                    
+
                                     # ✅ Forward to next agent in workflow
                                     self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, sync_git_url)
                                 else:

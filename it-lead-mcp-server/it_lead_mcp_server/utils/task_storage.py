@@ -596,11 +596,12 @@ class TaskStorage:
         self,
         task_id: str,
         storage_ref: Dict[str, Any],
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        update_status: bool = True  # NEW: Allow skipping status update for workflow sequences
     ) -> bool:
         """
         Update task with result storage reference.
-        
+
         Instead of storing full result in DB, stores reference in metadata:
         {
             "storage_type": "git",  # or "s3", "local", "ssh"
@@ -608,12 +609,13 @@ class TaskStorage:
             "commit_sha": "a1b2c3d4...",
             "file_path": "/var/mcp-results/results/task-123/result.py"
         }
-        
+
         Args:
             task_id: Task identifier
             storage_ref: Storage reference dict from ResultRouter
             metadata: Additional metadata
-            
+            update_status: If True, updates status to 'done'. Set to False for workflow sequences.
+
         Returns:
             True if update succeeded
         """
@@ -664,15 +666,20 @@ class TaskStorage:
             if affected_rows > 0:
                 print(f"✅ Task result reference updated: {task_id}")
                 # Update status to done (PostgreSQL) or completed (SQLite) BEFORE closing cursor
-                status_value = "done" if not self.use_sqlite else "completed"
-                if self.use_sqlite:
-                    cursor.execute("UPDATE task_registry SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
-                                  (status_value, task_id))
+                # ONLY if update_status is True (for workflow sequences, keep status as in_progress)
+                if update_status:
+                    status_value = "done" if not self.use_sqlite else "completed"
+                    if self.use_sqlite:
+                        cursor.execute("UPDATE task_registry SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                                      (status_value, task_id))
+                    else:
+                        cursor.execute("UPDATE task_registry SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE task_id = %s",
+                                      (status_value, task_id))
+                    self.connection.commit()
+                    print(f"✅ Task {task_id} status updated to {status_value}, call_source=task_storage")
                 else:
-                    cursor.execute("UPDATE task_registry SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE task_id = %s",
-                                  (status_value, task_id))
-                self.connection.commit()
-                print(f"✅ Task {task_id} status updated to {status_value}, call_source=task_storage")
+                    self.connection.commit()
+                    print(f"✅ Task {task_id} result reference updated (status NOT updated - workflow in progress)")
             else:
                 print(f"⚠️ Task not found for result reference update: {task_id}")
 
@@ -685,23 +692,33 @@ class TaskStorage:
             self.connection.rollback()
             return False
 
-    def update_task_with_git_url(self, task_id: str, git_url: str) -> bool:
+    def update_task_with_git_url(self, task_id: str, git_url: str, deployment_url: str = None) -> bool:
         """
         Update task with Git URL result (for background thread updates).
-        
+
         This method is called by background threads to update task status
         when async processing completes.
-        
+
         Args:
             task_id: Task identifier
             git_url: Git URL from the agent
-            
+            deployment_url: Optional deployment URL if app was deployed
+
         Returns:
             True if update succeeded
         """
         try:
             cursor = self.connection.cursor()
-            
+
+            # Build metadata update
+            metadata_update = {
+                "storage_type": "git",
+                "git_url": git_url,
+                "path": git_url
+            }
+            if deployment_url:
+                metadata_update["deployment_url"] = deployment_url
+
             # Update status to done and add Git URL to metadata
             cursor.execute("""
                 UPDATE task_registry
@@ -713,16 +730,19 @@ class TaskStorage:
             """, (
                 "done",
                 "Task completed successfully. Result stored at: " + git_url,
-                '{"storage_type": "git", "git_url": "' + git_url + '", "path": "' + git_url + '"}',
+                json.dumps(metadata_update),
                 task_id
             ))
-            
+
             affected_rows = cursor.rowcount
             self.connection.commit()
             cursor.close()
-            
+
             if affected_rows > 0:
-                print(f"✅ Task {task_id} updated with Git URL in background thread")
+                msg = f"✅ Task {task_id} updated with Git URL"
+                if deployment_url:
+                    msg += f" and deployment URL: {deployment_url}"
+                print(msg)
                 return True
             else:
                 print(f"⚠️ Task {task_id} not found for Git URL update")
