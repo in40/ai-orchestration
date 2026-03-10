@@ -488,7 +488,13 @@ class DevOpsReleaseEngineerHandlers:
                 r'port\s*=\s*(\d+)',           # port = 8080
                 r'PORT\s*=\s*int\(os\.environ\.get\(["\']PORT["\']\s*,\s*(\d+)\)\)',  # PORT = int(os.environ.get("PORT", 8080))
                 r'server\.listen\((\d+)\)',    # server.listen(3000) - Node.js style
-                r'app\.run\(.*port\s*=\s*(\d+)',  # app.run(port=5000)
+                r'app\.run\(.*port\s*=\s*(\d+)',  # app.run(port=5000) - Flask
+                # Python http.server and socketserver patterns
+                r'HTTPServer\([^,]+,\s*(\d+)',  # HTTPServer(('0.0.0.0', 8000), Handler)
+                r'TCPServer\([^,]+,\s*(\d+)',   # TCPServer(("0.0.0.0", 9000), ...)
+                r'UDPServer\([^,]+,\s*(\d+)',   # UDPServer(("0.0.0.0", 9000), ...)
+                r'run_simple\([^,]+,\s*(\d+)',  # Werkzeug: run_simple('0.0.0.0', 5000, app)
+                r'uvicorn\.run\([^,]+,\s*port\s*=\s*(\d+)',  # uvicorn.run(app, port=8000)
             ]
             for pattern in port_patterns:
                 port_match = re.search(pattern, content)
@@ -497,7 +503,7 @@ class DevOpsReleaseEngineerHandlers:
                     print(f"✅ Detected PORT={detected_port} from result.py (pattern: {pattern})")
                     container_port = detected_port
                     break
-            
+
             if container_port != 5000:
                 print(f"⚠️  Non-standard port detected: {container_port} (default is 5000)")
             else:

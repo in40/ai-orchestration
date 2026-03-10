@@ -700,6 +700,11 @@ You MUST respond with a valid JSON object with the following structure:
 5. **Ensure the code is complete and working** - include all necessary parts
 6. **IMPORTANT: Ensure your complete JSON response is sent** - do not truncate the output
 7. For longer code, ensure ALL code is included - the response must be complete
+8. **For web servers/APIs: Use PORT environment variable or port 5000**:
+   - Python: `PORT = int(os.environ.get("PORT", 5000))`
+   - Node.js: `const PORT = process.env.PORT || 5000`
+   - Always bind to `0.0.0.0` not `localhost` for Docker compatibility
+   - Example: `HTTPServer(('0.0.0.0', PORT), Handler)` or `app.run(host='0.0.0.0', port=PORT)`
 
 ## EXAMPLE RESPONSE
 
