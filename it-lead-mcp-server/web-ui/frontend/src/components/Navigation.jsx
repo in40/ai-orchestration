@@ -61,6 +61,14 @@ const Navigation = ({ children }) => {
               </Button>
               <Button
                 component={Link}
+                to="/deployments"
+                variant={isActive('/deployments') ? 'outlined' : 'text'}
+                color="inherit"
+              >
+                Deployments
+              </Button>
+              <Button
+                component={Link}
                 to="/it-lead"
                 variant={isActive('/it-lead') ? 'outlined' : 'text'}
                 color="inherit"

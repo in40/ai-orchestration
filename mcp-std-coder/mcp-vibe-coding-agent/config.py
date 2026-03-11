@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # LM Studio configuration
     llm_base_url: str = "http://192.168.51.237:1234/v1"
-    llm_model: str = "qwen3.5-35b-a3b@q5_k_xl"
+    llm_model: Optional[str] = None  # REQUIRED from config
 
     # PostgreSQL configuration for persistent task storage
     postgres_host: str = "127.0.0.1"
@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     postgres_db: str = "mcp_registry"
     postgres_user: str = "postgres"
     postgres_password: str = os.getenv("POSTGRES_PASSWORD", "")  # Use environment variable
+
+    # Git repository configuration for code storage
+    mcp_git_repo_url: Optional[str] = None  # Git repository for MCP agent results (falls back to MCP_GIT_REPO_URL env var)
 
 
 settings = Settings()

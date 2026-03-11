@@ -1753,6 +1753,40 @@ async def stop_deployment(task_id: str):
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # First try to get deployments list to find container_id
+            list_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"list-deployments-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            logger.info(f"List deployments response status: {list_response.status_code}")
+            
+            if list_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to get deployment list")
+            
+            list_result = list_response.json()
+            logger.info(f"List deployments result: {list_result}")
+            
+            deployments = list_result.get("result", {}).get("deployments", [])
+            logger.info(f"Found {len(deployments)} deployments")
+            
+            deployment = next((d for d in deployments if d.get("task_id") == task_id), None)
+            
+            if not deployment:
+                logger.warning(f"Deployment {task_id} not found in list")
+                raise HTTPException(status_code=404, detail="No container ID found")
+            
+            container_id = deployment.get("container_id") or f"deploy-{task_id}"
+            logger.info(f"Found container_id: {container_id}")
+            
             # Stop deployment using task_id (DevOps stop_deployment expects task_id)
             stop_response = await client.post(
                 f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
@@ -1766,6 +1800,8 @@ async def stop_deployment(task_id: str):
                     }
                 }
             )
+            
+            logger.info(f"Stop response: {stop_response.json()}")
             
             if stop_response.status_code != 200:
                 raise HTTPException(status_code=500, detail="Failed to stop deployment")

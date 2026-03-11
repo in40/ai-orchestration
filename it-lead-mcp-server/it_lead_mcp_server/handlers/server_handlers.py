@@ -16,7 +16,7 @@ class ItLeadServerHandlers:
     def __init__(self, enable_registry: bool = True, use_postgres: bool = True,
                  postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
                  llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
+                 llm_model: str = None  # REQUIRED from config from config, NO hardcoded default,
                  prompts_dir: str = "."):
         # IT Lead specific tools for software development
         self.tools: List[Dict[str, Any]] = [
@@ -109,6 +109,49 @@ class ItLeadServerHandlers:
                         "limit": {"type": "integer", "default": 100, "description": "Maximum number of tasks to return"},
                         "offset": {"type": "integer", "default": 0, "description": "Offset for pagination"}
                     }
+                }
+            },
+            {
+                "name": "list_deployments",
+                "description": "List all deployed applications (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status_filter": {"type": "string", "enum": ["running", "stopped", "all"], "default": "running", "description": "Filter deployments by status"}
+                    }
+                }
+            },
+            {
+                "name": "stop_deployment",
+                "description": "Stop a running deployment (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID of deployment to stop"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+            {
+                "name": "start_deployment",
+                "description": "Start a stopped deployment (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID to start"}
+                    },
+                    "required": ["container_id"]
+                }
+            },
+            {
+                "name": "delete_deployment",
+                "description": "Delete a deployment permanently (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID to delete"}
+                    },
+                    "required": ["container_id"]
                 }
             }
         ]
@@ -613,7 +656,7 @@ class ItLeadServerHandlers:
         elif tool_name == "get_all_tasks":
             limit = arguments.get("limit", 100)
             offset = arguments.get("offset", 0)
-            
+
             # Fetch all tasks from storage (if available)
             if self.task_storage:
                 try:
@@ -635,8 +678,169 @@ class ItLeadServerHandlers:
                     }
                 }
 
+        # Add implementation for list_deployments - proxy to DevOps Engineer via MCP
+        elif tool_name == "list_deployments":
+            status_filter = arguments.get("status_filter", "running")
+            print(f"📋 list_deployments called with status_filter={status_filter}")
+
+            devops_endpoint = self._get_devops_endpoint()
+            if not devops_endpoint:
+                print(f"❌ DevOps Engineer endpoint not found")
+                return {
+                    "error": "DevOps Engineer agent not found",
+                    "deployments": [],
+                    "count": 0
+                }
+
+            # Call DevOps Engineer's list_deployments tool via MCP
+            print(f"📞 Calling DevOps Engineer at {devops_endpoint}")
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "list-deployments",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "list_deployments",
+                            "arguments": {"status_filter": status_filter}
+                        }
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps returned {len(result.get('result', {}).get('deployments', []))} deployments")
+                    return result.get("result", {})
+                else:
+                    print(f"❌ DevOps returned status {response.status_code}")
+                    return {
+                        "error": f"DevOps Engineer returned status {response.status_code}",
+                        "deployments": [],
+                        "count": 0
+                    }
+            except requests.RequestException as e:
+                print(f"❌ Failed to call DevOps Engineer: {e}")
+                return {
+                    "error": f"Failed to call DevOps Engineer: {str(e)}",
+                    "deployments": [],
+                    "count": 0
+                }
+
+        # Add implementation for stop_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "stop_deployment":
+            task_id = arguments.get("task_id")
+            print(f"🛑 stop_deployment called with task_id={task_id}")
+
+            devops_endpoint = self._get_devops_endpoint()
+            if not devops_endpoint:
+                return {"error": "DevOps Engineer agent not found"}
+
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "stop-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "stop_deployment",
+                            "arguments": {"task_id": task_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps stop_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"error": f"DevOps Engineer returned status {response.status_code}"}
+            except requests.RequestException as e:
+                return {"error": f"Failed to call DevOps Engineer: {str(e)}"}
+
+        # Add implementation for start_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "start_deployment":
+            container_id = arguments.get("container_id")
+            print(f"▶️ start_deployment called with container_id={container_id}")
+
+            devops_endpoint = self._get_devops_endpoint()
+            if not devops_endpoint:
+                return {"error": "DevOps Engineer agent not found"}
+
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "start-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "start_deployment",
+                            "arguments": {"container_id": container_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps start_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"error": f"DevOps Engineer returned status {response.status_code}"}
+            except requests.RequestException as e:
+                return {"error": f"Failed to call DevOps Engineer: {str(e)}"}
+
+        # Add implementation for delete_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "delete_deployment":
+            container_id = arguments.get("container_id")
+            print(f"🗑️ delete_deployment called with container_id={container_id}")
+
+            devops_endpoint = self._get_devops_endpoint()
+            if not devops_endpoint:
+                return {"error": "DevOps Engineer agent not found"}
+
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "delete-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "delete_deployment",
+                            "arguments": {"container_id": container_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps delete_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"error": f"DevOps Engineer returned status {response.status_code}"}
+            except requests.RequestException as e:
+                return {"error": f"Failed to call DevOps Engineer: {str(e)}"}
+
         # For any other tools, return a generic response
         return {"result": f"Executed tool '{tool_name}' with arguments: {arguments}"}
+
+    def _get_devops_endpoint(self) -> str:
+        """Get DevOps Engineer endpoint"""
+        if hasattr(self, 'routing_engine') and self.routing_engine:
+            devops_endpoint = self.routing_engine.get_agent_endpoint("devops-engineer")
+            if devops_endpoint:
+                return devops_endpoint
+            # Try alternative name
+            devops_endpoint = self.routing_engine.get_agent_endpoint("devops-release-engineer")
+            if devops_endpoint:
+                return devops_endpoint
+        return None
 
     def _perform_code_review(self, code_diff: str) -> str:
         """Perform code review using the LLM"""

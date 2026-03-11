@@ -69,7 +69,8 @@ class TaskRoutingEngine:
             return
             
         try:
-            services = self.mcp_registry_client.list_services(use_cache=True)
+            # Use use_cache=False to ensure we get fresh data during initialization
+            services = self.mcp_registry_client.list_services(use_cache=False)
             print(f"📋 Discovered {len(services)} services from MCP Registry Server")
             
             for service in services:

@@ -5,16 +5,23 @@
 
 echo "Starting MCP Agent Web UI..."
 
-# Default values
-WEB_BACKEND_HOST="0.0.0.0"
-WEB_BACKEND_PORT=8000
-WEB_FRONTEND_PORT=5173
-IT_LEAD_HOST="127.0.0.1"
-IT_LEAD_PORT=3061
-REGISTRY_HOST="127.0.0.1"
-REGISTRY_PORT=3031
-LLM_PROVIDER_URL="http://asus-tus:1234/v1/chat/completions"
-LLM_MODEL="qwen3.5-35b-a3b@q5_k_xl"
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# Default values (from .env or fallback)
+WEB_BACKEND_HOST="${WEB_UI_HOST:-0.0.0.0}"
+WEB_BACKEND_PORT="${WEB_UI_BACKEND_PORT:-8000}"
+WEB_FRONTEND_PORT="${WEB_UI_FRONTEND_PORT:-5173}"
+IT_LEAD_HOST="${IT_LEAD_HOST:-127.0.0.1}"
+IT_LEAD_PORT="${IT_LEAD_PORT:-3061}"
+REGISTRY_HOST="${REGISTRY_HOST:-127.0.0.1}"
+REGISTRY_PORT="${REGISTRY_PORT:-3031}"
+# LLM Configuration - MUST come from .env, NO fallback
+LLM_PROVIDER_URL="${LLM_PROVIDER_URL}"
+LLM_MODEL="${LLM_MODEL}"
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -66,8 +73,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --it-lead-port PORT      Port for IT Lead server [default: 3061]"
       echo "  --registry-host HOST     Host for registry server [default: 127.0.0.1]"
       echo "  --registry-port PORT     Port for registry server [default: 3031]"
-      echo "  --llm-provider-url URL   URL for the LLM provider [default: http://asus-tus:1234/v1/chat/completions]"
-      echo "  --llm-model MODEL        LLM model name [default: qwen3.5-35b-a3b@q5_k_xl]"
+      echo "  --llm-provider-url URL   URL for the LLM provider [default: from .env]"
+      echo "  --llm-model MODEL        LLM model name [default: from .env (qwen3-coder-next@q5_k_xl)]"
       echo "  -h, --help              Show this help message"
       exit 0
       ;;

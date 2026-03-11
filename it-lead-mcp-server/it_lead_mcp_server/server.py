@@ -34,8 +34,8 @@ class ItLeadMcpServer:
                  max_concurrent_requests: int = 10,
                  enable_client_mode: bool = True, client_transport_type: str = "streamable-http",
                  client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None,
-                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
+                 llm_provider_url: str = None,  # REQUIRED from config
+                 llm_model: str = None,  # REQUIRED from config
                  prompts_dir: str = "."):
         self.transport_type = transport_type
         self.host = host
@@ -66,9 +66,9 @@ class ItLeadMcpServer:
             self.client_port = client_port
         self.client_endpoint = client_endpoint
 
-        # LLM Configuration
+        # LLM Configuration - MUST come from config, no hardcoded values
         self.llm_provider_url = llm_provider_url
-        self.llm_model = "qwen3.5-35b-a3b@q5_k_xl"
+        self.llm_model = llm_model  # Use parameter from config, NOT hardcoded
         self.prompts_dir = prompts_dir
 
         # Initialize components
@@ -486,8 +486,8 @@ def main():
                        default='http://192.168.51.237:1234/v1/chat/completions',
                        help='URL for the LLM provider (default: http://192.168.51.237:1234/v1/chat/completions)')
     parser.add_argument('--llm-model',
-                       default='qwen3.5-35b-a3b@q5_k_xl',
-                       help='LLM model name (default: qwen3.5-35b-a3b@q5_k_xl)')
+                       default=None,  # MUST be set in .env file, no hardcoded default
+                       help='LLM model name - MUST be configured in .env file')
     parser.add_argument('--prompts-dir',
                        default='.',
                        help='Directory to keep prompts (default: current directory)')

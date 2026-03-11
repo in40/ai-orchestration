@@ -48,7 +48,8 @@ const AddTaskForm = ({
     tags: [],
     attachments: [],
     context: {},
-    dependencies: []
+    dependencies: [],
+    deployAfterImplementation: false // Deployment option
   });
 
   const [errors, setErrors] = useState({});
@@ -107,7 +108,8 @@ const AddTaskForm = ({
         attachments: taskData.attachments.map(a => ({
           name: a.name || 'unnamed',
           type: a.type || 'text/plain'
-        }))
+        })),
+        deploy_after_implementation: taskData.deployAfterImplementation
       }
     };
 
@@ -284,6 +286,45 @@ const AddTaskForm = ({
                 IT Lead will intelligently route this task to the appropriate agent based on content analysis
               </FormHelperText>
             </FormControl>
+
+            {/* Deployment Option */}
+            <Box sx={{ 
+              mt: 2, 
+              p: 2, 
+              border: '1px solid', 
+              borderColor: taskData.deployAfterImplementation ? 'success.main' : 'divider',
+              borderRadius: 1,
+              bgcolor: taskData.deployAfterImplementation ? 'success.50' : 'transparent'
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+                <Checkbox
+                  checked={taskData.deployAfterImplementation}
+                  onChange={(e) => setTaskData(prev => ({
+                    ...prev,
+                    deployAfterImplementation: e.target.checked
+                  }))}
+                  color="success"
+                  size="medium"
+                />
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle2" fontWeight="bold" color={taskData.deployAfterImplementation ? 'success.main' : 'text.primary'}>
+                    Deploy after implementation
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    When enabled, the application will be automatically deployed to a Docker container after implementation is complete. 
+                    You will receive a public URL to access the deployed application.
+                  </Typography>
+                  {taskData.deployAfterImplementation && (
+                    <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <RouteIcon fontSize="small" color="success" />
+                      <Typography variant="caption" color="success.main" fontWeight="bold">
+                        Workflow: Requirements → Implementation → DevOps Deployment
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            </Box>
 
             {/* Tags for categorization */}
             <Box sx={{ mt: 2 }}>

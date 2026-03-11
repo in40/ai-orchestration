@@ -5,23 +5,30 @@
 
 echo "Starting DevOps Release Engineer MCP Server with PostgreSQL..."
 
-# Default values
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# Default values (from .env or fallback)
 TRANSPORT="streamable-http"
-HOST="127.0.0.1"
-PORT=3071
+HOST="${WEB_UI_HOST:-0.0.0.0}"
+PORT="${DEVOPS_PORT:-3071}"
 ENABLE_REGISTRY=false
 REGISTER_WITH_REGISTRY=true
-REGISTRY_HOST="127.0.0.1"
-REGISTRY_PORT=3031
-USE_POSTGRES=false
-POSTGRES_HOST="127.0.0.1"
-POSTGRES_PORT=5432
-POSTGRES_DB="mcp_registry"
-POSTGRES_USER="postgres"
-POSTGRES_PASSWORD="postgres"
-MAX_CONCURRENT_REQUESTS=10
-LLM_PROVIDER_URL="http://192.168.51.237:1234/v1/chat/completions"
-LLM_MODEL="qwen3.5-35b-a3b@q5_k_xl"
+REGISTRY_HOST="${REGISTRY_HOST:-127.0.0.1}"
+REGISTRY_PORT="${REGISTRY_PORT:-3031}"
+USE_POSTGRES="${USE_POSTGRES:-true}"
+POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+POSTGRES_DB="${POSTGRES_DB:-mcp_registry}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+MAX_CONCURRENT_REQUESTS="${MAX_CONCURRENT_REQUESTS:-10}"
+# LLM Configuration - MUST come from .env, NO fallback
+LLM_PROVIDER_URL="${LLM_PROVIDER_URL}"
+LLM_MODEL="${LLM_MODEL}"
 PROMPTS_DIR="."
 
 # Parse command line options
@@ -194,13 +201,9 @@ if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
   CMD_ARGS="$CMD_ARGS --max-concurrent-requests $MAX_CONCURRENT_REQUESTS"
 fi
 
-if [ "$LLM_PROVIDER_URL" != "http://192.168.51.237:1234/v1/chat/completions" ]; then
-  CMD_ARGS="$CMD_ARGS --llm-provider-url $LLM_PROVIDER_URL"
-fi
-
-if [ "$LLM_MODEL" != "qwen3.5-35b-a3b@q5_k_xl" ]; then
-  CMD_ARGS="$CMD_ARGS --llm-model $LLM_MODEL"
-fi
+# ALWAYS pass LLM configuration from .env (no hardcoded defaults)
+CMD_ARGS="$CMD_ARGS --llm-provider-url $LLM_PROVIDER_URL"
+CMD_ARGS="$CMD_ARGS --llm-model $LLM_MODEL"
 
 if [ "$PROMPTS_DIR" != "." ]; then
   CMD_ARGS="$CMD_ARGS --prompts-dir $PROMPTS_DIR"

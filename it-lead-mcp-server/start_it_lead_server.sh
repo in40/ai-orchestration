@@ -20,8 +20,16 @@ POSTGRES_DB="mcp_registry"
 POSTGRES_USER="postgres"
 POSTGRES_PASSWORD="postgres"  # You should change this to a secure password in production
 MAX_CONCURRENT_REQUESTS=10
-LLM_PROVIDER_URL="http://asus-tus:1234/v1/chat/completions"
-LLM_MODEL="qwen3.5-35b-a3b@q5_k_xl"
+
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# LLM Configuration - MUST come from .env, NO fallback
+LLM_PROVIDER_URL="${LLM_PROVIDER_URL}"
+LLM_MODEL="${LLM_MODEL}"
 PROMPTS_DIR="."
 
 # Parse command line options
@@ -118,8 +126,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --postgres-user USER      PostgreSQL username [default: postgres]"
       echo "  --postgres-password PASS  PostgreSQL password [default: postgres]"
       echo "  --max-concurrent-requests NUM  Maximum number of concurrent requests [default: 10]"
-      echo "  --llm-provider-url URL    URL for the LLM provider [default: http://asus-tus:1234/v1/chat/completions]"
-      echo "  --llm-model MODEL         LLM model name [default: qwen3.5-35b-a3b@q5_k_xl]"
+      echo "  --llm-provider-url URL    URL for the LLM provider [default: from .env]"
+      echo "  --llm-model MODEL         LLM model name [MUST be set in .env file]"
       echo "  --prompts-dir DIR         Directory to keep prompts [default: current directory]"
       echo "  -h, --help               Show this help message"
       exit 0
@@ -184,13 +192,9 @@ if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
   CMD_ARGS="$CMD_ARGS --max-concurrent-requests $MAX_CONCURRENT_REQUESTS"
 fi
 
-if [ "$LLM_PROVIDER_URL" != "http://asus-tus:1234/v1/chat/completions" ]; then
-  CMD_ARGS="$CMD_ARGS --llm-provider-url $LLM_PROVIDER_URL"
-fi
-
-if [ "$LLM_MODEL" != "qwen3.5-35b-a3b@q5_k_xl" ]; then
-  CMD_ARGS="$CMD_ARGS --llm-model $LLM_MODEL"
-fi
+# ALWAYS pass LLM configuration from .env (no hardcoded defaults)
+CMD_ARGS="$CMD_ARGS --llm-provider-url $LLM_PROVIDER_URL"
+CMD_ARGS="$CMD_ARGS --llm-model $LLM_MODEL"
 
 if [ "$PROMPTS_DIR" != "." ]; then
   CMD_ARGS="$CMD_ARGS --prompts-dir $PROMPTS_DIR"

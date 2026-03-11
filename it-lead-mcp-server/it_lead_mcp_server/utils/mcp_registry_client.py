@@ -37,19 +37,24 @@ class McpRegistryClient:
     def list_services(self, use_cache: bool = True) -> List[Dict[str, Any]]:
         """
         List all registered services via MCP protocol
-        
+
         Args:
             use_cache: Whether to use cached results (default True)
-            
+
         Returns:
             List of registered services
         """
         import time
-        
+
         # Check cache first
-        if use_cache and self._cache and (time.time() - self._cache_timestamp) < self._cache_ttl:
-            return self._cache
+        cache_check = use_cache and self._cache and (time.time() - self._cache_timestamp) < self._cache_ttl
+        print(f"🔍 list_services called: use_cache={use_cache}, has_cache={self._cache is not None}, cache_check={cache_check}")
         
+        if cache_check:
+            print(f"📦 Returning cached services: {len(self._cache)}")
+            return self._cache
+
+        print(f"🌐 Fetching fresh services from {self.registry_endpoint}")
         try:
             # Call registry/list via MCP protocol
             response = requests.post(
@@ -90,27 +95,46 @@ class McpRegistryClient:
     def get_agent_endpoint(self, agent_name: str) -> Optional[str]:
         """
         Get the endpoint for a specific agent by name
-        
+
         Args:
             agent_name: Name of the agent (e.g., "implementation-engineer")
-            
+
         Returns:
             Agent endpoint URL or None if not found
         """
         services = self.list_services()
-        
+
         agent_name_lower = agent_name.lower()
         
+        # Normalize agent name for matching (remove common suffixes/prefixes)
+        agent_name_normalized = agent_name_lower.replace("-engineer", "").replace("_", "-").strip("-")
+
         for service in services:
             service_name = service.get("name", "").lower()
-            
-            # Match agent name to service name
+            service_id = service.get("id", "").lower()
+
+            # Match agent name to service name using multiple strategies
+            # Strategy 1: Direct substring match
             if agent_name_lower in service_name or service_name in agent_name_lower:
                 endpoint = service.get("endpoint")
                 if endpoint:
-                    print(f"✅ Found endpoint for {agent_name}: {endpoint}")
+                    print(f"✅ Found endpoint for {agent_name} (strategy 1): {endpoint}")
                     return endpoint
-        
+            
+            # Strategy 2: Match normalized name (e.g., "devops" matches "devops-release-engineer")
+            if agent_name_normalized and agent_name_normalized in service_name:
+                endpoint = service.get("endpoint")
+                if endpoint:
+                    print(f"✅ Found endpoint for {agent_name} (strategy 2): {endpoint}")
+                    return endpoint
+            
+            # Strategy 3: Match against service ID
+            if agent_name_lower in service_id or agent_name_normalized in service_id:
+                endpoint = service.get("endpoint")
+                if endpoint:
+                    print(f"✅ Found endpoint for {agent_name} (strategy 3): {endpoint}")
+                    return endpoint
+
         print(f"⚠️  No endpoint found for {agent_name}")
         return None
 
@@ -176,53 +200,47 @@ class McpRegistryClient:
     def discover_all_agents_with_tools(self, use_cache: bool = True) -> List[Dict[str, Any]]:
         """
         Discover all registered agents and introspect their tools via MCP protocol.
-        
+
         For each registered agent:
         1. Get agent info from registry (name, endpoint, description)
         2. Call tools/list on agent's MCP endpoint
-        3. Return complete agent info with full tool schemas
-        
+        3. Return complete agent info with full tool schemas and agent_id
+
         Args:
             use_cache: Whether to use cached results (default True)
-        
+
         Returns:
             List of agent info with full tool schemas:
             [
                 {
-                    "name": "implementation-engineer",
-                    "endpoint": "http://0.0.0.0:3060/mcp",
-                    "description": "AI coding agent...",
+                    "agent_id": "requirements-engineer",  # Normalized ID for matching
+                    "name": "Requirement Engineer MCP Server on 0.0.0.0:3062",
+                    "endpoint": "http://0.0.0.0:3062/mcp",
+                    "description": "...",
                     "status": "online",
-                    "tools": [
-                        {
-                            "name": "vibe_code_async",
-                            "description": "Submit coding task asynchronously",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {...},
-                                "required": ["task_description"]
-                            }
-                        },
-                        ...
-                    ]
+                    "tools": [...]
                 },
                 ...
             ]
         """
         agents = []
         services = self.list_services(use_cache=use_cache)
-        
+
         print(f"🔍 Discovering tools for {len(services)} registered services...")
-        
+
         for service in services:
             service_name = service.get("name", "")
             endpoint = service.get("endpoint")
-            
+
             # Skip the registry server itself
             if "registry" in service_name.lower():
                 continue
-            
+
+            # Generate a normalized agent_id from the service name
+            agent_id = self._generate_agent_id(service_name)
+
             agent_info = {
+                "agent_id": agent_id,  # Normalized ID for LLM matching
                 "name": service_name,
                 "endpoint": endpoint,
                 "description": service.get("description", "No description"),
@@ -230,28 +248,77 @@ class McpRegistryClient:
                 "tools": [],
                 "capabilities": service.get("capabilities", {})
             }
-            
+
             # Call tools/list on agent's MCP endpoint
             if endpoint:
                 try:
                     tools = self._introspect_agent_tools(endpoint, use_cache=use_cache)
                     agent_info["tools"] = tools
                     agent_info["status"] = "online"
-                    print(f"  ✅ {service_name}: {len(tools)} tools discovered")
+                    print(f"  ✅ {agent_id}: {len(tools)} tools discovered")
                 except Exception as e:
                     agent_info["status"] = "offline"
                     agent_info["error"] = str(e)
-                    print(f"  ❌ {service_name}: {str(e)}")
+                    print(f"  ❌ {agent_id}: {str(e)}")
             else:
                 agent_info["status"] = "no_endpoint"
-                print(f"  ⚠️  {service_name}: No endpoint configured")
-            
+                print(f"  ⚠️  {agent_id}: No endpoint configured")
+
             agents.append(agent_info)
-        
+
         online_count = sum(1 for a in agents if a["status"] == "online")
         print(f"✅ Discovery complete: {online_count}/{len(agents)} agents online")
-        
+
         return agents
+
+    def _generate_agent_id(self, service_name: str) -> str:
+        """
+        Generate a normalized agent_id from service name.
+        
+        Examples:
+            "Requirement Engineer MCP Server on 0.0.0.0:3062" → "requirements-engineer"
+            "Implementation Engineer: on 0.0.0.0:3060" → "implementation-engineer"
+            "DevOps Release Engineer Server on 0.0.0.0:3071" → "devops-engineer"
+        
+        Args:
+            service_name: Full service name from registry
+        
+        Returns:
+            Normalized agent_id
+        """
+        import re
+        
+        # Convert to lowercase
+        name = service_name.lower()
+        
+        # Remove common suffixes
+        name = re.sub(r" mcp server", "", name)
+        name = re.sub(r" server", "", name)
+        name = re.sub(r" on .*", "", name)
+        
+        # Extract key agent type
+        agent_types = {
+            "requirement": "requirements-engineer",
+            "implementation": "implementation-engineer",
+            "code-review": "code-reviewer",
+            "code reviewer": "code-reviewer",
+            "qa-test": "qa-test-engineer",
+            "qa test": "qa-test-engineer",
+            "security": "security-engineer",
+            "devops": "devops-engineer",
+            "it-lead": "it-lead",
+            "it lead": "it-lead",
+            "team-management": "team-management",
+            "team management": "team-management",
+        }
+        
+        for key, agent_id in agent_types.items():
+            if key in name:
+                return agent_id
+        
+        # Fallback: use the first two words as agent_id
+        words = name.split()[:2]
+        return "-".join(words) if words else "unknown-agent"
 
     def _introspect_agent_tools(self, agent_endpoint: str, use_cache: bool = True) -> List[Dict[str, Any]]:
         """

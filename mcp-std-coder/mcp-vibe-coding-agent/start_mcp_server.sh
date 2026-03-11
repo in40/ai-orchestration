@@ -32,6 +32,9 @@ LLM_MODEL="${LLM_MODEL:-qwen3-coder-next@q5_k_xl}"
 export LLM_PROVIDER_URL
 export LLM_MODEL
 
+# Export Git repository configuration for vibe_code_async
+export MCP_GIT_REPO_URL
+
 # Parse command line options
 while [[ $# -gt 0 ]]; do
   case $1 in

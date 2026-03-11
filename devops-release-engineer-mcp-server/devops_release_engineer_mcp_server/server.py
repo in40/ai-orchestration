@@ -35,8 +35,8 @@ class DevOpsReleaseEngineerMcpServer:
                  max_concurrent_requests: int = 10,
                  enable_client_mode: bool = True, client_transport_type: str = "streamable-http",
                  client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None,
-                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
+                 llm_provider_url: str = None,  # REQUIRED from config
+                 llm_model: str = None,  # REQUIRED from config
                  prompts_dir: str = "."):
         self.transport_type = transport_type
         self.host = host
@@ -65,7 +65,17 @@ class DevOpsReleaseEngineerMcpServer:
             self.client_port = client_port
         self.client_endpoint = client_endpoint
 
-        # LLM Configuration
+        # LLM Configuration - MUST come from environment or command line, NO defaults
+        import os
+        if not llm_provider_url:
+            llm_provider_url = os.environ.get("LLM_PROVIDER_URL")
+            if not llm_provider_url:
+                raise ValueError("LLM_PROVIDER_URL environment variable not set - must be defined in .env file")
+        if not llm_model:
+            llm_model = os.environ.get("LLM_MODEL")
+            if not llm_model:
+                raise ValueError("LLM_MODEL environment variable not set - must be defined in .env file")
+        
         self.llm_provider_url = llm_provider_url
         self.llm_model = llm_model
         self.prompts_dir = prompts_dir

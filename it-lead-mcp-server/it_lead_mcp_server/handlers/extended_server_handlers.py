@@ -123,6 +123,16 @@ class ExtendedItLeadServerHandlers:
                 }
             },
             {
+                "name": "list_deployments",
+                "description": "List all deployed applications (proxies to DevOps Engineer agent via MCP)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status_filter": {"type": "string", "enum": ["running", "stopped", "all"], "default": "running", "description": "Filter deployments by status"}
+                    }
+                }
+            },
+            {
                 "name": "get_task_history",
                 "description": "Get the complete status history of a specific task with timestamps",
                 "inputSchema": {
@@ -1111,6 +1121,54 @@ class ExtendedItLeadServerHandlers:
                 print("ERROR: Task storage is not available in get_all_tasks")
                 return {"result": {"tasks": [], "total_count": 0, "error": "Task storage not available"}}
 
+        # Add implementation for list_deployments - proxy to DevOps Engineer via MCP
+        elif tool_name == "list_deployments":
+            status_filter = arguments.get("status_filter", "running")
+            print(f"📋 list_deployments called with status_filter={status_filter}")
+
+            # Call DevOps Engineer's list_deployments tool via MCP directly
+            # DevOps is typically at port 3071
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            print(f"📞 Calling DevOps Engineer at {devops_endpoint}")
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "list-deployments",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "list_deployments",
+                            "arguments": {"status_filter": status_filter}
+                        }
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    deployments = result.get('result', {}).get('deployments', [])
+                    print(f"✅ DevOps returned {len(deployments)} deployments")
+                    return result.get("result", {"deployments": deployments, "count": len(deployments)})
+                else:
+                    print(f"❌ DevOps returned status {response.status_code}")
+                    return {
+                        "result": {
+                            "error": f"DevOps Engineer returned status {response.status_code}",
+                            "deployments": [],
+                            "count": 0
+                        }
+                    }
+            except requests.RequestException as e:
+                print(f"❌ Failed to call DevOps Engineer: {e}")
+                return {
+                    "result": {
+                        "error": f"Failed to call DevOps Engineer: {str(e)}",
+                        "deployments": [],
+                        "count": 0
+                    }
+                }
+
         elif tool_name == "delete_task":
             task_id = arguments.get("task_id")
             if not task_id:
@@ -1240,7 +1298,8 @@ class ExtendedItLeadServerHandlers:
         print(f"⏳ _execute_assign_task_async called for task {task_id}")
         print(f"   Task description: {task_description[:100]}...")
         print(f"   Assignee: {assignee}")
-        
+        print(f"   Arguments metadata: {arguments.get('metadata', {})}")
+
         # Store the task in the database with 'submitted' status first
         if self.task_storage:
             print(f"💾 Storing task {task_id} with 'submitted' status (async mode)")
@@ -1269,10 +1328,11 @@ class ExtendedItLeadServerHandlers:
             print("❌ task_storage is None, cannot store task")
 
         # Start background thread for LLM planning and forwarding
+        # Pass arguments so background thread has access to metadata (including deploy_after_implementation)
         print(f"🚀 Starting background thread for task {task_id}")
         threading.Thread(
             target=self._background_task_processing,
-            args=(task_id, task_description, assignee),
+            args=(task_id, task_description, assignee, arguments),
             daemon=True
         ).start()
 
@@ -1287,46 +1347,50 @@ class ExtendedItLeadServerHandlers:
             }
         }
 
-    def _background_task_processing(self, task_id: str, task_description: str, assignee: str):
+    def _background_task_processing(self, task_id: str, task_description: str, assignee: str, arguments: Dict[str, Any] = None):
         """Background thread to run LLM planning and forward task to appropriate agent"""
         try:
             print(f"DEBUG: Background task processing started for {task_id}")
-            
+
             # Use ThreadPoolExecutor for the blocking LLM call
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     self._run_llm_planning_and_forward,
-                    task_id, task_description, assignee
+                    task_id, task_description, assignee, arguments
                 )
                 result = future.result(timeout=300)  # 5 minute timeout for LLM planning
-                
+
             print(f"DEBUG: Background task processing completed for {task_id}: {result}")
-            
+
         except Exception as e:
             print(f"ERROR in background task processing for {task_id}: {e}")
             import traceback
             traceback.print_exc()
 
-    def _run_llm_planning_and_forward(self, task_id: str, task_description: str, assignee: str):
+    def _run_llm_planning_and_forward(self, task_id: str, task_description: str, assignee: str, arguments: Dict[str, Any] = None):
         """Run LLM planning and forward task - called from background thread"""
         try:
             if not self.task_assignment_manager:
                 print(f"DEBUG: Task assignment manager not available for {task_id}")
                 return {"error": "Task assignment manager unavailable"}
 
-            # Run the full assignment process
+            # Run the full assignment process with original arguments to preserve metadata
+            metadata = {"tool_call": "assign_task_async", "async_mode": True}
+            if arguments:
+                metadata["original_arguments"] = arguments
+
             assignment_result = self.task_assignment_manager.assign_and_forward_task(
                 task_id=task_id,
                 task_description=task_description,
                 assignee=assignee if assignee else None,
                 priority="medium",
                 deadline=None,
-                metadata={"tool_call": "assign_task_async", "original_arguments": {}, "async_mode": True}
+                metadata=metadata
             )
-            
+
             print(f"DEBUG: LLM planning completed for {task_id}: {assignment_result.get('status', 'unknown')}")
             return assignment_result
-            
+
         except Exception as e:
             print(f"ERROR in LLM planning for {task_id}: {e}")
             import traceback
