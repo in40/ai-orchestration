@@ -921,16 +921,16 @@ CMD ["python", "result.py"]
                 # Get actual Docker status
                 task_id = dep_dict.get("task_id", "")
                 container_name = f"deploy-{task_id}"
-                
+
                 try:
                     # Check container status from Docker
                     result = subprocess.run(
                         ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
                         capture_output=True, text=True, timeout=5
                     )
-                    
+
                     docker_status = result.stdout.strip()
-                    
+
                     if docker_status:
                         # Update status based on actual Docker state
                         if "Up" in docker_status:
@@ -946,15 +946,19 @@ CMD ["python", "result.py"]
                         else:
                             dep_dict["status"] = "unknown"
                     else:
-                        # Container doesn't exist
+                        # Container doesn't exist - mark as deleted and skip
                         dep_dict["status"] = "deleted"
-                        
+                        # Update database
+                        self._update_deployment_status(task_id, "deleted")
+
                 except Exception as e:
                     print(f"Warning: Could not check Docker status for {container_name}: {e}")
                     # Keep database status if Docker check fails
-                
-                deployments.append(dep_dict)
-            
+
+                # Skip deleted deployments - don't show them in the list
+                if dep_dict.get("status") != "deleted":
+                    deployments.append(dep_dict)
+
             cursor.close()
             conn.close()
             return deployments
