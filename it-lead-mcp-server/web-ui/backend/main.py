@@ -1687,14 +1687,31 @@ async def start_deployment(task_id: str):
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get deployment info
-            deployment = await get_deployment_info(task_id)
+            # Get deployment info from list_deployments
+            list_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"list-deployments-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            if list_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to get deployment list")
+            
+            list_result = list_response.json()
+            deployments = list_result.get("result", {}).get("deployments", [])
+            deployment = next((d for d in deployments if d.get("task_id") == task_id), None)
+            
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
             
-            container_id = deployment.get("container_id")
-            if not container_id:
-                raise HTTPException(status_code=400, detail="No container ID found")
+            container_id = deployment.get("container_id") or f"deploy-{task_id}"
             
             # Start the container via DevOps
             start_response = await client.post(
@@ -1712,6 +1729,10 @@ async def start_deployment(task_id: str):
             
             if start_response.status_code != 200:
                 raise HTTPException(status_code=500, detail="Failed to start deployment")
+            
+            start_result = start_response.json()
+            if "error" in start_result.get("result", {}):
+                raise HTTPException(status_code=500, detail=start_result["result"]["error"])
             
             return {
                 "success": True,
@@ -1732,14 +1753,7 @@ async def stop_deployment(task_id: str):
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            deployment = await get_deployment_info(task_id)
-            if not deployment:
-                raise HTTPException(status_code=404, detail="Deployment not found")
-            
-            container_id = deployment.get("container_id")
-            if not container_id:
-                raise HTTPException(status_code=400, detail="No container ID found")
-            
+            # Stop deployment using task_id (DevOps stop_deployment expects task_id)
             stop_response = await client.post(
                 f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
                 json={
@@ -1748,13 +1762,17 @@ async def stop_deployment(task_id: str):
                     "method": "tools/call",
                     "params": {
                         "name": "stop_deployment",
-                        "arguments": {"container_id": container_id}
+                        "arguments": {"task_id": task_id}
                     }
                 }
             )
             
             if stop_response.status_code != 200:
                 raise HTTPException(status_code=500, detail="Failed to stop deployment")
+            
+            stop_result = stop_response.json()
+            if "error" in stop_result.get("result", {}):
+                raise HTTPException(status_code=500, detail=stop_result["result"]["error"])
             
             return {
                 "success": True,
@@ -1775,14 +1793,33 @@ async def delete_deployment(task_id: str):
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            deployment = await get_deployment_info(task_id)
+            # Get deployment info from list_deployments
+            list_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"list-deployments-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            if list_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to get deployment list")
+            
+            list_result = list_response.json()
+            deployments = list_result.get("result", {}).get("deployments", [])
+            deployment = next((d for d in deployments if d.get("task_id") == task_id), None)
+            
             if not deployment:
                 raise HTTPException(status_code=404, detail="Deployment not found")
             
-            container_id = deployment.get("container_id")
-            if not container_id:
-                raise HTTPException(status_code=400, detail="No container ID found")
+            container_id = deployment.get("container_id") or f"deploy-{task_id}"
             
+            # Delete the container via DevOps
             delete_response = await client.post(
                 f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
                 json={
@@ -1798,6 +1835,10 @@ async def delete_deployment(task_id: str):
             
             if delete_response.status_code != 200:
                 raise HTTPException(status_code=500, detail="Failed to delete deployment")
+            
+            delete_result = delete_response.json()
+            if "error" in delete_result.get("result", {}):
+                raise HTTPException(status_code=500, detail=delete_result["result"]["error"])
             
             return {
                 "success": True,
@@ -1880,28 +1921,6 @@ async def refresh_deployments():
     except Exception as e:
         logger.error(f"Error refreshing deployments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-async def get_deployment_info(task_id: str) -> dict:
-    """Helper to get deployment info for a task"""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": f"get-deployment-{task_id}",
-                "method": "tools/call",
-                "params": {
-                    "name": "get_deployment",
-                    "arguments": {"task_id": task_id}
-                }
-            }
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("result", {})
-    return {}
 
 
 if __name__ == "__main__":
