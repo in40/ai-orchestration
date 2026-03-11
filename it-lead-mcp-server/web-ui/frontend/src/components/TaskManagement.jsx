@@ -30,7 +30,8 @@ import {
   MenuItem,
   IconButton,
   Drawer,
-  Link
+  Link,
+  Tooltip
 } from '@mui/material';
 import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon } from '@mui/icons-material';
 import axios from 'axios';
@@ -279,12 +280,16 @@ const TaskManagement = () => {
                       sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
                     >
                       <TableCell component="th" scope="row" sx={{ maxWidth: 200 }}>
-                        <Typography variant="body2" noWrap>{task.title}</Typography>
+                        <Tooltip title={task.title} placement="top">
+                          <Typography variant="body2" noWrap>{task.title}</Typography>
+                        </Tooltip>
                       </TableCell>
                       <TableCell sx={{ maxWidth: 300 }}>
-                        <Typography variant="body2" color="text.secondary" noWrap>
-                          {task.description || '-'}
-                        </Typography>
+                        <Tooltip title={task.description || 'No description'} placement="top">
+                          <Typography variant="body2" color="text.secondary" noWrap>
+                            {task.description || '-'}
+                          </Typography>
+                        </Tooltip>
                       </TableCell>
                       <TableCell>{task.assignee}</TableCell>
                       <TableCell>
