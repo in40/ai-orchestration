@@ -110,8 +110,9 @@ cleanup() {
     exit 0
 }
 
-# Trap SIGINT and SIGTERM
-trap cleanup INT TERM
+# Trap ONLY Ctrl+C (SIGINT), NOT SIGTERM - allow nohup to protect from shell exit
+# This prevents cleanup from running when shell exits, allowing disowned processes to survive
+trap cleanup INT
 
 # Check if port 8000 is already in use
 if ss -tlnp | grep -q ":${WEB_BACKEND_PORT} "; then
