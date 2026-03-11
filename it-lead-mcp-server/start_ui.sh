@@ -113,11 +113,43 @@ cleanup() {
 # Trap SIGINT and SIGTERM
 trap cleanup INT TERM
 
+# Check if port 8000 is already in use
+if ss -tlnp | grep -q ":${WEB_BACKEND_PORT} "; then
+    echo "⚠️  Port ${WEB_BACKEND_PORT} is already in use!"
+    echo "Checking for existing Web UI backend process..."
+    
+    # Find existing uvicorn process on our port
+    EXISTING_PID=$(lsof -t -i :${WEB_BACKEND_PORT} 2>/dev/null | head -1)
+    
+    if [ -n "$EXISTING_PID" ]; then
+        echo "Found existing backend process (PID: $EXISTING_PID)"
+        echo "Killing existing process..."
+        kill -9 $EXISTING_PID 2>/dev/null || true
+        sleep 2
+    fi
+fi
+
+# Check if port 5173 is already in use
+if ss -tlnp | grep -q ":${WEB_FRONTEND_PORT} "; then
+    echo "⚠️  Port ${WEB_FRONTEND_PORT} is already in use!"
+    echo "Checking for existing Web UI frontend process..."
+    
+    # Find existing vite process on our port
+    EXISTING_VITE_PID=$(lsof -t -i :${WEB_FRONTEND_PORT} 2>/dev/null | head -1)
+    
+    if [ -n "$EXISTING_VITE_PID" ]; then
+        echo "Found existing frontend process (PID: $EXISTING_VITE_PID)"
+        echo "Killing existing process..."
+        kill -9 $EXISTING_VITE_PID 2>/dev/null || true
+        sleep 2
+    fi
+fi
+
 # Start Web UI backend in the background with nohup to protect from signals
 echo "Starting Web UI backend on ${WEB_BACKEND_HOST}:${WEB_BACKEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/backend
 source venv/bin/activate
-nohup uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" > /tmp/backend.log 2>&1 &
+nohup uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" > /tmp/web_ui_backend.log 2>&1 &
 WEB_BACKEND_PID=$!
 
 echo "Web Backend PID: ${WEB_BACKEND_PID}"
@@ -125,23 +157,44 @@ echo "Web Backend PID: ${WEB_BACKEND_PID}"
 # Wait a moment for the backend to start
 sleep 3
 
+# Verify backend started
+if ! ps -p $WEB_BACKEND_PID > /dev/null 2>&1; then
+    echo "❌ Web UI backend failed to start!"
+    echo "Check /tmp/web_ui_backend.log for details"
+    exit 1
+fi
+
 # Start Web UI frontend in the background with nohup to protect from signals
 echo "Starting Web UI frontend on port ${WEB_FRONTEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/frontend
-nohup npm run dev -- --port "${WEB_FRONTEND_PORT}" > /tmp/frontend.log 2>&1 &
+nohup npm run dev -- --port "${WEB_FRONTEND_PORT}" > /tmp/web_ui_frontend.log 2>&1 &
 WEB_FRONTEND_PID=$!
 
 echo "Web Frontend PID: ${WEB_FRONTEND_PID}"
 
+# Wait a moment for the frontend to start
+sleep 3
+
+# Verify frontend started
+if ! ps -p $WEB_FRONTEND_PID > /dev/null 2>&1; then
+    echo "❌ Web UI frontend failed to start!"
+    echo "Check /tmp/web_ui_frontend.log for details"
+    exit 1
+fi
+
+# Disown processes to prevent them from being killed when shell exits
+disown $WEB_BACKEND_PID 2>/dev/null || true
+disown $WEB_FRONTEND_PID 2>/dev/null || true
+
 echo ""
-echo "MCP Agent Web UI started successfully!"
+echo "✅ MCP Agent Web UI started successfully!"
 echo "Web Backend: http://${WEB_BACKEND_HOST}:${WEB_BACKEND_PORT}"
 echo "Web Frontend: http://localhost:${WEB_FRONTEND_PORT}"
 echo ""
 echo "Web UI is configured to connect to IT Lead Server at: http://${IT_LEAD_HOST}:${IT_LEAD_PORT}"
 echo ""
-echo "Press Ctrl+C to shut down the Web UI"
+echo "Backend logs: /tmp/web_ui_backend.log"
+echo "Frontend logs: /tmp/web_ui_frontend.log"
 echo ""
-
-# Wait for all processes
-wait $WEB_BACKEND_PID $WEB_FRONTEND_PID
+echo "PIDs: Backend=$WEB_BACKEND_PID, Frontend=$WEB_FRONTEND_PID"
+echo ""
