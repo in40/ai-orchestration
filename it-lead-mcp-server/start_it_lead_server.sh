@@ -208,4 +208,21 @@ if [ "$USE_POSTGRES" = true ] && [ -n "$POSTGRES_PASSWORD" ]; then
   export PGPASSWORD="$POSTGRES_PASSWORD"
 fi
 
-python -c "import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()"
+# Run server with nohup to survive shell exit, redirect output to log file
+nohup python -c "import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()" > /tmp/it_lead_nohup.log 2>&1 &
+IT_LEAD_PID=$!
+echo "IT Lead server started with PID $IT_LEAD_PID"
+echo "Logs available at /tmp/it_lead_nohup.log"
+
+# Wait for server to start
+sleep 3
+
+# Verify server is running
+if ps -p $IT_LEAD_PID > /dev/null 2>&1; then
+    echo "✅ IT Lead server is running (PID: $IT_LEAD_PID)"
+    # Disown to prevent SIGTERM when shell exits
+    disown $IT_LEAD_PID 2>/dev/null || true
+else
+    echo "❌ IT Lead server failed to start"
+    exit 1
+fi

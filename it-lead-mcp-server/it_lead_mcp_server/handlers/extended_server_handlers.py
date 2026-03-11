@@ -133,6 +133,39 @@ class ExtendedItLeadServerHandlers:
                 }
             },
             {
+                "name": "stop_deployment",
+                "description": "Stop a running deployment (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID of deployment to stop"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+            {
+                "name": "start_deployment",
+                "description": "Start a stopped deployment (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID to start"}
+                    },
+                    "required": ["container_id"]
+                }
+            },
+            {
+                "name": "delete_deployment",
+                "description": "Delete a deployment permanently (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID to delete"}
+                    },
+                    "required": ["container_id"]
+                }
+            },
+            {
                 "name": "get_task_history",
                 "description": "Get the complete status history of a specific task with timestamps",
                 "inputSchema": {
@@ -1168,6 +1201,96 @@ class ExtendedItLeadServerHandlers:
                         "count": 0
                     }
                 }
+
+        # Add implementation for stop_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "stop_deployment":
+            task_id = arguments.get("task_id")
+            print(f"🛑 stop_deployment called with task_id={task_id}")
+
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "stop-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "stop_deployment",
+                            "arguments": {"task_id": task_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps stop_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"result": {"error": f"DevOps Engineer returned status {response.status_code}"}}
+            except requests.RequestException as e:
+                return {"result": {"error": f"Failed to call DevOps Engineer: {str(e)}"}}
+
+        # Add implementation for start_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "start_deployment":
+            container_id = arguments.get("container_id")
+            print(f"▶️ start_deployment called with container_id={container_id}")
+
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "start-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "start_deployment",
+                            "arguments": {"container_id": container_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps start_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"result": {"error": f"DevOps Engineer returned status {response.status_code}"}}
+            except requests.RequestException as e:
+                return {"result": {"error": f"Failed to call DevOps Engineer: {str(e)}"}}
+
+        # Add implementation for delete_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "delete_deployment":
+            container_id = arguments.get("container_id")
+            print(f"🗑️ delete_deployment called with container_id={container_id}")
+
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "delete-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "delete_deployment",
+                            "arguments": {"container_id": container_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps delete_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"result": {"error": f"DevOps Engineer returned status {response.status_code}"}}
+            except requests.RequestException as e:
+                return {"result": {"error": f"Failed to call DevOps Engineer: {str(e)}"}}
 
         elif tool_name == "delete_task":
             task_id = arguments.get("task_id")

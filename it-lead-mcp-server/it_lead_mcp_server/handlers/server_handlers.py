@@ -16,7 +16,7 @@ class ItLeadServerHandlers:
     def __init__(self, enable_registry: bool = True, use_postgres: bool = True,
                  postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
                  llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = None  # REQUIRED from config from config, NO hardcoded default,
+                 llm_model: str = None,  # REQUIRED from config, NO hardcoded default
                  prompts_dir: str = "."):
         # IT Lead specific tools for software development
         self.tools: List[Dict[str, Any]] = [

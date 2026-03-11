@@ -665,17 +665,31 @@ CMD ["python", "result.py"]
             return {"error": f"Deployment failed: {str(e)}"}
 
     def _stop_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Stop and remove a deployment"""
+        """Stop a deployment (keep container for restart)"""
         import subprocess
 
         task_id = arguments.get("task_id")
         container_name = f"deploy-{task_id}"
 
         try:
-            # Stop container
+            # Check if container exists
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
+                capture_output=True, text=True
+            )
+            if not result.stdout.strip():
+                return {"error": f"Container {container_name} not found"}
+            
+            # Check if already stopped
+            if "Exited" in result.stdout:
+                return {
+                    "success": True,
+                    "task_id": task_id,
+                    "message": f"Deployment {task_id} was already stopped"
+                }
+            
+            # Stop container (don't remove - keep for restart)
             subprocess.run(["docker", "stop", container_name], check=True, capture_output=True)
-            # Remove container
-            subprocess.run(["docker", "rm", container_name], check=True, capture_output=True)
 
             # Update database
             self._update_deployment_status(task_id, "stopped")
@@ -685,6 +699,9 @@ CMD ["python", "result.py"]
                 "task_id": task_id,
                 "message": f"Deployment {task_id} stopped successfully"
             }
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode() if e.stderr else str(e)
+            return {"error": f"Docker command failed: {stderr}"}
         except Exception as e:
             return {"error": f"Failed to stop deployment: {str(e)}"}
 
@@ -695,6 +712,22 @@ CMD ["python", "result.py"]
         container_id = arguments.get("container_id")
 
         try:
+            # Check if container exists
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={container_id}", "--format", "{{.Status}}"],
+                capture_output=True, text=True
+            )
+            if not result.stdout.strip():
+                return {"error": f"Container {container_id} not found"}
+            
+            # Check if already running
+            if "Up" in result.stdout:
+                return {
+                    "success": True,
+                    "container_id": container_id,
+                    "message": f"Deployment {container_id} was already running"
+                }
+            
             # Start container
             subprocess.run(["docker", "start", container_id], check=True, capture_output=True)
 
@@ -703,6 +736,9 @@ CMD ["python", "result.py"]
                 "container_id": container_id,
                 "message": f"Deployment {container_id} started successfully"
             }
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode() if e.stderr else str(e)
+            return {"error": f"Docker command failed: {stderr}"}
         except Exception as e:
             return {"error": f"Failed to start deployment: {str(e)}"}
 
@@ -713,8 +749,17 @@ CMD ["python", "result.py"]
         container_id = arguments.get("container_id")
 
         try:
+            # Check if container exists
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={container_id}", "--format", "{{.ID}}"],
+                capture_output=True, text=True
+            )
+            if not result.stdout.strip():
+                return {"error": f"Container {container_id} not found"}
+            
             # Stop if running
             subprocess.run(["docker", "stop", container_id], capture_output=True)
+            
             # Remove container
             subprocess.run(["docker", "rm", container_id], check=True, capture_output=True)
 
@@ -723,6 +768,9 @@ CMD ["python", "result.py"]
                 "container_id": container_id,
                 "message": f"Deployment {container_id} deleted successfully"
             }
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode() if e.stderr else str(e)
+            return {"error": f"Docker command failed: {stderr}"}
         except Exception as e:
             return {"error": f"Failed to delete deployment: {str(e)}"}
 
@@ -842,10 +890,12 @@ CMD ["python", "result.py"]
             print(f"Warning: Could not update deployment status: {e}")
 
     def _get_deployments(self, status_filter="running"):
-        """Get deployments from database"""
+        """Get deployments from database with actual Docker status"""
+        import subprocess
+        import psycopg2
+        from datetime import datetime, date
+        
         try:
-            import psycopg2
-            from datetime import datetime, date
             conn = psycopg2.connect(
                 host="127.0.0.1",
                 database="mcp_registry",
@@ -860,13 +910,51 @@ CMD ["python", "result.py"]
                              (status_filter,))
             columns = [desc[0] for desc in cursor.description]
             deployments = []
+            
             for row in cursor.fetchall():
                 dep_dict = dict(zip(columns, row))
                 # Convert datetime objects to ISO format strings for JSON serialization
                 for key, value in dep_dict.items():
                     if isinstance(value, (datetime, date)):
                         dep_dict[key] = value.isoformat()
+                
+                # Get actual Docker status
+                task_id = dep_dict.get("task_id", "")
+                container_name = f"deploy-{task_id}"
+                
+                try:
+                    # Check container status from Docker
+                    result = subprocess.run(
+                        ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    
+                    docker_status = result.stdout.strip()
+                    
+                    if docker_status:
+                        # Update status based on actual Docker state
+                        if "Up" in docker_status:
+                            dep_dict["status"] = "running"
+                            # Update database if it was wrong
+                            if dep_dict.get("status") != "running":
+                                self._update_deployment_status(task_id, "running")
+                        elif "Exited" in docker_status:
+                            dep_dict["status"] = "stopped"
+                            # Update database if it was wrong
+                            if dep_dict.get("status") != "stopped":
+                                self._update_deployment_status(task_id, "stopped")
+                        else:
+                            dep_dict["status"] = "unknown"
+                    else:
+                        # Container doesn't exist
+                        dep_dict["status"] = "deleted"
+                        
+                except Exception as e:
+                    print(f"Warning: Could not check Docker status for {container_name}: {e}")
+                    # Keep database status if Docker check fails
+                
                 deployments.append(dep_dict)
+            
             cursor.close()
             conn.close()
             return deployments
