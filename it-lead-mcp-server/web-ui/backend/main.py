@@ -856,6 +856,7 @@ async def fetch_tasks_from_it_lead():
                             formatted_tasks.append({
                                 "id": task.get("task_id", "unknown"),
                                 "title": task.get("title", f"Task: {task.get('task_id', 'unknown')}"),
+                                "description": task.get("description", ""),  # Add original description
                                 "assignee": task.get("assigned_to", "Unknown"),
                                 "status": task.get("status", "pending"),
                                 "priority": task.get("priority", "medium"),

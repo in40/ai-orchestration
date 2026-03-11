@@ -264,6 +264,7 @@ const TaskManagement = () => {
                 <TableHead>
                   <TableRow>
                     <TableCell>Title</TableCell>
+                    <TableCell>Description</TableCell>
                     <TableCell>Assignee</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell>Priority</TableCell>
@@ -277,8 +278,13 @@ const TaskManagement = () => {
                       key={task.id}
                       sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
                     >
-                      <TableCell component="th" scope="row">
-                        {task.title}
+                      <TableCell component="th" scope="row" sx={{ maxWidth: 200 }}>
+                        <Typography variant="body2" noWrap>{task.title}</Typography>
+                      </TableCell>
+                      <TableCell sx={{ maxWidth: 300 }}>
+                        <Typography variant="body2" color="text.secondary" noWrap>
+                          {task.description || '-'}
+                        </Typography>
                       </TableCell>
                       <TableCell>{task.assignee}</TableCell>
                       <TableCell>
