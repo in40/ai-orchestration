@@ -170,13 +170,17 @@ class RequirementEngineerMcpServer:
             import json
 
             # Determine the correct endpoint based on the transport type
+            # CRITICAL FIX: Normalize 0.0.0.0 to 127.0.0.1 for endpoint URL
+            # 0.0.0.0 is a bind address, not a connectable address
+            connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
+            
             if self.transport_type == "streamable-http":
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/mcp"
-                endpoint_url = f"http://{self.host}:{self.port}/mcp"
+                endpoint_url = f"http://{connect_host}:{self.port}/mcp"
             else:
                 # For legacy transport, use the send endpoint
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/send"
-                endpoint_url = f"http://{self.host}:{self.port}/send"
+                endpoint_url = f"http://{connect_host}:{self.port}/send"
 
             print(f"DEBUG: Preparing registration payload to {registry_url}")
 
