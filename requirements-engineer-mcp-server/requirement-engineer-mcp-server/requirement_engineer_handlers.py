@@ -857,7 +857,7 @@ class RequirementEngineerHandlers(McpServerHandlers):
                     if content:
                         print(f"✅ LLM call succeeded on attempt {attempt + 1}")
                         # Extract JSON from the response
-                        return self._extract_json_from_reference(content)
+                        return self._extract_json_from_response(content)
                     else:
                         print(f"⚠️ LLM returned empty content on attempt {attempt + 1}")
                         last_error = Exception("LLM returned empty content")
