@@ -593,22 +593,23 @@ def _parse_llm_json_response(response: str) -> Optional[Dict[str, Any]]:
 
 import requests
 
-def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 5, retry_delay: int = 10) -> str:
+def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 14400) -> str:
     """
     Call LM Studio's OpenAI-compatible endpoint using synchronous requests.
-    
+
     Includes retry logic for transient LLM server errors.
-    
+
     Args:
         prompt: The prompt to send to the LLM
         vibe: Creativity level (1-10)
         server_handlers: Optional server handlers for system prompt
-        max_retries: Maximum number of retry attempts (default: 3)
-        retry_delay: Delay between retries in seconds (default: 5)
-    
+        max_retries: Maximum number of retry attempts (default: 1 - no retry, let LLM finish)
+        retry_delay: Delay between retries in seconds (default: 10)
+        timeout: Request timeout in seconds (default: 14400 = 240 minutes for extensive tasks)
+
     Returns:
         LLM response content string
-    
+
     Raises:
         Exception: If all retry attempts fail
     """
@@ -639,7 +640,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                     "temperature": vibe / 10,  # 0.1 to 1.0
                     "max_tokens": 8192  # Increased for longer code outputs
                 },
-                timeout=300
+                timeout=timeout  # Use the timeout parameter (default: 240 minutes)
             )
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
