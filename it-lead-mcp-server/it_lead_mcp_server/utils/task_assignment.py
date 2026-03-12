@@ -89,14 +89,14 @@ class TaskAssignmentManager:
         except Exception as e:
             print(f"⚠️ Error initializing result router: {e}")
 
-    def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 120) -> Optional[Dict[str, Any]]:
+    def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 7200) -> Optional[Dict[str, Any]]:
         """
         Poll the agent's tasks/result endpoint to get async task result.
 
         Args:
             agent_endpoint: Agent's MCP endpoint
             task_id: Async task ID from the agent's response
-            max_retries: Maximum number of poll attempts (increased to 120 for 60s+ timeouts)
+            max_retries: Maximum number of poll attempts (default: 7200 = 4 hours at 2s intervals)
 
         Returns:
             Result dict with git_url or None if polling failed
