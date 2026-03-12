@@ -551,7 +551,24 @@ class TaskRoutingEngine:
     
     def get_agent_endpoint(self, agent_id: str) -> Optional[str]:
         """Get the MCP endpoint for an agent"""
-        return self.agent_endpoints.get(agent_id)
+        # Normalize agent_id to match stored keys (lowercase with hyphens)
+        agent_id_normalized = agent_id.lower().replace(" ", "-").replace("_", "-")
+        
+        # Handle common variations
+        if "implementation" in agent_id_normalized:
+            agent_id_normalized = "implementation-engineer"
+        elif "requirement" in agent_id_normalized:
+            agent_id_normalized = "requirements-engineer"
+        elif "devops" in agent_id_normalized:
+            agent_id_normalized = "devops-engineer"
+        elif "code" in agent_id_normalized and "review" in agent_id_normalized:
+            agent_id_normalized = "code-reviewer"
+        elif "qa" in agent_id_normalized or "test" in agent_id_normalized:
+            agent_id_normalized = "qa-test-engineer"
+        elif "security" in agent_id_normalized:
+            agent_id_normalized = "security-engineer"
+        
+        return self.agent_endpoints.get(agent_id_normalized)
     
     def get_agent_tool_mapping(self, agent_id: str) -> Dict[str, str]:
         """Get tool mapping for an agent"""
