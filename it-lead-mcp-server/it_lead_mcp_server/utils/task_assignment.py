@@ -228,7 +228,7 @@ class TaskAssignmentManager:
                 print(f"❌ LLM planner ERROR: {e}")
                 import traceback
                 traceback.print_exc()
-                llm_plan = {"workflow_sequence": ["requirements-engineer", "implementation-engineer"], "tools": {}}
+                llm_plan = {"workflow_sequence": ["requirements-engineer", "implementation-engineer"], "tools": {"primary_agent": "vibe_code_async"}}
 
             result["requires_llm_planning"] = True
             result["llm_plan"] = llm_plan
@@ -336,10 +336,15 @@ class TaskAssignmentManager:
                 tool = "vibe_code_async"
                 print(f"🔧 FORCED tool to vibe_code_async for deployment workflow")
             
+            # CRITICAL FIX: Handle sync tasks with deployment workflow
+            if deploy_flag and primary_agent == "implementation-engineer":
+                self._handle_sync_implementation_with_deployment_workflow(task_id)
+            
             print(f"   tool: {tool}")
-            priority = llm_plan.get("priority", priority)
+            priority = llm_plan.get("priority", priority) if llm_plan else priority
             print(f"   priority: {priority}")
         else:
+            # No deployment flag - standard sync path
             print(f"✅ LLM planning NOT required for task {task_id}")
             primary_agent = routing_decision.assign_to
             tool = routing_decision.tool
@@ -645,6 +650,126 @@ class TaskAssignmentManager:
                 )
 
         return result
+
+    def _handle_sync_implementation_with_deployment_workflow(self, task_id: str):
+        """
+        Handle sync Implementation results when deployment is required.
+
+        When Implementation processes synchronously (no async_task_id), the code
+        is returned inline. This method extracts it, stores it in git, and forwards
+        to DevOps for deployment.
+
+        Args:
+            task_id: Task identifier
+        """
+        print(f"🔧 Handling sync implementation with deployment workflow for {task_id}")
+
+        try:
+            # Get task from storage
+            task = self.task_storage.get_task(task_id)
+            if not task:
+                print(f"❌ Task {task_id} not found")
+                return
+
+            # Get LLM plan with workflow sequence
+            llm_plan = task.get("metadata", {}).get("llm_plan")
+            if not llm_plan:
+                print(f"⚠️ No LLM plan found for task {task_id}")
+                return
+
+            workflow_sequence = llm_plan.get("workflow_sequence", [])
+            if "devops-engineer" not in workflow_sequence:
+                print(f"⚠️ DevOps not in workflow sequence for {task_id}")
+                return
+
+            # Get inline result from task
+            result_reference = task.get("result_reference", {})
+            if not result_reference:
+                print(f"⚠️ No result_reference found for task {task_id}")
+                return
+
+            storage_type = result_reference.get("storage_type", "")
+            if storage_type != "inline":
+                print(f"⚠️ Result already stored in git (storage_type={storage_type})")
+                return
+
+            # Extract code from inline result
+            result_data = result_reference.get("result", "")
+            if not result_data:
+                print(f"⚠️ No inline result content found")
+                return
+
+            # Try to extract code from JSON string
+            try:
+                if isinstance(result_data, str):
+                    # Try to parse as JSON
+                    import json
+                    try:
+                        parsed = json.loads(result_data)
+                        if isinstance(parsed, dict):
+                            result_data = parsed.get("code") or parsed.get("result", result_data)
+                    except:
+                        pass  # Keep as string
+            except:
+                pass
+
+            if not result_data or len(str(result_data)) < 10:
+                print(f"⚠️ Code content too short or invalid: {str(result_data)[:100]}")
+                return
+
+            print(f"📝 Extracted {len(str(result_data))} bytes of code from inline result")
+
+            # Store code in git
+            import subprocess
+            import uuid
+            import os
+
+            result_uuid = str(uuid.uuid4())
+            git_workdir = "/tmp/mcp-vibe-coding-git/repo"
+
+            # Ensure git workdir exists
+            if not os.path.exists(git_workdir):
+                os.makedirs(git_workdir, exist_ok=True)
+                subprocess.run(["git", "init"], cwd=git_workdir, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "mcp@local"], cwd=git_workdir, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "MCP Agent"], cwd=git_workdir, check=True, capture_output=True)
+
+            # Get git repo URL
+            git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+
+            # Clone/pull repo
+            if not os.path.exists(os.path.join(git_workdir, ".git")):
+                subprocess.run(["git", "clone", git_repo_url, "."], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+            subprocess.run(["git", "pull"], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+
+            # Create result file
+            result_dir = os.path.join(git_workdir, "results", result_uuid)
+            os.makedirs(result_dir, exist_ok=True)
+            result_file = os.path.join(result_dir, "result.py")
+            with open(result_file, "w") as f:
+                f.write(str(result_data))
+
+            # Commit and push
+            subprocess.run(["git", "add", "."], cwd=git_workdir, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", f"Result for {task_id} (sync extraction)"], cwd=git_workdir, check=True, capture_output=True)
+            subprocess.run(["git", "push", git_repo_url, "main"], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+
+            # Construct git_url
+            git_url = f"{git_repo_url}/tree/main/results/{result_uuid}/result.py"
+            print(f"✅ Code stored in git: {git_url}")
+
+            # Update task with git_url
+            self.task_storage.update_task_with_git_url(task_id, git_url, None)
+
+            # Forward to DevOps
+            print(f"🔄 Forwarding to DevOps for deployment...")
+            task_description = task.get("description", "")
+            self._handle_workflow_sequence(task_id, task_description, "implementation-engineer", llm_plan, git_url)
+
+        except Exception as e:
+            print(f"❌ Error handling sync implementation: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _forward_task_to_agent(self, task_id: str, task_description: str,
                                      agent_id: str, tool: str,
@@ -1104,12 +1229,27 @@ class TaskAssignmentManager:
                         if llm_plan:
                             updated_workflow = llm_plan.get("workflow_sequence", [])
 
+                            # CRITICAL FIX APPLIED: Handle sync tasks with deployment workflow
+                            # Check if deployment is required from the llm_plan metadata
+                            deploy_flag = llm_plan.get("deploy_after_implementation", False) if llm_plan else False
+                            print(f"   Checking critical conditions: deploy_flag={deploy_flag}, async_task_id={async_task_id}")
+                            
+                            # If deployment required but Implementation processed synchronously (no async_task_id)
+                            implementation_agent = "implementation-engineer"
+                            next_agent_normalized = next_agent.lower().replace("_", "-").replace(" ", "-") if next_agent else ""
+                            is_implementation_step = "implementation" in next_agent_normalized
+                            needs_devops_deployment = deploy_flag and is_implementation_step
+                            
+                            print(f"   Critical conditions met: needs_devops_deployment={needs_devops_deployment}")
+                            
+                            # Manually handle sync Implementation results when deployment required
+                            if needs_devops_deployment:
+                                self._handle_sync_implementation_with_deployment_workflow(task_id)
+                            
                             # CRITICAL FIX: Recalculate current_index based on next_agent
-                            # The captured current_index may be stale from earlier in the workflow
                             actual_current_index = -1
                             for i, agent in enumerate(updated_workflow):
                                 agent_normalized = agent.lower().replace(" ", "-").replace("_", "-")
-                                next_agent_normalized = next_agent.lower().replace(" ", "-").replace("_", "-")
                                 if agent_normalized == next_agent_normalized:
                                     actual_current_index = i
                                     break
