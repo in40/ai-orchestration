@@ -1481,7 +1481,7 @@ class ExtendedItLeadServerHandlers:
                     self._run_llm_planning_and_forward,
                     task_id, task_description, assignee, arguments
                 )
-                result = future.result(timeout=300)  # 5 minute timeout for LLM planning
+                result = future.result(timeout=900)  # 15 minute timeout for LLM planning + forwarding (matches RE's max timeout)
 
             print(f"DEBUG: Background task processing completed for {task_id}: {result}")
 
@@ -1559,6 +1559,32 @@ class ExtendedItLeadServerHandlers:
                 traceback.print_exc()
         else:
             print("DEBUG: task_storage is None, cannot store task")
+
+        # CRITICAL FIX: Forward task to proper agent via task_assignment_manager
+        # This ensures LLM planning happens and task is routed correctly
+        if self.task_assignment_manager:
+            print(f"🚀 Forwarding task {task_id} via task_assignment_manager...")
+            try:
+                # Preserve original arguments including deploy_after_implementation flag
+                metadata = {"tool_call": "assign_task", "original_arguments": arguments}
+                
+                assignment_result = self.task_assignment_manager.assign_and_forward_task(
+                    task_id=task_id,
+                    task_description=task_description,
+                    assignee=assignee if assignee != "IT Lead" else None,  # Let routing engine decide
+                    priority=priority,
+                    deadline=deadline if deadline else None,
+                    metadata=metadata
+                )
+                
+                print(f"✅ Task {task_id} forwarding result: {assignment_result.get('status', 'unknown')}")
+                result["forwarding_result"] = assignment_result
+            except Exception as e:
+                print(f"❌ Error forwarding task {task_id}: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"⚠️  task_assignment_manager not available for task {task_id}")
 
         print(f"Assigned task (simple mode): {task_id} to {assignee}, priority: {priority}, deadline: {deadline}")
         return {"result": result}

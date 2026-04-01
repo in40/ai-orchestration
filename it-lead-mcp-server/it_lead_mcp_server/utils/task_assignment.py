@@ -868,7 +868,7 @@ class TaskAssignmentManager:
                             "arguments": tool_arguments
                         }
                     },
-                    timeout=120.0  # Increased from 30 to 120 seconds for LLM processing time
+                    timeout=720.0  # 12 minutes timeout for LLM processing (matches RE's max 600s + headroom)
                 )
 
                 if response.status_code == 200:
