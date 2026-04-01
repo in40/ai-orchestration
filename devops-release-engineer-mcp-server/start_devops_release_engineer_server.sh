@@ -9,6 +9,8 @@ echo "Starting DevOps Release Engineer MCP Server with PostgreSQL..."
 if [ -f "/root/qwen/base/.env" ]; then
     source /root/qwen/base/.env
     echo "✅ Loaded configuration from /root/qwen/base/.env"
+    # Export variables for subprocess inheritance
+    export DEPLOYMENT_HOST
 fi
 
 # Default values (from .env or fallback)
