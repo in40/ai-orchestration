@@ -507,14 +507,20 @@ class TaskAssignmentManager:
                 agents_list = self.routing_engine.mcp_registry_client.discover_all_agents_with_tools(use_cache=True)
                 
                 # Find the agent by matching agent_id or name
+                # Normalize primary_agent for comparison: "Requirements Engineer" -> "requirements-engineer"
+                primary_agent_normalized = primary_agent.lower().replace(" ", "-").replace("_", "-")
+
                 for agent in agents_list:
                     agent_id = agent.get("agent_id", agent.get("name", ""))
                     agent_name = agent.get("name", "")
                     endpoint = agent.get("endpoint")
-                    
-                    # Match by agent_id or by normalized name
-                    if (agent_id and agent_id.lower() == primary_agent.lower()) or \
-                       (agent_name and agent_name.lower().replace(" ", "-") == primary_agent.lower()):
+
+                    # Normalize agent_id for comparison (in case it's not already normalized)
+                    agent_id_normalized = agent_id.lower().replace(" ", "-").replace("_", "-") if agent_id else ""
+
+                    # Match by normalized agent_id or by normalized name
+                    if (agent_id and (agent_id_normalized == primary_agent_normalized or agent_id.lower() == primary_agent.lower())) or \
+                       (agent_name and agent_name.lower().replace(" ", "-").replace("_", "-") == primary_agent_normalized):
                         agent_endpoint = endpoint
                         print(f"✅ Found endpoint for {primary_agent}: {agent_endpoint}")
                         break
