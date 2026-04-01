@@ -802,40 +802,58 @@ class TaskAssignmentManager:
         # Build tool arguments based on agent and tool
         tool_arguments = self._build_tool_arguments(agent_id, tool, task_description, metadata, task_id)
 
-        try:
-            # Use sync requests to match existing server handler pattern
-            response = requests.post(
-                agent_endpoint,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": f"forward-{task_id}",
-                    "method": "tools/call",
-                    "params": {
-                        "name": tool,
-                        "arguments": tool_arguments
+        # Retry configuration for failed forwarding
+        max_retries = 5
+        base_delay = 5  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                # Use sync requests to match existing server handler pattern
+                response = requests.post(
+                    agent_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": f"forward-{task_id}",
+                        "method": "tools/call",
+                        "params": {
+                            "name": tool,
+                            "arguments": tool_arguments
+                        }
+                    },
+                    timeout=120.0  # Increased from 30 to 120 seconds for LLM processing time
+                )
+
+                if response.status_code == 200:
+                    response_data = response.json()
+                    return {
+                        "success": True,
+                        "response": response_data,
+                        "agent_id": agent_id,
+                        "tool": tool
                     }
-                },
-                timeout=120.0  # Increased from 30 to 120 seconds for LLM processing time
-            )
+                else:
+                    if attempt == max_retries - 1:
+                        return {
+                            "success": False,
+                            "error": f"Agent returned status {response.status_code}: {response.text}"
+                        }
+                    # Retry on non-200 status
+                    print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed with status {response.status_code}, retrying in {base_delay}s...")
+                    time.sleep(base_delay * (2 ** attempt))
 
-            if response.status_code == 200:
-                response_data = response.json()
-                return {
-                    "success": True,
-                    "response": response_data,
-                    "agent_id": agent_id,
-                    "tool": tool
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Agent returned status {response.status_code}: {response.text}"
-                }
+            except requests.RequestException as e:
+                if attempt == max_retries - 1:
+                    return {"success": False, "error": f"Request failed: {str(e)}"}
+                # Retry on timeout/connection errors
+                print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed: {e}, retrying in {base_delay}s...")
+                time.sleep(base_delay * (2 ** attempt))
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    return {"success": False, "error": f"Unexpected error: {str(e)}"}
+                print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed: {e}, retrying in {base_delay}s...")
+                time.sleep(base_delay * (2 ** attempt))
 
-        except requests.RequestException as e:
-            return {"success": False, "error": f"Request failed: {str(e)}"}
-        except Exception as e:
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+        return {"success": False, "error": f"Max retries ({max_retries}) exceeded"}
 
     def _build_tool_arguments(self, agent_id: str, tool: str, task_description: str,
                              metadata: Optional[Dict[str, Any]], task_id: Optional[str] = None) -> Dict[str, Any]:
