@@ -297,7 +297,16 @@ class TaskAssignmentManager:
                 elif inner_args.get("deploy_after_implementation", False):
                     deploy_flag = True
                     print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments directly")
-                
+
+                # Level 2.5: Check for THREE levels of nesting (Web UI double-wraps)
+                # Structure: metadata -> original_arguments -> original_arguments -> original_arguments -> metadata -> deploy_after_implementation
+                elif inner_args.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.original_arguments.metadata")
+                elif inner_args.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.original_arguments.original_arguments.metadata")
+
                 # Level 2: In original_arguments.metadata (fallback - one level less nesting)
                 elif orig_args.get("metadata", {}).get("deploy_after_implementation", False):
                     deploy_flag = True
@@ -389,12 +398,38 @@ class TaskAssignmentManager:
                 orig_args = metadata.get("original_arguments", {})
                 print(f"   original_arguments keys: {list(orig_args.keys())}")
                 print(f"   original_arguments.metadata.deploy_after_implementation: {orig_args.get('metadata', {}).get('deploy_after_implementation')}")
+                print(f"   original_arguments.original_arguments: {orig_args.get('original_arguments')}")
                 if orig_args.get("metadata", {}).get("deploy_after_implementation", False):
                     deploy_flag = True
                     print(f"   ✅ Found deploy_after_implementation in original_arguments.metadata")
                 elif orig_args.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
                     deploy_flag = True
                     print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.metadata")
+                elif orig_args.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.original_arguments.metadata")
+                elif orig_args.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.metadata.original_arguments.metadata")
+                else:
+                    # Debug: show full structure
+                    inner = orig_args.get("original_arguments", {})
+                    print(f"   DEBUG: inner keys: {list(inner.keys()) if inner else 'None'}")
+                    if inner:
+                        inner_meta = inner.get("metadata", {})
+                        print(f"   DEBUG: inner.metadata: {inner_meta}")
+                        print(f"   DEBUG: inner.metadata.deploy_after_implementation: {inner_meta.get('deploy_after_implementation')}")
+                        # Check deeper nesting
+                        deeper = inner_meta.get("original_arguments", {})
+                        if deeper:
+                            deeper_meta = deeper.get("original_arguments", {})
+                            if deeper_meta:
+                                deepest_meta = deeper_meta.get("metadata", {})
+                                print(f"   DEBUG: deepest metadata: {deepest_meta}")
+                                print(f"   DEBUG: deepest metadata.deploy_after_implementation: {deepest_meta.get('deploy_after_implementation')}")
+                                if deepest_meta.get("deploy_after_implementation", False):
+                                    deploy_flag = True
+                                    print(f"   ✅ Found deploy_after_implementation at deepest level")
             
             if needs_deployment or deploy_flag:
                 print(f"🚀 DEPLOYMENT DETECTED in rule-based routing!")
@@ -421,6 +456,9 @@ class TaskAssignmentManager:
             else:
                 print(f"ℹ️  No deployment keywords detected, using simple routing")
                 llm_plan = None
+
+            # Debug: Print execution flow marker
+            print(f"DEBUG: After deployment detection, before Step 3 task storage")
 
         # Step 3: Store task in database with initial status
         if self.task_storage:
@@ -454,8 +492,12 @@ class TaskAssignmentManager:
                 status_reason=f"Task received, routing to {primary_agent}"
             )
 
+            print(f"DEBUG: After Step 3 task storage, before Step 4 forwarding")
+
         # Step 4: Forward task to agent if agent is available
+        print(f"DEBUG: Step 4 - Checking primary_agent: {primary_agent}")
         if primary_agent:
+            print(f"DEBUG: Step 4 - Entering forwarding logic for {primary_agent}")
             # Get agent endpoint from the dynamic agent list (NOT hardcoded)
             # First, try to get the agent list from routing_engine's mcp_registry_client
             agent_endpoint = None
@@ -635,13 +677,13 @@ class TaskAssignmentManager:
                                 print(f"✅ Sync task {task_id} marked as done")
 
                 else:
-                    result["status"] = "assigned_pending"
+                    result["status"] = "assigned"
                     result["assigned_to"] = primary_agent
                     result["message"] = f"Task assigned to {primary_agent} but forwarding failed: {forward_result.get('error')}"
 
                     if self.task_storage:
                         self._update_task_status(
-                            task_id, "assigned_pending",
+                            task_id, "assigned",
                             f"Agent forwarding failed: {forward_result.get('error')}"
                         )
             else:
