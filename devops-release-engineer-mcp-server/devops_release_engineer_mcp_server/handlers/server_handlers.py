@@ -618,15 +618,18 @@ CMD ["python", "result.py"]
 
             # Find available host port
             host_port = self._find_available_port()
-            
+
+            # Get deployment host from environment
+            deployment_host = os.environ.get("DEPLOYMENT_HOST", "127.0.0.1")
+
             # Build Docker image
             image_name = f"deploy-{task_id}"
             container_name = f"deploy-{task_id}"
-            
+
             subprocess.run([
                 "docker", "build", "-t", image_name, deploy_dir
             ], check=True, capture_output=True, timeout=120)
-            
+
             # Run container
             subprocess.run([
                 "docker", "run", "-d",
@@ -637,9 +640,9 @@ CMD ["python", "result.py"]
                 "--restart", "unless-stopped",
                 image_name
             ], check=True, capture_output=True, timeout=30)
-            
+
             # Store deployment in database
-            deployment_url = f"http://192.168.51.216:{host_port}/"
+            deployment_url = f"http://{deployment_host}:{host_port}/"
             self._store_deployment(task_id, container_name, container_port, host_port, 
                                    deployment_url, git_url, image_name, memory_limit, cpu_limit)
             
