@@ -523,7 +523,8 @@ class TaskAssignmentManager:
                             def background_poller():
                                 """Background thread to poll for async task result and handle workflow sequence"""
                                 print(f"🔄 Background thread started for task {task_id}, polling for {async_task_id}...")
-                                async_result = self._poll_async_task_result(agent_endpoint, async_task_id, max_retries=120)
+                                # Increased polling to 360 retries (12 minutes) to handle longer-running tasks
+                                async_result = self._poll_async_task_result(agent_endpoint, async_task_id, max_retries=360)
                                 
                                 if async_result and async_result.get("git_url"):
                                     git_url = async_result["git_url"]
@@ -1204,7 +1205,8 @@ class TaskAssignmentManager:
                     sys.stdout.flush()
                     
                     print(f"🔍 Starting to poll async task result...", flush=True)
-                    async_result = self._poll_async_task_result(next_agent_endpoint, async_task_id, max_retries=120)
+                    # Increased polling to 360 retries (12 minutes) to handle longer-running tasks
+                    async_result = self._poll_async_task_result(next_agent_endpoint, async_task_id, max_retries=360)
                     
                     # Log result to file
                     try:
