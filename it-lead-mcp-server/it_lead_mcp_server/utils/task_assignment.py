@@ -228,7 +228,22 @@ class TaskAssignmentManager:
                 print(f"❌ LLM planner ERROR: {e}")
                 import traceback
                 traceback.print_exc()
+                # Fallback plan - check deployment flag FIRST
                 llm_plan = {"workflow_sequence": ["requirements-engineer", "implementation-engineer"], "tools": {"primary_agent": "vibe_code_async"}}
+
+                # Check if deployment is required even in fallback
+                deploy_flag = False
+                if metadata and metadata.get("deploy_after_implementation", False):
+                    deploy_flag = True
+                elif metadata and metadata.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                elif metadata and metadata.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+
+                if deploy_flag:
+                    llm_plan["workflow_sequence"].append("devops-engineer")
+                    llm_plan["tools"]["devops-engineer"] = "deploy_web_application"
+                    print(f"🚀 Fallback plan: Added devops-engineer for deployment workflow")
 
             result["requires_llm_planning"] = True
             result["llm_plan"] = llm_plan
