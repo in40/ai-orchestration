@@ -71,6 +71,13 @@ is_implementation_step = "implementation" in next_agent_normalized
 
 ## Changes Applied
 
+### Commit: 452eab5
+**fix: Increase background polling retries from 120 to 360**
+
+- Changed max_retries from 120 (4 minutes) to 360 (12 minutes)
+- Applied to both background thread polling and inline polling
+- Allows more time for complex tasks to complete before polling fails
+
 ### Commit: 5f164e3
 **fix: Add deployment flag check in fallback plan for sync implementation workflow**
 
