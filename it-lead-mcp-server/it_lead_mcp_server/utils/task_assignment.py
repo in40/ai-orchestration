@@ -1417,6 +1417,13 @@ class TaskAssignmentManager:
                     elif async_result:
                         print(f"⚠️ Workflow poller completed but no Git URL for task {task_id}", flush=True)
 
+                        # ✅ CHECK FOR PYTHON SYNTAX ERROR - Trigger automatic regeneration
+                        error_message = async_result.get("error", "") or async_result.get("message", "")
+                        if "python syntax error" in error_message.lower():
+                            print(f"🔧 Detected Python syntax error in DevOps response - triggering automatic code regeneration", flush=True)
+                            print(f"   Error: {error_message}", flush=True)
+                            self._trigger_code_regeneration(task_id, task_description, error_message, workflow_sequence, llm_plan)
+
                 import threading
                 threading.Thread(target=workflow_poller, daemon=True).start()
                 print(f"✅ Workflow polling thread spawned for task {task_id}")
@@ -1446,6 +1453,13 @@ class TaskAssignmentManager:
                         if deployment_url:
                             print(f"🚀 Deployment URL: {deployment_url}")
                         self.task_storage.update_task_with_git_url(task_id, git_url, deployment_url)
+
+                        # ✅ CHECK FOR PYTHON SYNTAX ERROR in sync result
+                        error_message = result_data.get("error", "") or result_data.get("message", "")
+                        if "python syntax error" in error_message.lower():
+                            print(f"🔧 Detected Python syntax error in sync DevOps response - triggering automatic code regeneration", flush=True)
+                            print(f"   Error: {error_message}", flush=True)
+                            self._trigger_code_regeneration(task_id, task_description, error_message, workflow_sequence, llm_plan)
                     elif deployment_url:
                         # Only deployment_url, no git_url - still save it
                         print(f"🚀 DevOps task completed with deployment_url only: {deployment_url}")
@@ -1561,3 +1575,229 @@ class TaskAssignmentManager:
                             print(f"⚠️  Could not update status: {e}")
         else:
             print(f"❌ Failed to forward task {task_id} to {next_agent}: {forward_result.get('error')}")
+
+            # ✅ CHECK FOR PYTHON SYNTAX ERROR in forward failure - Trigger automatic regeneration
+            error_message = forward_result.get("error", "")
+            if error_message and "python syntax error" in error_message.lower():
+                print(f"🔧 Detected Python syntax error in forward result - triggering automatic code regeneration", flush=True)
+                print(f"   Error: {error_message}", flush=True)
+                self._trigger_code_regeneration(task_id, task_description, error_message, workflow_sequence, llm_plan)
+
+    def _trigger_code_regeneration(self, task_id: str, task_description: str, syntax_error: str, workflow_sequence: List[str], llm_plan: Dict[str, Any]):
+        """
+        Trigger automatic code regeneration when deployment fails with Python syntax error.
+
+        This method:
+        1. Creates a new sub-task for Requirements Engineer to regenerate the code
+        2. Includes the original task, syntax error details, and original code
+        3. Sets up a new workflow: Requirements Engineer → Implementation Engineer → DevOps (retry)
+
+        Args:
+            task_id: Original task identifier
+            task_description: Original task description
+            syntax_error: The Python syntax error message from DevOps
+            workflow_sequence: Original workflow sequence
+            llm_plan: Original LLM plan with workflow configuration
+        """
+        try:
+            print(f"🔄 Starting code regeneration workflow for task {task_id}", flush=True)
+
+            # Get original code from git_url in task metadata
+            task_obj = self.task_storage.get_task(task_id)
+            original_git_url = None
+            if task_obj:
+                metadata = task_obj.get("metadata", {}) or {}
+                original_git_url = metadata.get("git_url")
+
+            if not original_git_url:
+                print(f"⚠️  No git_url found in task metadata - cannot regenerate code", flush=True)
+                return
+
+            # Create regeneration prompt for Requirements Engineer
+            regeneration_prompt = f"""I need you to regenerate the code for a deployment task that failed with a Python syntax error.
+
+ORIGINAL TASK:
+{task_description}
+
+SYNTAX ERROR FROM DEPLOYMENT:
+{syntax_error}
+
+ORIGINAL CODE LOCATION:
+{original_git_url}
+
+Please analyze the original code, fix the Python syntax error, and generate corrected code. The code will be deployed as a web application, so ensure it follows the proper structure for a Flask/web application.
+
+After you provide the corrected code, it will go through the Implementation Engineer and then be redeployed by the DevOps Engineer.
+
+Please generate the complete, corrected code with proper Python syntax."""
+
+            # Create a new sub-task for Requirements Engineer
+            regeneration_task_id = f"{task_id}-regenerate"
+
+            # Store the regeneration task
+            self.task_storage.create_task(
+                task_id=regeneration_task_id,
+                task_description=regeneration_prompt,
+                priority="high",
+                assigned_to="requirements-engineer",
+                metadata={
+                    "parent_task_id": task_id,
+                    "regeneration_type": "python_syntax_fix",
+                    "original_git_url": original_git_url,
+                    "syntax_error": syntax_error,
+                    "workflow_sequence": workflow_sequence,
+                    "retry_attempt": 1
+                }
+            )
+
+            print(f"✅ Created regeneration task: {regeneration_task_id}", flush=True)
+
+            # Update the original task status to reflect regeneration in progress
+            try:
+                import json
+                task = self.task_storage.get_task(task_id)
+                if task:
+                    status_history = task.get("status_history", [])
+                    if isinstance(status_history, str):
+                        status_history = json.loads(status_history)
+
+                    status_history_entry = {
+                        "status": "regeneration_in_progress",
+                        "timestamp": time.time(),
+                        "reason": f"Python syntax error detected - code regeneration requested: {syntax_error[:100]}..."
+                    }
+                    status_history.append(status_history_entry)
+
+                    cursor = self.task_storage.connection.cursor()
+                    if self.task_storage.use_sqlite:
+                        cursor.execute(
+                            "UPDATE task_registry SET status = ?, status_history = ? WHERE task_id = ?",
+                            ("regeneration_in_progress", json.dumps(status_history), task_id)
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                            ("regeneration_in_progress", json.dumps(status_history), task_id)
+                        )
+                    self.task_storage.connection.commit()
+                    cursor.close()
+                    print(f"✅ Updated task {task_id} status to regeneration_in_progress")
+            except Exception as e:
+                print(f"⚠️  Could not update task status: {e}")
+
+            # Forward the regeneration task to Requirements Engineer
+            requirements_endpoint = self.routing_engine.get_agent_endpoint("requirements-engineer")
+            if requirements_endpoint:
+                print(f"📤 Forwarding regeneration task to Requirements Engineer at {requirements_endpoint}", flush=True)
+
+                forward_result = self._forward_task_to_agent(
+                    regeneration_task_id,
+                    regeneration_prompt,
+                    "requirements-engineer",
+                    "vibe_code_async",
+                    "high",
+                    None,
+                    {"regeneration_context": True, "parent_task_id": task_id}
+                )
+
+                if forward_result.get("success"):
+                    print(f"✅ Regeneration task forwarded to Requirements Engineer", flush=True)
+
+                    # If async, start polling for the result
+                    async_task_id = forward_result.get("response", {}).get("result", {}).get("taskId")
+                    if async_task_id:
+                        print(f"⏳ Starting polling for regeneration task result: {async_task_id}", flush=True)
+
+                        def regeneration_poller():
+                            """Background thread to poll for regeneration result"""
+                            try:
+                                # Poll for the regenerated code
+                                regenerated_result = self._poll_async_task_result(
+                                    requirements_endpoint,
+                                    async_task_id,
+                                    max_retries=360
+                                )
+
+                                if regenerated_result and regenerated_result.get("git_url"):
+                                    print(f"✅ Regenerated code available at: {regenerated_result['git_url']}", flush=True)
+
+                                    # Update parent task with new git_url
+                                    self.task_storage.update_task_with_git_url(
+                                        task_id,
+                                        regenerated_result["git_url"],
+                                        None  # Will be redeployed in next step
+                                    )
+
+                                    # Trigger new workflow with regenerated code
+                                    # Re-forward to Implementation Engineer for processing
+                                    print(f"🔄 Forwarding regenerated code to Implementation Engineer", flush=True)
+
+                                    implementation_prompt = f"""A previous deployment attempt failed with a Python syntax error. The Requirements Engineer has now regenerated the code with the fix.
+
+PARENT TASK: {task_description}
+
+REGENERATED CODE LOCATION: {regenerated_result['git_url']}
+
+Please implement this corrected code and prepare it for deployment. After implementation, the DevOps Engineer will redeploy the application."""
+
+                                    implementation_task_id = f"{task_id}-implement"
+                                    self.task_storage.create_task(
+                                        task_id=implementation_task_id,
+                                        task_description=implementation_prompt,
+                                        priority="high",
+                                        assigned_to="implementation-engineer",
+                                        metadata={
+                                            "parent_task_id": task_id,
+                                            "regeneration_workflow": True,
+                                            "git_url": regenerated_result["git_url"]
+                                        }
+                                    )
+
+                                    implementation_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
+                                    if implementation_endpoint:
+                                        self._forward_task_to_agent(
+                                            implementation_task_id,
+                                            implementation_prompt,
+                                            "implementation-engineer",
+                                            "vibe_code_async",
+                                            "high",
+                                            None,
+                                            {"regeneration_workflow": True, "parent_task_id": task_id}
+                                        )
+
+                                        # Update parent task status
+                                        try:
+                                            import json
+                                            cursor = self.task_storage.connection.cursor()
+                                            if self.task_storage.use_sqlite:
+                                                cursor.execute(
+                                                    "UPDATE task_registry SET status = ? WHERE task_id = ?",
+                                                    ("in_progress", task_id)
+                                                )
+                                            else:
+                                                cursor.execute(
+                                                    "UPDATE task_registry SET status = %s WHERE task_id = %s",
+                                                    ("in_progress", task_id)
+                                                )
+                                            self.task_storage.connection.commit()
+                                            cursor.close()
+                                        except Exception as e:
+                                            print(f"⚠️  Could not update parent task status: {e}")
+
+                                else:
+                                    print(f"⚠️  Regeneration task completed but no code generated", flush=True)
+
+                            except Exception as e:
+                                print(f"❌ Error in regeneration poller: {e}", flush=True)
+
+                        import threading
+                        threading.Thread(target=regeneration_poller, daemon=True).start()
+                else:
+                    print(f"❌ Failed to forward regeneration task: {forward_result.get('error')}", flush=True)
+            else:
+                print(f"❌ Could not find Requirements Engineer endpoint", flush=True)
+
+        except Exception as e:
+            print(f"❌ Error triggering code regeneration: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
