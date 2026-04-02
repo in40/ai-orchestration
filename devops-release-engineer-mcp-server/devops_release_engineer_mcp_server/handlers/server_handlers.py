@@ -605,6 +605,25 @@ class DevOpsReleaseEngineerHandlers:
             else:
                 print(f"ℹ️  Using default PORT=5000 (no custom port detected in code)")
 
+            # ✅ Validate Python syntax before building Docker image
+            try:
+                import py_compile
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.py', delete=False) as tmp_file:
+                    tmp_file.write(content.encode('utf-8'))
+                    tmp_file_path = tmp_file.name
+                try:
+                    py_compile.compile(tmp_file_path, doraise=True)
+                    print(f"✅ Python syntax validation passed for result.py")
+                except py_compile.PyCompileError as e:
+                    error_msg = str(e)
+                    print(f"❌ Python syntax error detected in result.py: {error_msg}")
+                    os.unlink(tmp_file_path)
+                    return {"error": f"Python syntax error in result.py: {error_msg}. Please regenerate the code with correct syntax."}
+                os.unlink(tmp_file_path)
+            except Exception as e:
+                print(f"⚠️  Could not validate Python syntax: {e}")
+
             # Create Dockerfile with detected port
             dockerfile_content = f"""FROM python:3.11-slim
 WORKDIR /app
