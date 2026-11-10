@@ -5,7 +5,6 @@ Script to trace the task through the IT Lead server and check its status
 import json
 import requests
 import time
-import sqlite3
 import os
 
 def check_task_status():

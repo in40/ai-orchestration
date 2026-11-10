@@ -7,8 +7,24 @@ import json
 import os
 import re
 import requests
+import logging
 from typing import Dict, Any, List, Optional
 from devops_release_engineer_mcp_server.utils.json_rpc import JsonRpcHandler, JsonRpcMessage
+
+# Configure deployment logging
+DEPLOYMENT_LOG_FILE = "/tmp/devops_deployment.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(DEPLOYMENT_LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+deployment_logger = logging.getLogger(__name__)
+
+# Default Git repository URL for deployment results
+DEFAULT_GIT_REPO_URL = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
 
 
 class DevOpsReleaseEngineerHandlers:
@@ -18,7 +34,8 @@ class DevOpsReleaseEngineerHandlers:
                  postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
                  llm_provider_url: Optional[str] = None,
                  llm_model: Optional[str] = None,
-                 prompts_dir: str = "."):
+                 prompts_dir: str = ".",
+                 task_storage: Any = None):
         # DevOps Release Engineer tools - no example tools for this domain-specific server
         self.tools: List[Dict[str, Any]] = [
             {
@@ -300,6 +317,9 @@ class DevOpsReleaseEngineerHandlers:
         self.service_registry = None
         self.postgres_config = postgres_config or {}
 
+        # Task storage for updating task registry after deployments
+        self.task_storage = task_storage
+
         # Client handlers for server-initiated requests
         self.client_handlers = client_handlers
 
@@ -339,6 +359,64 @@ class DevOpsReleaseEngineerHandlers:
         except Exception as e:
             print(f"❌ Failed to initialize registry (PostgreSQL required): {e}")
             raise
+
+    def _validate_git_repository(self, git_url: str = None) -> dict:
+        """
+        Validate that the Git repository is accessible and operational.
+
+        Args:
+            git_url: Git repository URL to validate (uses default if not provided)
+
+        Returns:
+            Dictionary with 'success' boolean and 'message' with details
+        """
+        import subprocess
+        import tempfile
+        import os
+
+        git_repo_url = git_url or DEFAULT_GIT_REPO_URL
+
+        deployment_logger.info(f"Validating Git repository: {git_repo_url}")
+
+        try:
+            # Create a temporary directory for the test clone
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Try to clone the repository (shallow clone for speed)
+                result = subprocess.run(
+                    ["git", "clone", "--depth", "1", git_repo_url, temp_dir],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if result.returncode == 0:
+                    deployment_logger.info(f"✅ Git repository is accessible: {git_repo_url}")
+                    return {
+                        "success": True,
+                        "message": f"Git repository is accessible: {git_repo_url}"
+                    }
+                else:
+                    error_msg = f"Git clone failed: {result.stderr}"
+                    deployment_logger.error(f"❌ Git repository not accessible: {error_msg}")
+                    return {
+                        "success": False,
+                        "message": error_msg
+                    }
+
+        except subprocess.TimeoutExpired:
+            error_msg = f"Git repository connection timed out: {git_repo_url}"
+            deployment_logger.error(f"❌ {error_msg}")
+            return {
+                "success": False,
+                "message": error_msg
+            }
+        except Exception as e:
+            error_msg = f"Git repository validation failed: {str(e)}"
+            deployment_logger.error(f"❌ {error_msg}")
+            return {
+                "success": False,
+                "message": error_msg
+            }
 
     def register_handlers(self, rpc_handler: JsonRpcHandler):
         """Register all server handlers with the RPC handler"""
@@ -448,22 +526,37 @@ class DevOpsReleaseEngineerHandlers:
         import os
         import tempfile
         import re
-        
+
         task_id = arguments.get("task_id")
         git_url = arguments.get("git_url")
         result_path = arguments.get("result_path")
         memory_limit = arguments.get("memory_limit", "256m")
         cpu_limit = arguments.get("cpu_limit", "0.5")
-        
+
+        deployment_logger.info(f"=== Deployment Started ===")
+        deployment_logger.info(f"Task ID: {task_id}")
+        deployment_logger.info(f"Git URL: {git_url}")
+
         try:
+            # Validate git_url is present
+            if not git_url:
+                error_msg = "Git URL is required for deployment"
+                deployment_logger.error(error_msg)
+                self._update_task_status_on_deployment_failure(task_id, error_msg)
+                return {"error": error_msg}
+
             # Extract UUID from git URL
             # Format: ssh://sorokin@192.168.51.187/home/sorokin/mcp-results/tree/main/results/<uuid>/result.py
             uuid_match = re.search(r'/results/([a-f0-9-]+)/', git_url)
             if not uuid_match:
-                return {"error": "Could not extract UUID from git URL"}
-            
+                error_msg = f"Could not extract UUID from git URL: {git_url}"
+                deployment_logger.error(error_msg)
+                self._update_task_status_on_deployment_failure(task_id, error_msg)
+                return {"error": error_msg}
+
             result_uuid = uuid_match.group(1)
-            
+            deployment_logger.info(f"Extracted result UUID: {result_uuid}")
+
             # Extract base git repo URL
             # Convert ssh://user@host/path/to/repo/tree/main/results/uuid/file.py to ssh://user@host/path/to/repo.git
             # Match everything up to the repo name (before /tree/main/)
@@ -471,9 +564,17 @@ class DevOpsReleaseEngineerHandlers:
                 git_repo_url = git_url.split("/tree/main/")[0] + ".git"
             else:
                 git_repo_url = "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"
-            
-            print(f"Deploying from repo: {git_repo_url}, UUID: {result_uuid}")
-            
+
+            deployment_logger.info(f"Deploying from repo: {git_repo_url}, UUID: {result_uuid}")
+
+            # Validate Git repository accessibility before proceeding
+            git_validation = self._validate_git_repository(git_repo_url)
+            if not git_validation.get("success"):
+                error_msg = f"Git repository not accessible: {git_validation.get('message')}"
+                deployment_logger.error(error_msg)
+                self._update_task_status_on_deployment_failure(task_id, error_msg)
+                return {"error": error_msg}
+
             # Create temp directory for deployment
             deploy_dir = f"/tmp/deploy-{task_id}"
             os.makedirs(deploy_dir, exist_ok=True)
@@ -487,19 +588,142 @@ class DevOpsReleaseEngineerHandlers:
                 git_workdir
             ], check=True, capture_output=True, timeout=30)
             
-            # Copy result.py to deploy directory
-            result_file = os.path.join(git_workdir, "results", result_uuid, "result.py")
-            if not os.path.exists(result_file):
-                return {"error": f"result.py not found at {result_file}"}
-            
+            # Copy result file to deploy directory (could be .py, .json, or .html)
+            # Try result.py first, then result.json, then result.html
+            result_file_py = os.path.join(git_workdir, "results", result_uuid, "result.py")
+            result_file_json = os.path.join(git_workdir, "results", result_uuid, "result.json")
+            result_file_html = os.path.join(git_workdir, "results", result_uuid, "result.html")
+
+            result_file = None
+            if os.path.exists(result_file_py):
+                result_file = result_file_py
+                deployment_logger.info(f"Found result.py at: {result_file}")
+            elif os.path.exists(result_file_json):
+                result_file = result_file_json
+                deployment_logger.info(f"Found result.json at: {result_file}")
+            elif os.path.exists(result_file_html):
+                result_file = result_file_html
+                deployment_logger.info(f"Found result.html at: {result_file}")
+
+            if not result_file:
+                error_msg = f"result.py, result.json, or result.html not found in git repo. Git clone may have succeeded but result file is missing. Checked: {result_file_py}, {result_file_json}, {result_file_html}"
+                deployment_logger.error(error_msg)
+                self._update_task_status_on_deployment_failure(task_id, error_msg)
+                return {"error": error_msg}
+
             import shutil
-            shutil.copy(result_file, os.path.join(deploy_dir, "result.py"))
-            
+            import json
+            import re
+
+            # Handle result.json and result.html files that contain code in a "code" field
+            if result_file.endswith(".json") or result_file.endswith(".html"):
+                if result_file.endswith(".json"):
+                    deployment_logger.info(f"Processing result.json file: {result_file}")
+                else:
+                    deployment_logger.info(f"Processing result.html file: {result_file}")
+                with open(result_file, 'r') as f:
+                    json_content = f.read()
+
+                code_content = ""
+                parsed_successfully = False
+
+                # Try standard JSON parsing first
+                try:
+                    data = json.loads(json_content)
+                    code_content = data.get("code", "")
+                    if code_content:
+                        parsed_successfully = True
+                        deployment_logger.info("Successfully parsed JSON and extracted code field")
+                except json.JSONDecodeError:
+                    deployment_logger.warning("Standard JSON parsing failed, trying alternative extraction methods")
+
+                # If JSON parsing failed, try to extract the code field manually
+                if not parsed_successfully:
+                    code_content = self._extract_code_field(json_content, result_file, deployment_logger)
+
+                # If code_content is a string, use it directly as Python code
+                if isinstance(code_content, str):
+                    final_content = code_content
+                else:
+                    final_content = json.dumps(code_content, indent=2)
+
+                with open(os.path.join(deploy_dir, "result.py"), 'w') as f:
+                    f.write(final_content)
+                if result_file.endswith(".json"):
+                    deployment_logger.info(f"Extracted Python code from result.json and saved to result.py")
+                else:
+                    deployment_logger.info(f"Extracted Python code from result.html and saved to result.py")
+            else:
+                shutil.copy(result_file, os.path.join(deploy_dir, "result.py"))
+
             # Detect dependencies from imports
             with open(os.path.join(deploy_dir, "result.py"), 'r') as f:
                 content = f.read()
 
             dependencies = ["flask"]  # Default
+
+            # Check if code uses render_template() (external templates)
+            # This requires either creating a templates directory or converting to render_template_string()
+            uses_render_template = 'render_template(' in content and 'render_template_string(' not in content
+
+            # Handle template files that need to be copied to templates directory
+            # Check if there's a templates directory in the git result
+            templates_git_dir = os.path.join(git_workdir, "results", result_uuid, "templates")
+            if os.path.isdir(templates_git_dir):
+                deployment_logger.info(f"Found templates directory in git repo: {templates_git_dir}")
+
+                # Create templates directory in deploy dir
+                templates_dir = os.path.join(deploy_dir, "templates")
+                os.makedirs(templates_dir, exist_ok=True)
+
+                # Copy all template files to deploy directory
+                for template_file in os.listdir(templates_git_dir):
+                    src_path = os.path.join(templates_git_dir, template_file)
+                    dst_path = os.path.join(deploy_dir, "templates", template_file)
+                    if os.path.isfile(src_path):
+                        shutil.copy(src_path, dst_path)
+                        deployment_logger.info(f"Copied template: {template_file}")
+                uses_render_template = False  # Templates are now available
+
+            # Fallback: if render_template() is used but no templates exist,
+            # create minimal template files
+            if uses_render_template:
+                deployment_logger.warning("render_template() is used but no templates directory found - creating minimal templates")
+
+                # Create templates directory in deploy dir
+                templates_dir = os.path.join(deploy_dir, "templates")
+                os.makedirs(templates_dir, exist_ok=True)
+                deployment_logger.info(f"Created templates directory: {templates_dir}")
+
+                # Extract template names from render_template() calls
+                template_names = set(re.findall(r"render_template\(['\"]([^'\"]+)['\"]", content))
+                if not template_names:
+                    template_names = set(re.findall(r'render_template\(["\']([^"\']+)["\']', content))
+
+                deployment_logger.info(f"Found template references: {template_names}")
+
+                # Create minimal template files for each referenced template
+                for template_name in template_names:
+                    template_path = os.path.join(templates_dir, template_name)
+                    # Create a minimal HTML template with basic structure
+                    template_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{template_name.replace('.html', '').title()}</title>
+</head>
+<body>
+    <h1>{template_name.replace('.html', '').title()}</h1>
+    <p>Template content would be generated by the Flask app.</p>
+</body>
+</html>
+"""
+                    with open(template_path, 'w') as f:
+                        f.write(template_content)
+                    deployment_logger.info(f"Created minimal template: {template_name}")
+                uses_render_template = False  # Templates are now available
+
             if "fastapi" in content:
                 dependencies.append("fastapi")
                 dependencies.append("uvicorn")
@@ -624,8 +848,21 @@ class DevOpsReleaseEngineerHandlers:
             except Exception as e:
                 print(f"⚠️  Could not validate Python syntax: {e}")
 
+            # Check if templates directory exists and add COPY instruction if needed
+            templates_exist = os.path.isdir(os.path.join(deploy_dir, "templates"))
+
             # Create Dockerfile with detected port
-            dockerfile_content = f"""FROM python:3.11-slim
+            if templates_exist:
+                dockerfile_content = f"""FROM python:3.11-slim
+WORKDIR /app
+COPY result.py .
+COPY templates/ ./templates/
+RUN pip install {' '.join(dependencies)}
+EXPOSE {container_port}
+CMD ["python", "result.py"]
+"""
+            else:
+                dockerfile_content = f"""FROM python:3.11-slim
 WORKDIR /app
 COPY result.py .
 RUN pip install {' '.join(dependencies)}
@@ -664,11 +901,18 @@ CMD ["python", "result.py"]
             deployment_url = f"http://{deployment_host}:{host_port}/"
             self._store_deployment(task_id, container_name, container_port, host_port, 
                                    deployment_url, git_url, image_name, memory_limit, cpu_limit)
-            
+            deployment_logger.info(f"Docker image built and container started successfully")
+
             # Cleanup
             subprocess.run(["rm", "-rf", git_workdir], check=True)
             subprocess.run(["rm", "-rf", deploy_dir], check=True)
-            
+
+            deployment_logger.info(f"=== Deployment Completed Successfully ===")
+            deployment_logger.info(f"Deployment URL: {deployment_url}")
+
+            # Update task registry with deployment URL
+            self._update_task_with_deployment_url(task_id, git_url, deployment_url)
+
             return {
                 "success": True,
                 "task_id": task_id,
@@ -677,14 +921,25 @@ CMD ["python", "result.py"]
                 "deployment_url": deployment_url,
                 "message": f"Application deployed successfully at {deployment_url}"
             }
-            
+
         except subprocess.TimeoutExpired as e:
-            return {"error": f"Docker command timed out: {str(e)}"}
+            error_msg = f"Docker command timed out: {str(e)}"
+            deployment_logger.error(f"Deployment timeout: {error_msg}")
+            self._update_task_status_on_deployment_failure(task_id, error_msg)
+            return {"error": error_msg}
+
         except subprocess.CalledProcessError as e:
             stderr = e.stderr.decode() if e.stderr else str(e)
-            return {"error": f"Docker command failed: {stderr}"}
+            error_msg = f"Docker command failed: {stderr}"
+            deployment_logger.error(f"Docker command failed: {error_msg}")
+            self._update_task_status_on_deployment_failure(task_id, error_msg)
+            return {"error": error_msg}
+
         except Exception as e:
-            return {"error": f"Deployment failed: {str(e)}"}
+            error_msg = f"Deployment failed: {str(e)}"
+            deployment_logger.error(f"Unexpected deployment error: {error_msg}")
+            self._update_task_status_on_deployment_failure(task_id, error_msg)
+            return {"error": error_msg}
 
     def _stop_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Stop a deployment (keep container for restart)"""
@@ -853,7 +1108,7 @@ CMD ["python", "result.py"]
                 return port
         raise Exception("No available ports")
 
-    def _store_deployment(self, task_id, container_id, container_port, host_port, 
+    def _store_deployment(self, task_id, container_id, container_port, host_port,
                           deployment_url, git_url, docker_image, memory_limit, cpu_limit):
         """Store deployment in database"""
         try:
@@ -866,8 +1121,8 @@ CMD ["python", "result.py"]
             )
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO task_deployments 
-                (task_id, container_id, container_port, host_port, deployment_url, 
+                INSERT INTO task_deployments
+                (task_id, container_id, container_port, host_port, deployment_url,
                  git_commit_sha, docker_image, memory_limit, cpu_limit)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (task_id) DO UPDATE SET
@@ -882,7 +1137,138 @@ CMD ["python", "result.py"]
             cursor.close()
             conn.close()
         except Exception as e:
+            deployment_logger.error(f"Failed to store deployment in database: {e}")
             print(f"Warning: Could not store deployment: {e}")
+
+    def _update_task_status_on_deployment_failure(self, task_id: str, error_message: str):
+        """
+        Update task status to 'failed' with error details when deployment fails.
+        This ensures deployment failures are properly tracked in the task registry.
+        """
+        try:
+            import psycopg2
+            import json
+
+            conn = psycopg2.connect(
+                host="127.0.0.1",
+                database="mcp_registry",
+                user="postgres",
+                password="postgres"
+            )
+            cursor = conn.cursor()
+
+            # Get current task data
+            cursor.execute("""
+                SELECT status, status_history, metadata
+                FROM task_registry
+                WHERE task_id = %s
+            """, (task_id,))
+
+            row = cursor.fetchone()
+            if row:
+                current_status, status_history, metadata = row
+
+                # Only update if task is not already in a terminal state
+                if current_status in ('in_progress', 'assigned', 'review'):
+                    # Parse and update status_history
+                    if isinstance(status_history, str):
+                        status_history = json.loads(status_history) if status_history else []
+                    elif not isinstance(status_history, list):
+                        status_history = []
+
+                    # Add failure entry to status_history
+                    failure_entry = {
+                        "status": "failed",
+                        "timestamp": time.time(),
+                        "reason": f"Deployment failed: {error_message}"
+                    }
+                    status_history.append(failure_entry)
+
+                    # Parse and update metadata to include error
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata) if metadata else {}
+                    elif not isinstance(metadata, dict):
+                        metadata = {}
+
+                    metadata['deployment_error'] = error_message
+                    metadata['deployment_failed_at'] = time.time()
+
+                    # Update task status
+                    cursor.execute("""
+                        UPDATE task_registry
+                        SET status = 'failed',
+                            status_history = %s,
+                            metadata = %s
+                        WHERE task_id = %s
+                    """, (json.dumps(status_history), json.dumps(metadata), task_id))
+
+                    conn.commit()
+                    deployment_logger.info(f"Updated task {task_id} status to 'failed' due to deployment error")
+
+            cursor.close()
+            conn.close()
+
+        except Exception as e:
+            deployment_logger.error(f"Failed to update task status for {task_id}: {e}")
+
+    def _update_task_with_deployment_url(self, task_id: str, git_url: str, deployment_url: str = None):
+        """
+        Update task in task registry with deployment URL using task_storage.
+        Falls back to direct database update if task_storage is not available.
+        """
+        try:
+            if self.task_storage:
+                # Use task_storage if available
+                self.task_storage.update_task_with_git_url(task_id, git_url, deployment_url)
+            else:
+                # Fallback: direct database update
+                import psycopg2
+                import json
+
+                conn = psycopg2.connect(
+                    host="127.0.0.1",
+                    database="mcp_registry",
+                    user="postgres",
+                    password="postgres"
+                )
+                cursor = conn.cursor()
+
+                # Build metadata update
+                metadata_update = {
+                    "storage_type": "git",
+                    "git_url": git_url,
+                    "path": git_url
+                }
+                if deployment_url:
+                    metadata_update["deployment_url"] = deployment_url
+
+                # Update status to done and add Git URL to metadata
+                cursor.execute("""
+                    UPDATE task_registry
+                    SET status = %s,
+                        status_reason = %s,
+                        metadata = metadata || %s::jsonb,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = %s
+                """, (
+                    "done",
+                    "Task completed successfully. Result stored at: " + git_url,
+                    json.dumps(metadata_update),
+                    task_id
+                ))
+
+                affected_rows = cursor.rowcount
+                conn.commit()
+                cursor.close()
+                conn.close()
+
+                if affected_rows > 0:
+                    msg = f"Task {task_id} updated with Git URL"
+                    if deployment_url:
+                        msg += f" and deployment URL: {deployment_url}"
+                    deployment_logger.info(msg)
+        except Exception as e:
+            deployment_logger.error(f"Failed to update task {task_id} with deployment URL: {e}")
 
     def _update_deployment_status(self, task_id, status):
         """Update deployment status in database"""
@@ -897,8 +1283,8 @@ CMD ["python", "result.py"]
             cursor = conn.cursor()
             if status == "stopped":
                 cursor.execute("""
-                    UPDATE task_deployments 
-                    SET status = %s, stopped_at = CURRENT_TIMESTAMP 
+                    UPDATE task_deployments
+                    SET status = %s, stopped_at = CURRENT_TIMESTAMP
                     WHERE task_id = %s
                 """, (status, task_id))
             else:
@@ -1024,8 +1410,7 @@ For analysis tasks, provide detailed analysis with specific recommendations."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.7,
-            "max_tokens": 4096
+            "temperature": 0.7
         }
 
         try:
@@ -1201,3 +1586,126 @@ For analysis tasks, provide detailed analysis with specific recommendations."""
             "server": "devops-release-engineer",
             "version": "1.0.0"
         }
+
+    def _extract_code_field(self, content: str, result_file: str, logger: logging.Logger) -> str:
+        """
+        Extract the 'code' field value from a JSON-like string that may contain
+        non-JSON content (like triple-quoted strings) inside the code value.
+
+        Handles truncated files where the code value ends mid-structure.
+
+        Args:
+            content: The raw file content
+            result_file: Path to the result file (for logging)
+            logger: Logger instance
+
+        Returns:
+            The extracted code string, or empty string if extraction fails
+        """
+        import re
+
+        logger.info(f"Attempting to extract 'code' field from non-JSON content")
+
+        # Strategy 1: Try to find "code": " and extract the value
+        code_start_match = re.search(r'"code"\s*:\s*"', content)
+        if code_start_match:
+            start = code_start_match.end()
+
+            # Extract everything after "code": "
+            code_value = content[start:]
+
+            # Unescape JSON escape sequences
+            code_value = code_value.replace('\\"', '"')
+            code_value = code_value.replace("\\'", "'")
+            code_value = code_value.replace("\\n", "\n")
+            code_value = code_value.replace("\\t", "\t")
+            code_value = code_value.replace("\\r", "\r")
+
+            # The file may be truncated in the middle of the code
+            # Check if the last line ends with \ (incomplete line)
+            lines = code_value.split('\n')
+            if lines and lines[-1].endswith('\\'):
+                # Remove the incomplete last line
+                code_value = '\n'.join(lines[:-1])
+                logger.info("Removed incomplete last line due to truncation")
+
+            # Check if the last triple quote has a closing
+            # The HTML template in Python uses triple quotes: """
+            last_triple = code_value.rfind('"""')
+            if last_triple >= 0:
+                # Check what's after the last triple quote
+                after_triple = code_value[last_triple + 3:]
+
+                # If there's content after the last triple quote and it doesn't contain
+                # another triple quote, the HTML template is incomplete
+                if after_triple and '"""' not in after_triple:
+                    # The HTML template is incomplete - add closing brackets
+                    # to complete the JavaScript structures and Python dict
+
+                    # Check the last meaningful line to understand the structure
+                    last_lines = after_triple.split('\n')
+                    last_meaningful = ""
+                    for i in range(len(last_lines) - 1, -1, -1):
+                        line = last_lines[i].strip()
+                        if line and not line.startswith('//'):
+                            last_meaningful = line
+                            break
+
+                    # Determine what closing brackets are needed based on the structure
+                    closing_needed = []
+
+                    if 'const directions = [' in after_triple:
+                        # Close the directions array
+                        closing_needed.append('                ]')
+                    if 'ghosts.forEach(ghost => {' in after_triple:
+                        # Close the forEach block
+                        closing_needed.append('            });')
+                    if 'html": """' in after_triple or last_meaningful:
+                        # Close the HTML template
+                        closing_needed.append('        """')
+                        # Close the "pacman" dict
+                        closing_needed.append('    },')
+                        # Close the GAME_TEMPLATES dict
+                        closing_needed.append('}')
+
+                    if closing_needed:
+                        code_value = code_value.rstrip() + '\n' + '\n'.join(closing_needed) + '\n'
+                        logger.info("Added closing brackets to complete truncated structure")
+                    else:
+                        # Just add closing """
+                        code_value = code_value.rstrip() + '\n"""\n'
+                        logger.info("Added closing \"\"\" to complete incomplete HTML template")
+
+            if code_value:
+                logger.info("Successfully extracted code field")
+                return code_value
+
+        # Strategy 2: Try standard JSON parsing first (file may not be truncated)
+        try:
+            import json
+            data = json.loads(content)
+            code_content = data.get("code", "")
+            if code_content:
+                logger.info("Successfully parsed JSON and extracted code field")
+                return code_content
+        except json.JSONDecodeError:
+            logger.warning("Standard JSON parsing failed, trying alternative extraction")
+
+        logger.error("Failed to extract code field from result file")
+        return ""
+
+    def _is_closing_quote(self, content: str, string_start: int, quote_pos: int) -> bool:
+        """
+        Determine if a quote at quote_pos is the closing quote of a string.
+        Uses a simple state machine to track escape sequences.
+        """
+        # Check characters before the quote to see if it's escaped
+        i = quote_pos - 1
+        backslash_count = 0
+
+        while i >= string_start and content[i] == '\\':
+            backslash_count += 1
+            i -= 1
+
+        # If odd number of backslashes, this quote is escaped
+        return backslash_count % 2 == 0

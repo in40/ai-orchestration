@@ -1,0 +1,49 @@
+[Unit]
+Description=MCP IT Lead Server - Task Routing and Planning
+Documentation=https://github.com/your-org/mcp-system
+After=network.target mcp-registry.service
+Wants=mcp-registry.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/qwen/base/it-lead-mcp-server
+EnvironmentFile=/root/qwen/base/.env
+
+# Environment defaults
+Environment="TRANSPORT=streamable-http"
+Environment="HOST=127.0.0.1"
+Environment="PORT=3061"
+Environment="USE_POSTGRES=true"
+Environment="LLM_PROVIDER_URL=http://192.168.51.237:1234/v1/chat/completions"
+Environment="LLM_MODEL=qwen3.5-35b-a3b@q5_k_xl"
+
+# Start the IT Lead server
+ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    export PYTHONPATH="/root/qwen/base/it-lead-mcp-server:$PYTHONPATH"; \
+    export PGPASSWORD="${POSTGRES_PASSWORD:-postgres}"; \
+    python -c "import sys; sys.path.insert(0, \'.\'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = [\'server.py\'] + shlex.split(\'--transport ${TRANSPORT:-streamable-http} --host ${IT_LEAD_HOST:-127.0.0.1} --port ${IT_LEAD_PORT:-3061} --enable-registry --register-with-registry --registry-host ${REGISTRY_HOST:-127.0.0.1} --registry-port ${REGISTRY_PORT:-3031} --use-postgres --postgres-host ${POSTGRES_HOST:-127.0.0.1} --postgres-port ${POSTGRES_PORT:-5432} --postgres-db ${POSTGRES_DB:-mcp_registry} --postgres-user ${POSTGRES_USER:-postgres} --postgres-password ${POSTGRES_PASSWORD:-postgres} --max-concurrent-requests ${MAX_CONCURRENT_REQUESTS:-10} --llm-provider-url ${LLM_PROVIDER_URL} --llm-model ${LLM_MODEL}\'); main()"'
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-it-lead
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=100%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp /root/qwen/base/logs
+
+[Install]
+WantedBy=multi-user.target

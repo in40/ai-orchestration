@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
 
     # LM Studio configuration
-    llm_base_url: str = "http://192.168.51.237:1234/v1"
+    llm_base_url: str = "http://192.168.51.105:1234/v1"
     llm_model: Optional[str] = None  # REQUIRED from config
 
     # PostgreSQL configuration for persistent task storage

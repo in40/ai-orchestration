@@ -11,10 +11,11 @@ from ..utils.json_rpc import JsonRpcHandler
 class QualityGateHandlers:
     """Handles quality gate specific MCP server methods for software development teams"""
 
-    def __init__(self, llm_client=None, agent_registry=None, task_storage=None):
+    def __init__(self, llm_client=None, agent_registry=None, task_storage=None, task_assignment_manager=None):
         self.llm_client = llm_client
         self.agent_registry = agent_registry
         self.task_storage = task_storage
+        self.task_assignment_manager = task_assignment_manager
         
         # Quality gate tools
         self.tools = [
@@ -122,11 +123,35 @@ class QualityGateHandlers:
 
         # Store quality validation result
         if self.task_storage:
-            self.task_storage.update_task_status(
-                task_id=task_id,
-                status="validated" if result.get("passed", False) else "needs_revision",
-                result=json.dumps(result)
-            )
+            task = self.task_storage.get_task(task_id)
+            current_status = task.get("status", "") if task else ""
+
+            # Only update status and trigger rework if task is not already in needs_revision
+            if not result.get("passed", False) and current_status != "needs_revision":
+                # Get issue description from validation results
+                does_not_meet = result.get("detailed_feedback", {}).get("does_not_meet", [])
+                issue_desc = "; ".join(does_not_meet) if does_not_meet else "Quality validation failed"
+
+                self.task_storage.update_task_status(
+                    task_id=task_id,
+                    status="needs_revision",
+                    result=json.dumps(result)
+                )
+
+                # Trigger rework workflow if task_assignment_manager is available
+                if self.task_assignment_manager and task:
+                    self.task_assignment_manager._trigger_rework_workflow(
+                        task_id=task_id,
+                        issue_description=issue_desc,
+                        additional_comments="Quality gate validation failed. Please address the following issues: " + issue_desc,
+                        priority="high"
+                    )
+            else:
+                self.task_storage.update_task_status(
+                    task_id=task_id,
+                    status="validated" if result.get("passed", False) else current_status,
+                    result=json.dumps(result)
+                )
 
         return {"result": result}
 

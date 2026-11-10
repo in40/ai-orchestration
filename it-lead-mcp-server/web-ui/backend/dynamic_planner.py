@@ -374,8 +374,7 @@ JSON Output:"""
                         {"role": "system", "content": "You are an intelligent task router. Always respond with valid JSON." },
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.3,
-                    "max_tokens": 4000  # Increased for complex planning
+                    "temperature": 0.3
                 }
 
                 response = await asyncio.to_thread(

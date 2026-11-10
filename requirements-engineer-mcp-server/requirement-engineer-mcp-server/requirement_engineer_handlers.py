@@ -827,8 +827,7 @@ class RequirementEngineerHandlers(McpServerHandlers):
                     "content": prompt
                 }
             ],
-            "temperature": 0.7,
-            "max_tokens": 4096  # Increased for complex requirements
+            "temperature": 0.7
         }
 
         # Make the request to the LLM with LONG timeout

@@ -1,0 +1,60 @@
+[Unit]
+Description=MCP Implementation Engineer Server - Code Generation
+Documentation=https://github.com/your-org/mcp-system
+After=network.target mcp-registry.service
+Wants=mcp-registry.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/qwen/base/mcp-std-coder/mcp-vibe-coding-agent
+EnvironmentFile=/root/qwen/base/.env
+
+# Environment defaults
+Environment="TRANSPORT=streamable-http"
+Environment="HOST=0.0.0.0"
+Environment="PORT=3060"
+Environment="USE_POSTGRES=true"
+Environment="LLM_PROVIDER_URL=http://192.168.51.105:1234/v1/chat/completions"
+Environment="LLM_MODEL=qwen3-coder-next@q5_k_xl"
+
+# Start the implementation engineer server
+ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"; \
+    export PGPASSWORD="$POSTGRES_PASSWORD"; \
+    export LLM_PROVIDER_URL="${LLM_PROVIDER_URL:-http://192.168.51.105:1234/v1/chat/completions}"; \
+    export LLM_MODEL="${LLM_MODEL:-qwen3-coder-next@q5_k_xl}"; \
+    python -m mcp_std_server.server \
+        --transport ${TRANSPORT:-streamable-http} \
+        --host ${WEB_UI_HOST:-0.0.0.0} \
+        --port ${IMPLEMENTATION_PORT:-3060} \
+        --register-with-registry \
+        --registry-host ${REGISTRY_HOST:-127.0.0.1} \
+        --registry-port ${REGISTRY_PORT:-3031} \
+        --use-postgres \
+        --postgres-password ${POSTGRES_PASSWORD:-postgres} \
+        --max-concurrent-requests ${MAX_CONCURRENT_REQUESTS:-10}'
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-implementation
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=100%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp /root/qwen/base/logs
+
+[Install]
+WantedBy=multi-user.target

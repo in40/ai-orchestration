@@ -308,8 +308,7 @@ class ExtendedItLeadServerHandlers:
                 port=self.postgres_config.get("port", 5432),
                 database=self.postgres_config.get("database", "mcp_registry"),
                 user=self.postgres_config.get("user", "postgres"),
-                password=self.postgres_config.get("password", ""),
-                use_sqlite=False  # Always use PostgreSQL
+                password=self.postgres_config.get("password", "")
             )
             print("✅ Task storage initialized with PostgreSQL")
         except Exception as e:
@@ -317,9 +316,8 @@ class ExtendedItLeadServerHandlers:
             raise
 
         if self.enable_registry:
-            # Always use SQLite for service registry to share with port 3031's Registry Server
-            # Use PostgreSQL only for task storage, not service discovery
-            self._initialize_registry(use_postgres=False)
+            # Use PostgreSQL for service registry
+            self._initialize_registry()
 
         # Add registry-specific tools if enabled
         if self.enable_registry:
@@ -380,13 +378,15 @@ class ExtendedItLeadServerHandlers:
         self.quality_gate_handlers = QualityGateHandlers(
             llm_client=self.llm_client,
             agent_registry=self.enhanced_agent_registry,
-            task_storage=self.task_storage
+            task_storage=self.task_storage,
+            task_assignment_manager=self.task_assignment_manager
         )
         
         self.human_interface_handlers = HumanInterfaceHandlers(
             llm_client=self.llm_client,
             agent_registry=self.enhanced_agent_registry,
-            task_storage=self.task_storage
+            task_storage=self.task_storage,
+            task_assignment_manager=self.task_assignment_manager
         )
         
         self.advanced_orchestration_handlers = AdvancedOrchestrationHandlers(
@@ -592,10 +592,10 @@ class ExtendedItLeadServerHandlers:
         # Add all enhanced resources to the main resources list
         self.resources.extend(enhanced_resources)
 
-    def _initialize_registry(self, use_postgres: bool):
-        """Initialize the service registry with either SQLite or PostgreSQL"""
+    def _initialize_registry(self):
+        """Initialize the service registry with PostgreSQL"""
         try:
-            if use_postgres and self.postgres_config:
+            if self.postgres_config:
                 from ..utils.postgres_registry_db import PostgresServiceRegistry
                 self.service_registry = PostgresServiceRegistry(
                     host=self.postgres_config.get("host", "localhost"),
@@ -604,12 +604,7 @@ class ExtendedItLeadServerHandlers:
                     user=self.postgres_config.get("user", "postgres"),
                     password=self.postgres_config.get("password", "")
                 )
-                print("✅ PostgreSQL registry initialized (for local task storage)")
-            else:
-                from ..utils.service_registry_db import ServiceRegistryDB
-                # Use absolute path to share registry with port 3031's Registry Server
-                self.service_registry = ServiceRegistryDB(db_path="/root/qwen/base/mcp-std-skeleton/mcp_registry.db")
-                print("✅ SQLite registry initialized (for local task storage)")
+                print("✅ PostgreSQL registry initialized")
         except Exception as e:
             print(f"⚠️  Failed to initialize local registry: {e}")
             print("⚠️  Registry functionality will be disabled (will use MCP Registry Client instead)")
@@ -770,19 +765,7 @@ class ExtendedItLeadServerHandlers:
             tool_arguments = params.get("arguments", {})
             print(f"DEBUG: Processing tool: {tool_name}")
 
-            # Find the tool
-            tool = None
-            for t in self.tools:
-                if t["name"] == tool_name:
-                    tool = t
-                    break
-
-            if not tool:
-                print(f"ERROR: Tool '{tool_name}' not found in main tools list")
-                raise ValueError(f"Tool '{tool_name}' not found")
-
-            print(f"DEBUG: Tool found in main tools list, checking enhanced modules...")
-            # First, try enhanced modules
+            # First, try enhanced modules - they may have tools not in main tools list
             # Strategic Planning
             try:
                 result = self.strategic_planning_handlers.handle_tools_call(params, request_id)
@@ -855,7 +838,20 @@ class ExtendedItLeadServerHandlers:
                 import traceback
                 traceback.print_exc()
 
-            print(f"DEBUG: No enhanced module handled the tool {tool_name}, calling original implementation")
+            print(f"DEBUG: No enhanced module handled the tool {tool_name}")
+
+            # Find the tool in main tools list for original implementation
+            tool = None
+            for t in self.tools:
+                if t["name"] == tool_name:
+                    tool = t
+                    break
+
+            if not tool:
+                print(f"ERROR: Tool '{tool_name}' not found in main tools list")
+                raise ValueError(f"Tool '{tool_name}' not found")
+
+            print(f"DEBUG: Tool found in main tools list, calling original implementation")
             # If not handled by enhanced modules, use original implementation
             try:
                 original_result = self._execute_original_tool(tool, tool_arguments)

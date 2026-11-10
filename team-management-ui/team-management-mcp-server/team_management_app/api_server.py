@@ -2,57 +2,25 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import sys
 import os
+
 # Add the parent directory and the mcp_std_server directory to the path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(os.path.join(os.path.dirname(__file__), '..','..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-# Try importing with different possible paths
-try:
-    from mcp_std_server.utils.task_storage import TaskStorage
-except ImportError:
-    try:
-        from mcp_std_server.utils.task_storage import TaskStorage
-    except ImportError:
-        # If all imports fail, define a minimal TaskStorage class for testing
-        class TaskStorage:
-            def __init__(self, db_path="../team_management.db"):
-                self.db_path = db_path
-            
-            def list_team_members(self, filters=None):
-                return []
-                
-            def get_team_member(self, member_id):
-                return None
-                
-            def create_team_member(self, data):
-                return {"id": "test", "name": "Test Member", **data}
-                
-            def update_team_member(self, member_id, data):
-                return {"id": member_id, **data}
-                
-            def delete_team_member(self, member_id):
-                return True
-                
-            def list_tasks(self, filters=None):
-                return []
-                
-            def get_task(self, task_id):
-                return None
-                
-            def create_task(self, data):
-                return {"id": "test", "title": "Test Task", **data}
-                
-            def update_task(self, task_id, data):
-                return {"id": task_id, **data}
-                
-            def delete_task(self, task_id):
-                return True
-import os
+# Import PostgreSQL-only TaskStorage
+from mcp_std_server.utils.task_storage import TaskStorage
 
 app = Flask(__name__, static_folder='webapp')
 CORS(app)  # Enable CORS for all routes
-# Initialize the task storage with the same database as the MCP server
-task_storage = TaskStorage(db_path="../team_management.db")
+
+# Initialize the task storage with PostgreSQL (mcp_registry database)
+task_storage = TaskStorage(
+    host="127.0.0.1",
+    port=5432,
+    database="mcp_registry",
+    user="postgres",
+    password="postgres"
+)
 
 # Serve static files (HTML, CSS, JS) from the webapp directory
 @app.route('/')
@@ -73,7 +41,7 @@ def get_team_members():
     try:
         import requests
         import json
-        
+
         # Query the MCP registry for all registered services
         registry_response = requests.post(
             'http://localhost:3031/mcp',
@@ -85,24 +53,23 @@ def get_team_members():
             },
             headers={"Content-Type": "application/json"}
         )
-        
+
         if registry_response.status_code == 200:
             registry_data = registry_response.json()
             services = registry_data.get('result', {}).get('services', [])
-            
+
             # Filter out the registry itself and get only AI agents
             ai_agents = []
             for service in services:
                 service_id = service.get('id', '')
                 service_name = service.get('name', '')
                 service_desc = service.get('description', '')
-                
+
                 # Skip the registry service itself
                 if 'registry' in service_id.lower() or 'registry' in service_name.lower():
                     continue
-                
+
                 # Identify AI agents by checking if they represent specialized team roles
-                # Using more flexible matching to catch variations in naming
                 service_name_lower = service_name.lower()
                 is_ai_agent = (
                     'it lead' in service_name_lower or
@@ -116,24 +83,24 @@ def get_team_members():
                     'devops' in service_name_lower or
                     ('release' in service_name_lower and 'engineer' in service_name_lower) or
                     ('technical' in service_name_lower and 'writer' in service_name_lower) or
-                    'team management' in service_name_lower  # This server itself
+                    'team management' in service_name_lower
                 )
-                
+
                 # Exclude infrastructure services
                 is_not_infrastructure = (
                     'registry' not in service_id.lower() and
                     'MCP Service Registry' not in service_name
                 )
-                
+
                 if is_ai_agent and is_not_infrastructure:
-                    
+
                     agent = {
                         'id': service.get('id', ''),
                         'name': service.get('name', 'Unknown Agent'),
                         'email': f"{service.get('id', 'unknown')}@mcp.local",
                         'role': extract_role_from_service_name(service.get('name', '')),
                         'skills': extract_skills_from_capabilities(service.get('capabilities', {})),
-                        'availability': 'online',  # All registered agents are considered available
+                        'availability': 'online',
                         'description': service.get('description', ''),
                         'endpoint': service.get('endpoint', ''),
                         'capabilities': service.get('capabilities', {}),
@@ -141,11 +108,11 @@ def get_team_members():
                         'last_seen': service.get('last_seen')
                     }
                     ai_agents.append(agent)
-            
+
             return jsonify(ai_agents)
         else:
             return jsonify([]), 500
-            
+
     except Exception as e:
         print(f"Error fetching team members from registry: {e}")
         return jsonify([]), 500
@@ -177,7 +144,6 @@ def extract_skills_from_capabilities(capabilities):
     """Extract skills from agent capabilities"""
     skills = []
     if 'tools' in capabilities and isinstance(capabilities['tools'], list):
-        # Take first 5 tools as representative skills
         skills.extend(capabilities['tools'][:5])
     if len(skills) == 0:
         skills = ['MCP Communication']
@@ -212,26 +178,25 @@ def update_team_member(member_id):
 @app.route('/api/team-members/<member_id>', methods=['DELETE'])
 def delete_team_member(member_id):
     """Delete a team member"""
-    # For now, we don't have a delete function in TaskStorage, so we'll return an error
     return jsonify({'error': 'Not implemented'}), 501
 
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
-    """Get all tasks"""
+    """Get all tasks from PostgreSQL task_registry with deployment info from task_deployments"""
     filters = {}
     if request.args.get('assignee_id'):
-        filters['assignee_id'] = request.args.get('assignee_id')
+        filters['assigned_to'] = request.args.get('assignee_id')
     if request.args.get('status'):
         filters['status'] = request.args.get('status')
     if request.args.get('priority'):
         filters['priority'] = request.args.get('priority')
-    
+
     tasks = task_storage.list_tasks(filters)
     return jsonify(tasks)
 
 @app.route('/api/tasks/<task_id>', methods=['GET'])
 def get_task(task_id):
-    """Get a specific task"""
+    """Get a specific task with deployment info"""
     task = task_storage.get_task(task_id)
     if task:
         return jsonify(task)

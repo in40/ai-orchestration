@@ -33,7 +33,7 @@ import {
   Link,
   Tooltip
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 // Import enhanced AddTaskForm component
@@ -61,6 +61,14 @@ const TaskManagement = () => {
     tags: [],
     context: {},
     dependencies: []
+  });
+  // Rework dialog state
+  const [openReworkDialog, setOpenReworkDialog] = useState(false);
+  const [selectedTaskForRework, setSelectedTaskForRework] = useState(null);
+  const [reworkForm, setReworkForm] = useState({
+    issue_description: '',
+    additional_comments: '',
+    priority: 'medium'
   });
 
   useEffect(() => {
@@ -205,7 +213,7 @@ const TaskManagement = () => {
   const handleRedeploy = async (task) => {
     const taskId = task.task_id || task.id;
     if (!window.confirm(`Redeploy task ${taskId}? This will create a new deployment from the existing git code.`)) return;
-    
+
     try {
       const response = await axios.post(`/api/tasks/${taskId}/redeploy`);
       alert(response.data.message || "Task redeployed successfully!");
@@ -216,6 +224,56 @@ const TaskManagement = () => {
       console.error("Error redeploying task:", err);
       alert(`Failed to redeploy: ${err.response?.data?.detail || 'Unknown error'}`);
     }
+  };
+
+  const handleOpenReworkDialog = (task) => {
+    setSelectedTaskForRework(task);
+    setReworkForm({
+      issue_description: '',
+      additional_comments: '',
+      priority: 'medium'
+    });
+    setOpenReworkDialog(true);
+  };
+
+  const handleCloseReworkDialog = () => {
+    setOpenReworkDialog(false);
+    setSelectedTaskForRework(null);
+    setReworkForm({
+      issue_description: '',
+      additional_comments: '',
+      priority: 'medium'
+    });
+  };
+
+  const handleReworkSubmit = async () => {
+    if (!selectedTaskForRework) return;
+
+    try {
+      const taskId = selectedTaskForRework.id;
+      await axios.post(`/api/tasks/${taskId}/request-rework`, {
+        task_id: taskId,
+        ...reworkForm
+      });
+
+      alert("Rework request submitted successfully!");
+      handleCloseReworkDialog();
+
+      // Refresh tasks from server
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      console.error("Error submitting rework request:", err);
+      const errorMsg = err.response?.data?.detail || err.response?.data?.message || err.message || 'Unknown error';
+      alert(`Failed to request rework: ${errorMsg}`);
+    }
+  };
+
+  const handleReworkInputChange = (field) => (e) => {
+    setReworkForm(prev => ({
+      ...prev,
+      [field]: e.target.value
+    }));
   };
 
   if (loading) {
@@ -371,6 +429,17 @@ const TaskManagement = () => {
                           title="Redeploy Task"
                         >
                           <BuildIcon />
+                        </IconButton>
+                      )}
+                      {/* Request Rework Button - shows for completed tasks that need rework */}
+                      {(task.status === 'done' || task.status === 'failed') && (
+                        <IconButton
+                          color="warning"
+                          aria-label="request rework"
+                          onClick={() => handleOpenReworkDialog(task)}
+                          title="Request Rework"
+                        >
+                          <RestartAltIcon />
                         </IconButton>
                       )}
                       <IconButton
@@ -675,6 +744,71 @@ const TaskManagement = () => {
           )}
         </Box>
       </Drawer>
+
+      {/* Request Rework Dialog */}
+      <Dialog
+        open={openReworkDialog}
+        onClose={handleCloseReworkDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Request Rework</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Request rework for task: <strong>{selectedTaskForRework?.id}</strong>
+          </DialogContentText>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Issue Description"
+            type="text"
+            fullWidth
+            variant="outlined"
+            multiline
+            rows={3}
+            value={reworkForm.issue_description}
+            onChange={handleReworkInputChange('issue_description')}
+            placeholder="Describe the issue that makes this task require rework (e.g., game is not playable)"
+            required
+          />
+          <TextField
+            margin="dense"
+            label="Additional Comments"
+            type="text"
+            fullWidth
+            variant="outlined"
+            multiline
+            rows={2}
+            value={reworkForm.additional_comments}
+            onChange={handleReworkInputChange('additional_comments')}
+            placeholder="Any additional comments for the developer..."
+          />
+          <FormControl fullWidth margin="dense">
+            <InputLabel id="rework-priority-label">Priority</InputLabel>
+            <Select
+              labelId="rework-priority-label"
+              label="Priority"
+              value={reworkForm.priority}
+              onChange={handleReworkInputChange('priority')}
+            >
+              <MenuItem value="low">Low</MenuItem>
+              <MenuItem value="medium">Medium</MenuItem>
+              <MenuItem value="high">High</MenuItem>
+              <MenuItem value="critical">Critical</MenuItem>
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseReworkDialog}>Cancel</Button>
+          <Button
+            onClick={handleReworkSubmit}
+            variant="contained"
+            startIcon={<RestartAltIcon />}
+          >
+            Submit Rework Request
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Grid>
   );
 };

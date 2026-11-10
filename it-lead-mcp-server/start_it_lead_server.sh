@@ -209,7 +209,7 @@ if [ "$USE_POSTGRES" = true ] && [ -n "$POSTGRES_PASSWORD" ]; then
 fi
 
 # Run server with nohup to survive shell exit, redirect output to log file
-nohup python -c "import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()" > /tmp/it_lead_nohup.log 2>&1 &
+nohup python -c "import sys; sys.path.insert(0, '.'); from it_lead_mcp_server.server import main; import sys; import shlex; sys.argv = ['server.py'] + shlex.split('$CMD_ARGS'); main()" >> /tmp/it_lead_nohup.log 2>&1 &
 IT_LEAD_PID=$!
 echo "IT Lead server started with PID $IT_LEAD_PID"
 echo "Logs available at /tmp/it_lead_nohup.log"

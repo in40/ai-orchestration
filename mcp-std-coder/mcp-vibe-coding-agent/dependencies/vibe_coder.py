@@ -637,8 +637,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": vibe / 10,  # 0.1 to 1.0
-                    "max_tokens": 8192  # Increased for longer code outputs
+                    "temperature": vibe / 10  # 0.1 to 1.0
                 },
                 timeout=timeout  # Use the timeout parameter (default: 240 minutes)
             )
@@ -919,13 +918,20 @@ def register_vibe_coding_tool(server_handlers):
 
                 # Submit for background processing
                 def llm_call_wrapper(input_args):
-                    prompt = create_vibe_code_prompt(input_args)
-                    llm_response = call_llm_sync(prompt, input_args.get("vibe_level", 5), server_handlers)
-                    print(f"DEBUG: LLM response received, calling git_push_llm_response for task {task_id}")
-                    # Push to Git and return Git URL
-                    result = git_push_llm_response(task_id, llm_response, input_args.get("language", "python"))
-                    print(f"DEBUG: git_push_llm_response returned: {result.get('git_url', 'NO GIT URL')}")
-                    return result
+                    try:
+                        prompt = create_vibe_code_prompt(input_args)
+                        print(f"DEBUG: Calling LLM for async task {task_id}")
+                        llm_response = call_llm_sync(prompt, input_args.get("vibe_level", 5), server_handlers)
+                        print(f"DEBUG: LLM response received for task {task_id}, calling git_push_llm_response")
+                        # Push to Git and return Git URL
+                        result = git_push_llm_response(task_id, llm_response, input_args.get("language", "python"))
+                        print(f"DEBUG: git_push_llm_response returned: {result.get('git_url', 'NO GIT URL')}")
+                        return result
+                    except Exception as e:
+                        print(f"❌ ERROR in llm_call_wrapper for task {task_id}: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                        raise  # Re-raise so task_manager can capture the error
 
                 task_manager.submit_for_processing(task_id, llm_call_wrapper)
 

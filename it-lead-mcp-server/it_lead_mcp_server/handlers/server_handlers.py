@@ -253,8 +253,7 @@ class ItLeadServerHandlers:
                 port=self.postgres_config.get("port", 5432),
                 database=self.postgres_config.get("database", "mcp_registry"),
                 user=self.postgres_config.get("user", "postgres"),
-                password=self.postgres_config.get("password", ""),
-                use_sqlite=False  # Always use PostgreSQL
+                password=self.postgres_config.get("password", "")
             )
             print("✅ Task storage initialized with PostgreSQL")
         except Exception as e:
@@ -262,18 +261,17 @@ class ItLeadServerHandlers:
             raise
 
         if self.enable_registry:
-            # Always use SQLite for service registry to share with port 3031's Registry Server
-            # Use PostgreSQL only for task storage, not service discovery
-            self._initialize_registry(use_postgres=False)
+            # Use PostgreSQL for service registry
+            self._initialize_registry()
 
         # Add registry-specific tools if enabled
         if self.enable_registry:
             self._add_registry_methods()
 
-    def _initialize_registry(self, use_postgres: bool):
-        """Initialize the service registry - PostgreSQL required"""
+    def _initialize_registry(self):
+        """Initialize the service registry with PostgreSQL"""
         try:
-            if use_postgres and self.postgres_config:
+            if self.postgres_config:
                 from ..utils.postgres_registry_db import PostgresServiceRegistry
                 self.service_registry = PostgresServiceRegistry(
                     host=self.postgres_config.get("host", "localhost"),
@@ -282,9 +280,7 @@ class ItLeadServerHandlers:
                     user=self.postgres_config.get("user", "postgres"),
                     password=self.postgres_config.get("password", "")
                 )
-            else:
-                from ..utils.service_registry_db import ServiceRegistryDB
-                self.service_registry = ServiceRegistryDB()
+                print("✅ PostgreSQL registry initialized")
         except Exception as e:
             print(f"❌ Failed to initialize registry (PostgreSQL required): {e}")
             raise
@@ -455,6 +451,13 @@ class ItLeadServerHandlers:
             priority = arguments.get("priority", "medium")
             deadline = arguments.get("deadline", "")
 
+            # Debug logging
+            print(f"DEBUG assign_task received:")
+            print(f"  task_id: {task_id}")
+            print(f"  assignee: {assignee}")
+            print(f"  arguments keys: {list(arguments.keys())}")
+            print(f"  metadata in arguments: {arguments.get('metadata', {})}")
+
             # In a real implementation, this would assign the task to the appropriate agent
             # For now, we'll simulate the assignment and return a result
             result = {
@@ -481,7 +484,7 @@ class ItLeadServerHandlers:
 
             # Log the task assignment
             print(f"Assigned task: {task_id} to {assignee}, priority: {priority}, deadline: {deadline}")
-            
+
             return result
 
         elif tool_name == "review_code":
@@ -656,11 +659,12 @@ class ItLeadServerHandlers:
         elif tool_name == "get_all_tasks":
             limit = arguments.get("limit", 100)
             offset = arguments.get("offset", 0)
+            status_filter = arguments.get("status_filter")
 
             # Fetch all tasks from storage (if available)
             if self.task_storage:
                 try:
-                    tasks_data = self.task_storage.fetch_all_tasks(limit=limit, offset=offset)
+                    tasks_data = self.task_storage.fetch_all_tasks(limit=limit, offset=offset, status_filter=status_filter)
                     return {
                         "result": {
                             "tasks": tasks_data

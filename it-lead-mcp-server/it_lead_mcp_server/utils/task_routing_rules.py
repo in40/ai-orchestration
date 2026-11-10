@@ -300,6 +300,29 @@ TASK_ROUTING_RULES = [
         },
         "confidence_threshold": 0.75
     },
+
+    {
+        "id": "rule-3.3",
+        "name": "Task Rework Workflow",
+        "category": "workflow",
+        "conditions": {
+            "keywords_any": ["rework", "revise", "fix issues", "not acceptable", "not playable", "bugs"],
+            "has_multiple_phases": True,
+            "phases": [
+                {"phase": 1, "keywords": ["rework", "revise", "fix", "issues"]},
+                {"phase": 2, "keywords": ["review", "check"]},
+                {"phase": 3, "keywords": ["implement", "code", "update"]}
+            ]
+        },
+        "action": {
+            "assign_to": "MULTIPLE",
+            "sequence": ["implementation-engineer"],
+            "tool": "execute_workflow",
+            "priority": "high",
+            "metadata": {"task_type": "task_rework_workflow", "requires_code_reviewer": False}
+        },
+        "confidence_threshold": 0.7
+    },
     
     # ===========================================
     # Category 4: Explicit Assignee Rules

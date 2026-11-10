@@ -158,8 +158,14 @@ def test_task_storage_integration():
     try:
         from it_lead_mcp_server.utils.task_storage import TaskStorage
         
-        # Initialize task storage (SQLite)
-        storage = TaskStorage(use_sqlite=True, database="mcp_registry.db")
+        # Initialize task storage (PostgreSQL)
+        storage = TaskStorage(
+            host="localhost",
+            port=5432,
+            database="mcp_registry",
+            user="postgres",
+            password="postgres"
+        )
         
         print(f"✅ TaskStorage initialized")
         

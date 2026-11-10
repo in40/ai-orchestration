@@ -215,7 +215,40 @@
         .btn-warning:hover {
             background-color: #e0a800;
         }
-        
+
+        .btn-secondary {
+            background-color: var(--secondary-color);
+            color: white;
+        }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 0.875rem;
+        }
+
+        .git-link, .deployment-link {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .git-link:hover, .deployment-link:hover {
+            text-decoration: underline;
+        }
+
+        .table th {
+            background-color: #f1f3f5;
+            font-weight: 600;
+            padding: 12px 8px;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .table td {
+            padding: 10px 8px;
+            vertical-align: middle;
+            border-bottom: 1px solid var(--border-color);
+        }
+
         .btn-secondary {
             background-color: var(--secondary-color);
             color: white;
@@ -255,7 +288,9 @@
         .status-in_progress { color: var(--warning-color); font-weight: 500; }
         .status-review { color: var(--info-color); font-weight: 500; }
         .status-done { color: var(--success-color); font-weight: 500; }
-        
+        .status-success { color: var(--success-color); font-weight: 500; }
+        .status-failed { color: var(--danger-color); font-weight: 500; }
+
         .priority-low { color: var(--success-color); font-weight: 500; }
         .priority-medium { color: var(--warning-color); font-weight: 500; }
         .priority-high { color: var(--info-color); font-weight: 500; }
@@ -553,11 +588,13 @@
                         <th>Priority</th>
                         <th>Due Date</th>
                         <th>Tags</th>
+                        <th>Git Repository</th>
+                        <th>Deployment</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="tasks-body">
-                    <tr><td colspan="7" class="loading">Loading tasks...</td></tr>
+                    <tr><td colspan="9" class="loading">Loading tasks...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -948,7 +985,7 @@
             tbody.innerHTML = '';
             
             if (tasks.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7">No tasks found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9">No tasks found</td></tr>';
                 return;
             }
             
@@ -977,6 +1014,21 @@
                     tagsDisplay = task.tags.join(', ');
                 }
                 
+                // Render Git Repository link
+                let gitRepoDisplay = '-';
+                if (task.git_url) {
+                    gitRepoDisplay = `<a href="${task.git_url}" target="_blank" class="git-link">📦 View Repository</a>`;
+                }
+
+                // Render Deployment URL link
+                let deploymentDisplay = '-';
+                if (task.deployment_url) {
+                    const statusBadge = task.deployment_status ? `<span class="status-${task.deployment_status}">${task.deployment_status}</span>` : '';
+                    deploymentDisplay = `<a href="${task.deployment_url}" target="_blank" class="deployment-link">🚀 Deployed</a> ${statusBadge}`;
+                } else if (task.deployment_status) {
+                    deploymentDisplay = `<span class="status-${task.deployment_status}">${task.deployment_status}</span>`;
+                }
+
                 row.innerHTML = `
                     <td>${task.title}</td>
                     <td>${assigneeName}</td>
@@ -984,6 +1036,8 @@
                     <td><span class="priority-${task.priority}">${task.priority}</span></td>
                     <td>${dueDateDisplay}</td>
                     <td>${tagsDisplay}</td>
+                    <td>${gitRepoDisplay}</td>
+                    <td>${deploymentDisplay}</td>
                     <td>
                         <button class="btn btn-success btn-sm" onclick="editTask('${task.id}')">Edit</button>
                         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">Delete</button>

@@ -1,7 +1,7 @@
 """
 Document Store Registry Integration
 Integrates Document Store MCP Server with base project service registry (port 3031)
-PostgreSQL is required for all operations.
+Uses PostgreSQL for all operations.
 """
 import sys
 import os
@@ -20,14 +20,6 @@ except ImportError as e:
     print(f"❌ Failed to import service registry DB (PostgreSQL required): {e}")
     raise
 
-# Always try to connect to PostgreSQL
-try:
-    from mcp_std_server.utils.postgres_registry_db import PostgresServiceRegistry
-    REGISTRY_USE_POSTGRES = True
-except ImportError as e:
-    print(f"❌ Failed to import PostgresServiceRegistry (PostgreSQL required): {e}")
-    raise
-
 
 class DocumentStoreRegistryIntegration:
     """Integrates Document Store with base project service registry"""
@@ -35,31 +27,24 @@ class DocumentStoreRegistryIntegration:
     def __init__(self, host: str = "127.0.0.1", port: int = 3031):
         self.host = host
         self.port = port
-        self.db_path = f"/root/qwen/base/mcp-std-skeleton/mcp_registry_{port}.db"
         self.registry_db = None
         self.service_id = None
         self.heartbeat_thread = None
         self.running = False
 
-        if REGISTRY_USE_POSTGRES:
-            # Try PostgreSQL first
-            try:
-                self.registry_db = PostgresServiceRegistry(
-                    host="localhost",
-                    port=5432,
-                    database="mcp_registry",
-                    user="postgres",
-                    password="postgres"
-                )
-            except Exception as e:
-                print(f"❌ Failed to initialize PostgreSQL registry: {e}")
-                raise
-        elif REGISTRY_AVAILABLE:
-            # Fallback to SQLite only if PostgreSQL fails - this should not happen
-            self.registry_db = ServiceRegistryDB(self.db_path)
-        else:
-            raise RuntimeError("PostgreSQL is required but not available")
-    
+        # Always use PostgreSQL
+        try:
+            self.registry_db = ServiceRegistryDB(
+                host="localhost",
+                port=5432,
+                database="mcp_registry",
+                user="postgres",
+                password="postgres"
+            )
+        except Exception as e:
+            print(f"❌ Failed to initialize PostgreSQL registry: {e}")
+            raise
+
     def register(
         self,
         service_host: str = "127.0.0.1",
@@ -67,11 +52,11 @@ class DocumentStoreRegistryIntegration:
         ttl_seconds: int = 60
     ) -> bool:
         """Register Document Store with base project registry."""
-        
+
         if not REGISTRY_AVAILABLE or not self.registry_db:
             print("⚠️  Registry DB not available, skipping registration")
             return False
-        
+
         try:
             # Create service ID in format: document-store-{host}:{port}
             self.service_id = f"document-store-{service_host}:{service_port}"
@@ -85,7 +70,7 @@ class DocumentStoreRegistryIntegration:
                 "capabilities": {
                     "tools": [
                         "list_ingestion_jobs",
-                        "list_documents", 
+                        "list_documents",
                         "get_document",
                         "get_document_batch",
                         "get_document_metadata",
@@ -110,8 +95,7 @@ class DocumentStoreRegistryIntegration:
 
             if success:
                 self.service_id = service_info["id"]  # Use the registered ID
-                print(f"✅ Registered as '{self.service_id}'")
-                
+
                 # Start heartbeat thread to keep registration alive
                 self._start_heartbeat(ttl_seconds)
                 return True
@@ -124,10 +108,10 @@ class DocumentStoreRegistryIntegration:
             import traceback
             traceback.print_exc()
             return False
-    
+
     def _start_heartbeat(self, ttl_seconds: int):
         """Start heartbeat thread to keep service registered."""
-        
+
         self.running = True
         interval = max(10, ttl_seconds // 2)  # Send at half TTL (min 10s)
 
@@ -136,9 +120,9 @@ class DocumentStoreRegistryIntegration:
                 try:
                     if self.registry_db:
                         self.registry_db.update_last_seen(self.service_id)
-                    
+
                     time.sleep(interval)
-                    
+
                 except Exception as e:
                     print(f"⚠️  Heartbeat error: {e}")
                     time.sleep(5)
@@ -146,59 +130,38 @@ class DocumentStoreRegistryIntegration:
         self.heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
         self.heartbeat_thread.start()
         print(f"💓 Heartbeat started (interval: {interval}s)")
-    
+
     def unregister(self):
         """Unregister from registry."""
-        
+
         self.running = False
-        
+
         if self.registry_db and self.service_id:
             try:
                 print(f"📝 Unregistering '{self.service_id}'...")
-                
-                # Remove the service record
-                conn = __import__('sqlite3').connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM services WHERE id = ?", (self.service_id,))
-                conn.commit()
-                conn.close()
-                
+
+                # Remove the service record using PostgreSQL
+                self.registry_db.unregister_service(self.service_id)
+
                 print(f"✅ Unregistered successfully")
             except Exception as e:
                 print(f"⚠️  Unregister error: {e}")
-    
+
     def get_service_info(self) -> dict:
         """Get current service registration info."""
-        
+
         if not self.registry_db or not self.service_id:
             return {}
 
         try:
-            conn = __import__('sqlite3').connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM services WHERE id = ?", (self.service_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                result = {
-                    "id": row[0],
-                    "name": row[1],
-                    "description": row[2],
-                    "endpoint": row[3],
-                    "capabilities": __import__('json').loads(row[4]) if row[4] else {},
-                    "registered_at": row[5],
-                    "last_seen": row[6]
-                }
-            else:
-                result = {}
+            # Use PostgreSQL registry_db
+            service = self.registry_db.get_service(self.service_id)
+            return service if service else {}
 
-            conn.close()
-            return result
-            
         except Exception as e:
             print(f"⚠️  Error getting service info: {e}")
             return {}
-    
+
     def __del__(self):
         """Cleanup on object destruction."""
         self.unregister()

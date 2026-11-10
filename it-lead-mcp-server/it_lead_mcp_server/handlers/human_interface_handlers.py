@@ -4,6 +4,7 @@ Implements human interface capabilities for software development teams
 """
 import json
 import time
+import datetime
 from typing import Dict, Any, List, Optional
 from ..utils.json_rpc import JsonRpcHandler
 
@@ -11,10 +12,11 @@ from ..utils.json_rpc import JsonRpcHandler
 class HumanInterfaceHandlers:
     """Handles human interface specific MCP server methods for software development teams"""
 
-    def __init__(self, llm_client=None, agent_registry=None, task_storage=None):
+    def __init__(self, llm_client=None, agent_registry=None, task_storage=None, task_assignment_manager=None):
         self.llm_client = llm_client
         self.agent_registry = agent_registry
         self.task_storage = task_storage
+        self.task_assignment_manager = task_assignment_manager
         
         # Human interface tools
         self.tools = [
@@ -30,6 +32,20 @@ class HumanInterfaceHandlers:
                         "options": {"type": "array", "items": {"type": "string"}, "description": "Available options for decision"}
                     },
                     "required": ["task_id", "reason", "context"]
+                }
+            },
+            {
+                "name": "request_task_rework",
+                "description": "Request rework on a completed task that is not acceptable",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "ID of the completed task requiring rework"},
+                        "issue_description": {"type": "string", "description": "Description of the issue or why rework is needed"},
+                        "additional_comments": {"type": "string", "description": "Optional additional comments for the developer"},
+                        "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Priority for the rework", "default": "medium"}
+                    },
+                    "required": ["task_id", "issue_description"]
                 }
             }
         ]
@@ -75,6 +91,8 @@ class HumanInterfaceHandlers:
 
         if tool_name == "escalate_to_human":
             return self._escalate_to_human(arguments)
+        elif tool_name == "request_task_rework":
+            return self._request_task_rework(arguments)
 
         # For any other tools, return None to indicate this module doesn't handle them
         return None
@@ -206,3 +224,91 @@ class HumanInterfaceHandlers:
                 "urgency": "medium",
                 "recommended_action": "No recommendation due to error"
             }
+
+    def _request_task_rework(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Request rework on a completed task that is not acceptable"""
+        task_id = arguments.get("task_id", "")
+        issue_description = arguments.get("issue_description", "")
+        additional_comments = arguments.get("additional_comments", "")
+        priority = arguments.get("priority", "medium")
+
+        # Validate task exists and is in done status
+        if self.task_storage:
+            task = self.task_storage.get_task(task_id)
+            if not task:
+                return {
+                    "success": False,
+                    "error": f"Task not found: {task_id}",
+                    "message": "Cannot request rework for non-existent task"
+                }
+
+            current_status = task.get("status", "")
+            # Allow rework for tasks that have completed (done/failed) or are in revision workflow (needs_revision/rework_in_progress)
+            if current_status not in ("done", "failed", "needs_revision", "rework_in_progress"):
+                return {
+                    "success": False,
+                    "error": f"Task is not in a state for rework: {current_status}",
+                    "message": f"Can only request rework for tasks with status 'done', 'failed', 'needs_revision', or 'rework_in_progress', current status is '{current_status}'"
+                }
+
+        # Prepare rework request
+        rework_request = {
+            "task_id": task_id,
+            "issue_description": issue_description,
+            "additional_comments": additional_comments,
+            "requested_by": "human_operator",
+            "requested_at": datetime.now().isoformat() if hasattr(datetime, 'isoformat') else str(time.time()),
+            "priority": priority,
+            "status": "pending_review"
+        }
+
+        # Store rework request in task metadata
+        if self.task_storage:
+            try:
+                import json
+                task = self.task_storage.get_task(task_id)
+                if task:
+                    existing_meta = {}
+                    metadata = task.get("metadata", {}) or {}
+                    try:
+                        existing_meta = json.loads(metadata) if isinstance(metadata, str) else metadata
+                    except:
+                        pass
+
+                    # Add rework_request to history
+                    rework_history = existing_meta.get("rework_requests", [])
+                    if isinstance(rework_history, str):
+                        rework_history = json.loads(rework_history)
+                    rework_history.append(rework_request)
+
+                    # Update metadata with rework request
+                    existing_meta["rework_requests"] = rework_history
+                    existing_meta["last_rework_requested_at"] = rework_request["requested_at"]
+
+                    # Update task status to needs_revision
+                    self.task_storage.update_task_status_only(
+                        task_id=task_id,
+                        status="needs_revision",
+                        status_reason=f"Rework requested: {issue_description[:100]}...",
+                        metadata=existing_meta
+                    )
+            except Exception as e:
+                print(f"Error storing rework request: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Trigger rework workflow if task_assignment_manager is available
+        if self.task_assignment_manager and task:
+            issue_desc_for_workflow = issue_description if issue_description else "Issues found in deployed code"
+            self.task_assignment_manager._trigger_rework_workflow(
+                task_id=task_id,
+                issue_description=issue_desc_for_workflow,
+                additional_comments=additional_comments if additional_comments else "",
+                priority=priority if priority else "medium"
+            )
+
+        return {
+            "success": True,
+            "message": f"Rework requested for task {task_id}",
+            "rework_request": rework_request
+        }

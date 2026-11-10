@@ -19,6 +19,14 @@ from devops_release_engineer_mcp_server.transports.stdio import StdioTransport
 from devops_release_engineer_mcp_server.transports.http_sse import HttpSseTransport
 from devops_release_engineer_mcp_server.transports.streamable_http import StreamableHttpTransport
 from devops_release_engineer_mcp_server.handlers.server_handlers import DevOpsReleaseEngineerHandlers
+
+# Import TaskStorage for task registry updates
+try:
+    from it_lead_mcp_server.utils.task_storage import TaskStorage
+    TASK_STORAGE_AVAILABLE = True
+except ImportError:
+    TASK_STORAGE_AVAILABLE = False
+    print("Warning: it_lead_mcp_server.utils.task_storage not available - task registry updates will use direct database access")
 from devops_release_engineer_mcp_server.handlers.client_handlers import ClientMethodsHandlers
 from devops_release_engineer_mcp_server.utils.notifications import NotificationManager
 from devops_release_engineer_mcp_server.utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
@@ -101,6 +109,23 @@ class DevOpsReleaseEngineerMcpServer:
             }
 
         self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
+
+        # Initialize task storage for updating task registry after deployments
+        self.task_storage = None
+        if TASK_STORAGE_AVAILABLE:
+            try:
+                self.task_storage = TaskStorage(
+                    host=postgres_host,
+                    port=self.postgres_port,
+                    database=self.postgres_db,
+                    user=self.postgres_user,
+                    password=self.postgres_password
+                )
+                print("TaskStorage initialized successfully for task registry updates")
+            except Exception as e:
+                print(f"Failed to initialize task storage: {e}")
+                print("Continuing with direct database access for task updates")
+
         self.server_handlers = DevOpsReleaseEngineerHandlers(
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
@@ -108,7 +133,8 @@ class DevOpsReleaseEngineerMcpServer:
             client_handlers=self.client_handlers,
             llm_provider_url=llm_provider_url,
             llm_model=llm_model,
-            prompts_dir=prompts_dir
+            prompts_dir=prompts_dir,
+            task_storage=self.task_storage
         )
         self.notification_manager = NotificationManager(self.rpc_handler)
 
@@ -221,6 +247,31 @@ class DevOpsReleaseEngineerMcpServer:
             import traceback
             traceback.print_exc()
 
+    def _validate_git_repository_at_startup(self):
+        """Validate Git repository connectivity at server startup"""
+        print("\n=== Git Repository Connectivity Check ===")
+        try:
+            # Get Git repo URL from environment or use default
+            import os
+            git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+
+            print(f"Validating Git repository: {git_repo_url}")
+
+            # Call the validation method from server_handlers
+            if hasattr(self.server_handlers, '_validate_git_repository'):
+                result = self.server_handlers._validate_git_repository(git_repo_url)
+                if result.get("success"):
+                    print(f"✅ Git repository is accessible and ready for deployments")
+                else:
+                    print(f"❌ Git repository is NOT accessible!")
+                    print(f"   Error: {result.get('message')}")
+                    print(f"   ⚠️  Deployments will fail until Git repository is accessible!")
+            else:
+                print("⚠️  Git repository validation method not available - skipping startup check")
+        except Exception as e:
+            print(f"⚠️  Could not validate Git repository at startup: {e}")
+        print()
+
     def _register_handlers(self):
         """Register all handlers with the RPC handler"""
         print("DEBUG: Starting handler registration...")
@@ -317,6 +368,9 @@ class DevOpsReleaseEngineerMcpServer:
             print(f"Registering with registry at {self.registry_host}:{self.registry_port}...")
             self._register_with_registry()
 
+        # Validate Git repository connectivity at startup
+        self._validate_git_repository_at_startup()
+
         try:
             while self.running:
                 time.sleep(0.1)
@@ -349,6 +403,10 @@ class DevOpsReleaseEngineerMcpServer:
         if self.heartbeat_manager:
             print("Stopping local heartbeat manager...")
             self.heartbeat_manager.stop()
+
+        if self.task_storage:
+            print("Stopping task storage...")
+            self.task_storage.close()
 
         self.running = False
         self.transport.stop()

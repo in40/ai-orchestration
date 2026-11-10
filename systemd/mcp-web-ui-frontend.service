@@ -1,0 +1,42 @@
+[Unit]
+Description=MCP Web UI Frontend - Vite Development Server
+Documentation=https://github.com/your-org/mcp-system
+After=network.target mcp-web-ui-backend.service
+Wants=mcp-web-ui-backend.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/qwen/base/it-lead-mcp-server/web-ui/frontend
+EnvironmentFile=/root/qwen/base/.env
+
+# Environment defaults
+Environment="WEB_FRONTEND_PORT=5173"
+
+# Start the web UI frontend (vite)
+ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    npm run dev -- --port ${WEB_UI_FRONTEND_PORT:-5173}'
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-web-ui-frontend
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=80%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp /root/qwen/base/logs
+
+[Install]
+WantedBy=multi-user.target

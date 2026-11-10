@@ -115,6 +115,12 @@ class TaskStatusUpdate(BaseModel):
     progress: int
     notes: Optional[str] = None
 
+
+class ReworkRequest(BaseModel):
+    issue_description: str
+    additional_comments: Optional[str] = ""
+    priority: str = "medium"
+
 class ApprovalType(str, Enum):
     code = "code"
     architecture = "architecture"
@@ -757,17 +763,63 @@ async def submit_requirement_endpoint(requirement: RequirementInput):
 async def provide_feedback_endpoint(feedback: Feedback):
     """Endpoint to provide feedback via IT Lead server"""
     logger.info(f"Providing feedback via IT Lead on {feedback.feedback_target}")
-    
+
     # Send the feedback to IT Lead server
     await handle_feedback_via_it_lead(feedback.dict())
-    
+
     # Broadcast the feedback to all connected clients
     await broadcast_message({
         "type": "feedback_provided",
         "data": feedback.dict()
     })
-    
+
     return {"message": "Feedback provided successfully", "feedback_id": f"feedback-{hash(str(feedback.dict())) % 10000}"}
+
+
+@app.post("/api/tasks/{task_id}/request-rework")
+async def request_rework_endpoint(task_id: str, rework_request: ReworkRequest):
+    """Endpoint to request task rework via IT Lead server"""
+    logger.info(f"Requesting rework for task {task_id}: {rework_request.issue_description[:50]}...")
+
+    # Validate priority
+    if rework_request.priority not in ["low", "medium", "high", "critical"]:
+        raise HTTPException(status_code=400, detail="Invalid priority. Must be: low, medium, high, critical")
+
+    # Use task_id from URL (more reliable), override any in body
+    # Build the rework arguments
+    rework_args = {
+        "task_id": task_id,  # Use URL parameter
+        "issue_description": rework_request.issue_description,
+        "additional_comments": rework_request.additional_comments,
+        "priority": rework_request.priority
+    }
+
+    # Call the request_task_rework tool on IT Lead server
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"rework-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "request_task_rework",
+                        "arguments": rework_args
+                    }
+                }
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"Rework request submitted successfully for task {task_id}")
+                return {"success": True, "message": f"Rework requested for task {task_id}", "result": result}
+            else:
+                logger.error(f"Failed to submit rework request: {response.status_code}")
+                raise HTTPException(status_code=500, detail=f"Failed to submit rework request: {response.text[:200]}")
+    except httpx.RequestError as e:
+        logger.error(f"Error submitting rework request to IT Lead: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error connecting to IT Lead: {str(e)}")
 
 @app.post("/api/tasks/update")
 async def update_task_status_endpoint(update: TaskStatusUpdate):
@@ -845,6 +897,7 @@ async def fetch_tasks_from_it_lead():
                 logger.info(f"Fetched tasks response: {result}")
 
                 # Extract tasks from the response
+                # Response structure: {"result": {"result": {"tasks": [...], ...}}}
                 if "result" in result and "result" in result["result"]:
                     tasks_result = result["result"]["result"]
 

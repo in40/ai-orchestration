@@ -150,7 +150,7 @@ fi
 echo "Starting Web UI backend on ${WEB_BACKEND_HOST}:${WEB_BACKEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/backend
 source venv/bin/activate
-nohup uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" > /tmp/web_ui_backend.log 2>&1 &
+nohup uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" >> /tmp/web_ui_backend.log 2>&1 &
 WEB_BACKEND_PID=$!
 
 echo "Web Backend PID: ${WEB_BACKEND_PID}"
@@ -166,21 +166,36 @@ if ! ps -p $WEB_BACKEND_PID > /dev/null 2>&1; then
 fi
 
 # Start Web UI frontend in the background with nohup to protect from signals
+# FIX: Use setsid to create new session and redirect stdin to prevent process death
 echo "Starting Web UI frontend on port ${WEB_FRONTEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/frontend
-nohup npm run dev -- --port "${WEB_FRONTEND_PORT}" > /tmp/web_ui_frontend.log 2>&1 &
+
+# FIX: The issue is that npm run dev spawns a child process that dies when parent exits.
+# Solution: Use setsid to create new session, and redirect stdin from /dev/null
+setsid bash -c "npm run dev -- --port \"${WEB_FRONTEND_PORT}\" < /dev/null > /tmp/web_ui_frontend.log 2>&1 &" &
 WEB_FRONTEND_PID=$!
 
 echo "Web Frontend PID: ${WEB_FRONTEND_PID}"
 
 # Wait a moment for the frontend to start
-sleep 3
+sleep 5
 
-# Verify frontend started
-if ! ps -p $WEB_FRONTEND_PID > /dev/null 2>&1; then
-    echo "❌ Web UI frontend failed to start!"
+# FIX: Check if vite is actually listening on the port, not just if process exists
+if ! ss -tlnp | grep -q ":${WEB_FRONTEND_PORT} "; then
+    echo "❌ Web UI frontend failed to start on port ${WEB_FRONTEND_PORT}!"
     echo "Check /tmp/web_ui_frontend.log for details"
-    exit 1
+    # Try alternative: run npm with node directly
+    echo "Attempting alternative startup..."
+    cd /root/qwen/base/it-lead-mcp-server/web-ui/frontend
+    setsid bash -c "node node_modules/vite/bin/vite.js --port \"${WEB_FRONTEND_PORT}\" < /dev/null > /tmp/web_ui_frontend.log 2>&1 &" &
+    WEB_FRONTEND_PID=$!
+    sleep 3
+    if ! ss -tlnp | grep -q ":${WEB_FRONTEND_PORT} "; then
+        echo "❌ Alternative startup also failed!"
+        cat /tmp/web_ui_frontend.log
+        exit 1
+    fi
+    echo "✅ Alternative startup succeeded"
 fi
 
 # Disown processes to prevent them from being killed when shell exits

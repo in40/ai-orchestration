@@ -1,0 +1,61 @@
+[Unit]
+Description=MCP Registry Server - Service Discovery
+Documentation=https://github.com/your-org/mcp-system
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/qwen/base/mcp-std-skeleton
+EnvironmentFile=/root/qwen/base/.env
+
+# Environment defaults (overridden by .env if present)
+Environment="TRANSPORT=streamable-http"
+Environment="HOST=127.0.0.1"
+Environment="PORT=3031"
+Environment="USE_POSTGRES=true"
+Environment="POSTGRES_HOST=127.0.0.1"
+Environment="POSTGRES_PORT=5432"
+Environment="POSTGRES_DB=mcp_registry"
+Environment="POSTGRES_USER=postgres"
+Environment="POSTGRES_PASSWORD=postgres"
+Environment="MAX_CONCURRENT_REQUESTS=10"
+
+# Start the registry server
+ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    python -m mcp_std_server.server --enable-registry \
+        --transport ${TRANSPORT:-streamable-http} \
+        --host ${REGISTRY_HOST:-127.0.0.1} \
+        --port ${REGISTRY_PORT:-3031} \
+        --use-postgres \
+        --postgres-host ${POSTGRES_HOST:-127.0.0.1} \
+        --postgres-port ${POSTGRES_PORT:-5432} \
+        --postgres-db ${POSTGRES_DB:-mcp_registry} \
+        --postgres-user ${POSTGRES_USER:-postgres} \
+        --postgres-password ${POSTGRES_PASSWORD:-postgres} \
+        --max-concurrent-requests ${MAX_CONCURRENT_REQUESTS:-10}'
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-registry
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=80%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp /root/qwen/base/logs
+
+[Install]
+WantedBy=multi-user.target

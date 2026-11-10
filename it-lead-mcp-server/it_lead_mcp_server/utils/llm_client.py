@@ -14,8 +14,14 @@ class MockLlmClient:
         self.llm_provider_url = llm_provider_url
         self.llm_model = llm_model
     
-    def call_llm(self, prompt: str, temperature: float = 0.7) -> str:
-        """Call the LLM with the given prompt"""
+    def call_llm(self, prompt: str, temperature: float = 0.7, timeout: int = 300) -> str:
+        """Call the LLM with the given prompt
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            temperature: LLM temperature (0.0-1.0)
+            timeout: Request timeout in seconds (default: 300 = 5 minutes for complex planning)
+        """
         try:
             headers = {
                 "Content-Type": "application/json"
@@ -29,7 +35,9 @@ class MockLlmClient:
                 "temperature": temperature
             }
 
-            response = requests.post(self.llm_provider_url, headers=headers, json=data)
+            print(f"🔍 Calling LLM with timeout={timeout}s, model={self.llm_model}")
+            response = requests.post(self.llm_provider_url, headers=headers, json=data, timeout=timeout)
+            print(f"✅ LLM response received, status={response.status_code}")
 
             if response.status_code == 200:
                 result = response.json()

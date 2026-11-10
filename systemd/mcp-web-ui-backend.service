@@ -1,0 +1,49 @@
+[Unit]
+Description=MCP Web UI Backend - FastAPI API Server
+Documentation=https://github.com/your-org/mcp-system
+After=network.target mcp-it-lead.service
+Wants=mcp-it-lead.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/qwen/base/it-lead-mcp-server/web-ui/backend
+EnvironmentFile=/root/qwen/base/.env
+
+# Environment defaults
+Environment="WEB_BACKEND_HOST=0.0.0.0"
+Environment="WEB_BACKEND_PORT=8000"
+Environment="WEB_FRONTEND_PORT=5173"
+Environment="IT_LEAD_HOST=127.0.0.1"
+Environment="IT_LEAD_PORT=3061"
+Environment="REGISTRY_HOST=127.0.0.1"
+Environment="REGISTRY_PORT=3031"
+
+# Start the web UI backend (uvicorn)
+ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    source venv/bin/activate; \
+    uvicorn main:app --host ${WEB_UI_HOST:-0.0.0.0} --port ${WEB_UI_BACKEND_PORT:-8000}'
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-web-ui-backend
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=80%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp /root/qwen/base/logs
+
+[Install]
+WantedBy=multi-user.target

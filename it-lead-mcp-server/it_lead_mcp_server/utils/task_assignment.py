@@ -121,6 +121,9 @@ class TaskAssignmentManager:
 
                 if response.status_code == 200:
                     result = response.json()
+                    # Log full response for debugging
+                    if attempt < 3:
+                        print(f"📡 Poll attempt {attempt + 1}: response={result}", flush=True)
                     if "result" in result and isinstance(result["result"], dict):
                         result_data = result["result"]
                         # Check if result contains git_url (from git_push_llm_response)
@@ -130,18 +133,24 @@ class TaskAssignmentManager:
                         # Check for error
                         if result_data.get("error"):
                             error_msg = result_data.get("error", "")
-                            # Only return None if it's a real error, not "working" status
-                            if "not completed" in error_msg.lower() or "working" in error_msg.lower():
-                                print(f"⏳ Task still {error_msg}, continuing to poll...")
+                            # Only return None if it's a real error, not "working" or "submitted" status
+                            if "not completed" in error_msg.lower() or "working" in error_msg.lower() or "submitted" in error_msg.lower():
+                                print(f"⏳ Task still processing ({error_msg}), continuing to poll...")
                             else:
                                 print(f"❌ Async task error: {error_msg}")
                                 return None
                         # Task still working, continue polling
                         task_status = result_data.get("status", "unknown")
-                        if task_status == "working" and attempt < max_retries - 1:
-                            wait_time = min(2 + (attempt * 2), 10)  # Exponential backoff, max 10s
-                            print(f"⏳ Task still {task_status}, waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                        if task_status in ("working", "submitted") and attempt < max_retries - 1:
+                            wait_time = min(2 + (attempt * 0.5), 10)  # Exponential backoff, max 10s
+                            print(f"⏳ Task status: {task_status}, waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                             time.sleep(wait_time)
+                    else:
+                        # Response doesn't have expected structure
+                        print(f"⚠️ Poll attempt {attempt + 1}: unexpected response structure: {result}", flush=True)
+                else:
+                    # Non-200 response
+                    print(f"⚠️ Poll attempt {attempt + 1}: status_code={response.status_code}, body={response.text[:200]}", flush=True)
             except Exception as e:
                 print(f"⚠️ Poll attempt {attempt + 1} failed: {e}")
 
@@ -468,6 +477,23 @@ class TaskAssignmentManager:
                 "reason": f"Task assigned via assign_task tool, routed to {primary_agent}"
             }
 
+            # Build metadata - preserve original_arguments if it exists in input metadata
+            task_metadata = {
+                "tool_call": "assign_task",
+                "routing_decision": {
+                    "matched_rule_id": routing_decision.matched_rule_id,
+                    "confidence": routing_decision.confidence,
+                    "requires_llm_planning": routing_decision.requires_llm_planning
+                },
+                "llm_plan": llm_plan
+            }
+            # Preserve original_arguments from input metadata if present
+            if metadata and metadata.get("original_arguments"):
+                task_metadata["original_arguments"] = metadata["original_arguments"]
+            elif metadata:
+                # If metadata exists but no original_arguments, include all metadata
+                task_metadata.update(metadata)
+
             self.task_storage.store_received_task(
                 task_id=task_id,
                 title=f"Task: {task_id}",
@@ -479,15 +505,7 @@ class TaskAssignmentManager:
                 priority=priority,
                 deadline=deadline if deadline else None,
                 source_server="internal",
-                metadata={
-                    "tool_call": "assign_task",
-                    "routing_decision": {
-                        "matched_rule_id": routing_decision.matched_rule_id,
-                        "confidence": routing_decision.confidence,
-                        "requires_llm_planning": routing_decision.requires_llm_planning
-                    },
-                    "llm_plan": llm_plan
-                },
+                metadata=task_metadata,
                 status="received",
                 status_reason=f"Task received, routing to {primary_agent}"
             )
@@ -1195,19 +1213,38 @@ class TaskAssignmentManager:
             try:
                 import json
                 cursor = self.task_storage.connection.cursor()
-                if self.task_storage.use_sqlite:
-                    cursor.execute(
-                        "UPDATE task_registry SET assigned_to = ? WHERE task_id = ?",
-                        (next_agent, task_id)
-                    )
-                else:
-                    cursor.execute(
-                        "UPDATE task_registry SET assigned_to = %s WHERE task_id = %s",
-                        (next_agent, task_id)
-                    )
+                cursor.execute(
+                    "UPDATE task_registry SET assigned_to = %s WHERE task_id = %s",
+                    (next_agent, task_id)
+                )
                 self.task_storage.connection.commit()
                 cursor.close()
                 print(f"✅ Task {task_id} assigned_to updated to {next_agent}")
+
+                # CRITICAL FIX: Also update agent_endpoint in metadata for the poller
+                # The poller uses agent_endpoint from metadata to poll for async results
+                # Without this, poller keeps using the stale endpoint from previous agent
+                try:
+                    cursor = self.task_storage.connection.cursor()
+                    cursor.execute(
+                        "SELECT metadata FROM task_registry WHERE task_id = %s",
+                        (task_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        import json
+                        metadata = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                        if isinstance(metadata, dict):
+                            metadata['agent_endpoint'] = next_agent_endpoint
+                            cursor.execute(
+                                "UPDATE task_registry SET metadata = %s WHERE task_id = %s",
+                                (json.dumps(metadata), task_id)
+                            )
+                            self.task_storage.connection.commit()
+                            print(f"✅ Task {task_id} agent_endpoint updated to {next_agent_endpoint} in metadata")
+                    cursor.close()
+                except Exception as e:
+                    print(f"⚠️  Could not update agent_endpoint in metadata: {e}")
             except Exception as e:
                 print(f"⚠️  Could not update assigned_to: {e}")
 
@@ -1231,16 +1268,10 @@ class TaskAssignmentManager:
                     status_history.append(status_history_entry)
 
                     cursor = self.task_storage.connection.cursor()
-                    if self.task_storage.use_sqlite:
-                        cursor.execute(
-                            "UPDATE task_registry SET status_history = ? WHERE task_id = ?",
-                            (json.dumps(status_history), task_id)
-                        )
-                    else:
-                        cursor.execute(
-                            "UPDATE task_registry SET status_history = %s WHERE task_id = %s",
-                            (json.dumps(status_history), task_id)
-                        )
+                    cursor.execute(
+                        "UPDATE task_registry SET status_history = %s WHERE task_id = %s",
+                        (json.dumps(status_history), task_id)
+                    )
                     self.task_storage.connection.commit()
                     cursor.close()
                     print(f"✅ Task {task_id} status_history updated with workflow handoff")
@@ -1271,8 +1302,9 @@ class TaskAssignmentManager:
                     sys.stdout.flush()
                     
                     print(f"🔍 Starting to poll async task result...", flush=True)
-                    # Increased polling to 360 retries (12 minutes) to handle longer-running tasks
-                    async_result = self._poll_async_task_result(next_agent_endpoint, async_task_id, max_retries=360)
+                    # Increased polling to 1800 retries (1 hour minimum) to handle longer-running tasks
+                    # With 2s base wait + exponential backoff, this allows tasks up to 1+ hour to complete
+                    async_result = self._poll_async_task_result(next_agent_endpoint, async_task_id, max_retries=1800)
                     
                     # Log result to file
                     try:
@@ -1397,16 +1429,10 @@ class TaskAssignmentManager:
                                     status_history.append(status_history_entry)
 
                                     cursor = self.task_storage.connection.cursor()
-                                    if self.task_storage.use_sqlite:
-                                        cursor.execute(
-                                            "UPDATE task_registry SET status = ?, status_history = ? WHERE task_id = ?",
-                                            ('done', json.dumps(status_history), task_id)
-                                        )
-                                    else:
-                                        cursor.execute(
-                                            "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
-                                            ('done', json.dumps(status_history), task_id)
-                                        )
+                                    cursor.execute(
+                                        "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                                        ('done', json.dumps(status_history), task_id)
+                                    )
                                     self.task_storage.connection.commit()
                                     cursor.close()
                                     print(f"✅ Task {task_id} marked as done in workflow poller", flush=True)
@@ -1558,16 +1584,10 @@ class TaskAssignmentManager:
                         try:
                             import json
                             cursor = self.task_storage.connection.cursor()
-                            if self.task_storage.use_sqlite:
-                                cursor.execute(
-                                    "UPDATE task_registry SET status = ?, status_history = ? WHERE task_id = ?",
-                                    ('done', json.dumps(status_history), task_id)
-                                )
-                            else:
-                                cursor.execute(
-                                    "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
-                                    ('done', json.dumps(status_history), task_id)
-                                )
+                            cursor.execute(
+                                "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                                ('done', json.dumps(status_history), task_id)
+                            )
                             self.task_storage.connection.commit()
                             cursor.close()
                             print(f"✅ Task {task_id} marked as done in workflow")
@@ -1613,8 +1633,14 @@ class TaskAssignmentManager:
                 print(f"⚠️  No git_url found in task metadata - cannot regenerate code", flush=True)
                 return
 
+            # Get original language from task metadata or git_url filename
+            original_language = "python"  # Default
+            if task_obj:
+                task_metadata = task_obj.get("metadata", {}) or {}
+                original_language = task_metadata.get("language", "python")
+
             # Create regeneration prompt for Requirements Engineer
-            regeneration_prompt = f"""I need you to regenerate the code for a deployment task that failed with a Python syntax error.
+            regeneration_prompt = f"""I need you to regenerate the code for a deployment task that failed with a syntax error.
 
 ORIGINAL TASK:
 {task_description}
@@ -1625,11 +1651,13 @@ SYNTAX ERROR FROM DEPLOYMENT:
 ORIGINAL CODE LOCATION:
 {original_git_url}
 
-Please analyze the original code, fix the Python syntax error, and generate corrected code. The code will be deployed as a web application, so ensure it follows the proper structure for a Flask/web application.
+LANGUAGE: {original_language}
+
+Please analyze the original code, fix the syntax error, and generate corrected code in {original_language}. The code will be deployed as a web application.
 
 After you provide the corrected code, it will go through the Implementation Engineer and then be redeployed by the DevOps Engineer.
 
-Please generate the complete, corrected code with proper Python syntax."""
+Please generate the complete, corrected code with proper syntax in {original_language}."""
 
             # Create a new sub-task for Requirements Engineer
             regeneration_task_id = f"{task_id}-regenerate"
@@ -1669,16 +1697,10 @@ Please generate the complete, corrected code with proper Python syntax."""
                     status_history.append(status_history_entry)
 
                     cursor = self.task_storage.connection.cursor()
-                    if self.task_storage.use_sqlite:
-                        cursor.execute(
-                            "UPDATE task_registry SET status = ?, status_history = ? WHERE task_id = ?",
-                            ("regeneration_in_progress", json.dumps(status_history), task_id)
-                        )
-                    else:
-                        cursor.execute(
-                            "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
-                            ("regeneration_in_progress", json.dumps(status_history), task_id)
-                        )
+                    cursor.execute(
+                        "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                        ("regeneration_in_progress", json.dumps(status_history), task_id)
+                    )
                     self.task_storage.connection.commit()
                     cursor.close()
                     print(f"✅ Updated task {task_id} status to regeneration_in_progress")
@@ -1732,13 +1754,22 @@ Please generate the complete, corrected code with proper Python syntax."""
                                     # Re-forward to Implementation Engineer for processing
                                     print(f"🔄 Forwarding regenerated code to Implementation Engineer", flush=True)
 
-                                    implementation_prompt = f"""A previous deployment attempt failed with a Python syntax error. The Requirements Engineer has now regenerated the code with the fix.
+                                    # Get original language from task metadata
+                                    original_language = "python"
+                                    task_obj = self.task_storage.get_task(task_id)
+                                    if task_obj:
+                                        task_metadata = task_obj.get("metadata", {}) or {}
+                                        original_language = task_metadata.get("language", "python")
+
+                                    implementation_prompt = f"""A previous deployment attempt failed with a syntax error. The Requirements Engineer has now regenerated the code with the fix.
 
 PARENT TASK: {task_description}
 
 REGENERATED CODE LOCATION: {regenerated_result['git_url']}
 
-Please implement this corrected code and prepare it for deployment. After implementation, the DevOps Engineer will redeploy the application."""
+LANGUAGE: {original_language}
+
+Please implement this corrected code in {original_language} and prepare it for deployment. After implementation, the DevOps Engineer will redeploy the application."""
 
                                     implementation_task_id = f"{task_id}-implement"
                                     self.task_storage.create_task(
@@ -1769,16 +1800,10 @@ Please implement this corrected code and prepare it for deployment. After implem
                                         try:
                                             import json
                                             cursor = self.task_storage.connection.cursor()
-                                            if self.task_storage.use_sqlite:
-                                                cursor.execute(
-                                                    "UPDATE task_registry SET status = ? WHERE task_id = ?",
-                                                    ("in_progress", task_id)
-                                                )
-                                            else:
-                                                cursor.execute(
-                                                    "UPDATE task_registry SET status = %s WHERE task_id = %s",
-                                                    ("in_progress", task_id)
-                                                )
+                                            cursor.execute(
+                                                "UPDATE task_registry SET status = %s WHERE task_id = %s",
+                                                ("in_progress", task_id)
+                                            )
                                             self.task_storage.connection.commit()
                                             cursor.close()
                                         except Exception as e:
@@ -1801,3 +1826,260 @@ Please implement this corrected code and prepare it for deployment. After implem
             print(f"❌ Error triggering code regeneration: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
+    def _trigger_rework_workflow(self, task_id: str, issue_description: str, additional_comments: str, priority: str = "medium"):
+        """
+        Trigger rework workflow when a task in 'done' status is found to have issues.
+
+        This method:
+        1. Updates the original task status to 'needs_revision'
+        2. Creates a new sub-task for Implementation Engineer (and optionally Code Reviewer)
+        3. Sets up a new workflow based on whether Code Reviewer is needed
+
+        Args:
+            task_id: Original task identifier
+            issue_description: Description of the issue(s) found
+            additional_comments: Optional additional comments from the user
+            priority: Priority for the rework task
+        """
+        try:
+            print(f"🔄 Starting rework workflow for task {task_id}", flush=True)
+            print(f"   Issue: {issue_description[:100]}...", flush=True)
+
+            # Get original task details
+            task_obj = self.task_storage.get_task(task_id)
+            if not task_obj:
+                print(f"❌ Task not found: {task_id}", flush=True)
+                return
+
+            # Get original task description and metadata
+            original_description = task_obj.get("description", "")
+            metadata = task_obj.get("metadata", {}) or {}
+
+            # Check if code review is needed based on issue type
+            # Issues related to code quality, architecture, or patterns suggest needing review
+            needs_code_review = any(keyword in issue_description.lower() for keyword in [
+                "code quality", "architecture", "design pattern", "best practices",
+                "refactor", "structure", "organization", "maintainability"
+            ])
+
+            # Create rework prompt
+            if needs_code_review:
+                rework_prompt = f"""I need you to implement corrected code for a task that was deployed but has issues.
+
+ORIGINAL TASK:
+{original_description}
+
+ISSUES FOUND:
+{issue_description}
+
+ADDITIONAL COMMENTS:
+{additional_comments}
+
+LANGUAGE: {metadata.get('language', 'python')}
+
+ORIGINAL CODE LOCATION: {metadata.get('git_url', metadata.get('result_reference', {}).get('path', 'N/A'))}
+
+IMPORTANT: Please review the original code and address all the issues mentioned above. Ensure:
+1. The code quality issues are fixed
+2. The architecture/design problems are addressed
+3. The solution follows best practices for {metadata.get('language', 'python')}
+
+After you provide the corrected code, it will go through the Code Reviewer and then be redeployed by the DevOps Engineer.
+
+Please generate the complete, corrected code with proper {metadata.get('language', 'python')} syntax."""
+            else:
+                rework_prompt = f"""I need you to implement corrected code for a task that was deployed but has issues.
+
+ORIGINAL TASK:
+{original_description}
+
+ISSUES FOUND:
+{issue_description}
+
+ADDITIONAL COMMENTS:
+{additional_comments}
+
+LANGUAGE: {metadata.get('language', 'python')}
+
+ORIGINAL CODE LOCATION: {metadata.get('git_url', metadata.get('result_reference', {}).get('path', 'N/A'))}
+
+Please analyze the original code, fix all the issues mentioned above, and generate corrected code in {metadata.get('language', 'python')}.
+
+After you provide the corrected code, it will be deployed by the DevOps Engineer.
+
+Please generate the complete, corrected code with proper {metadata.get('language', 'python')} syntax."""
+
+            # Create a new sub-task for Implementation Engineer
+            rework_task_id = f"{task_id}-rework"
+            sub_task_id = f"{task_id}-rework-sub"
+
+            # Store the rework task using store_received_task
+            # title: used for display; description: the detailed rework prompt
+            success = self.task_storage.store_received_task(
+                task_id=rework_task_id,
+                title=f"Rework for {task_id}",
+                description=rework_prompt,
+                submitter="human_operator",
+                submitter_type="human",
+                transport_channel="streamable-http",
+                assigned_to="implementation-engineer",
+                priority=priority,
+                source_server="it-lead-server",
+                target_server="implementation-engineer",
+                metadata={
+                    "parent_task_id": task_id,
+                    "rework_issue_description": issue_description,
+                    "rework_additional_comments": additional_comments,
+                    "needs_code_review": needs_code_review,
+                    "original_git_url": metadata.get("git_url"),
+                    "retry_attempt": 1,
+                    "is_rework_task": True
+                },
+                status="submitted",
+                status_reason=f"Rework requested: {issue_description[:100]}..."
+            )
+
+            if not success:
+                print(f"⚠️  Could not store rework task in database", flush=True)
+                return
+
+            print(f"✅ Created rework task: {rework_task_id}", flush=True)
+
+            # Update the original task status to reflect rework in progress
+            try:
+                import json
+                task = self.task_storage.get_task(task_id)
+                if task:
+                    status_history = task.get("status_history", [])
+                    if isinstance(status_history, str):
+                        status_history = json.loads(status_history)
+
+                    status_history_entry = {
+                        "status": "rework_in_progress",
+                        "timestamp": time.time(),
+                        "reason": f"Rework requested: {issue_description[:100]}..."
+                    }
+                    status_history.append(status_history_entry)
+
+                    cursor = self.task_storage.connection.cursor()
+                    cursor.execute(
+                        "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                        ("rework_in_progress", json.dumps(status_history), task_id)
+                    )
+                    self.task_storage.connection.commit()
+                    cursor.close()
+                    print(f"✅ Updated task {task_id} status to rework_in_progress")
+            except Exception as e:
+                print(f"⚠️  Could not update task status: {e}")
+
+            # Forward the rework task to Implementation Engineer
+            implementation_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
+            if implementation_endpoint:
+                print(f"📤 Forwarding rework task to Implementation Engineer at {implementation_endpoint}", flush=True)
+
+                forward_result = self._forward_task_to_agent(
+                    rework_task_id,
+                    rework_prompt,
+                    "implementation-engineer",
+                    "vibe_code_async",
+                    priority,
+                    None,
+                    {"rework_context": True, "parent_task_id": task_id}
+                )
+
+                if forward_result.get("success"):
+                    print(f"✅ Rework task forwarded to Implementation Engineer", flush=True)
+
+                    # Handle async result polling
+                    async_task_id = forward_result.get("response", {}).get("result", {}).get("taskId")
+                    if async_task_id:
+                        print(f"⏳ Starting polling for rework task result: {async_task_id}", flush=True)
+
+                        def rework_poller():
+                            """Background thread to poll for rework result"""
+                            try:
+                                rework_result = self._poll_async_task_result(
+                                    implementation_endpoint,
+                                    async_task_id,
+                                    max_retries=360
+                                )
+
+                                if rework_result and rework_result.get("git_url"):
+                                    print(f"✅ Reworked code available at: {rework_result['git_url']}", flush=True)
+
+                                    # Update parent task with new git_url
+                                    self.task_storage.update_task_with_git_url(
+                                        task_id,
+                                        rework_result["git_url"],
+                                        None
+                                    )
+
+                                    # If code review is needed, forward to Code Reviewer
+                                    if needs_code_review:
+                                        self._forward_to_code_reviewer(task_id, rework_result["git_url"], rework_prompt)
+                                else:
+                                    print(f"⚠️  Rework task completed but no code generated", flush=True)
+
+                            except Exception as e:
+                                print(f"❌ Error in rework poller: {e}", flush=True)
+
+                        import threading
+                        threading.Thread(target=rework_poller, daemon=True).start()
+                else:
+                    print(f"❌ Failed to forward rework task: {forward_result.get('error')}", flush=True)
+            else:
+                print(f"❌ Could not find Implementation Engineer endpoint", flush=True)
+
+        except Exception as e:
+            print(f"❌ Error triggering rework workflow: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+
+    def _forward_to_code_reviewer(self, parent_task_id: str, code_git_url: str, original_prompt: str):
+        """Forward code to Code Reviewer for review before deployment.
+
+        The Code Reviewer functionality is implemented within the IT Lead server itself,
+        so this method creates a review task that will be processed internally using
+        the review_code tool.
+        """
+        try:
+            print(f"📋 Forwarding code to Code Reviewer for task {parent_task_id}", flush=True)
+
+            code_review_prompt = f"""Please review the following code for quality, architecture, and best practices.
+
+PARENT TASK:
+{original_prompt}
+
+CODE LOCATION: {code_git_url}
+
+Please analyze:
+1. Code quality and readability
+2. Architecture and design patterns
+3. Best practices and conventions
+4. Potential bugs or issues
+5. Performance considerations
+
+Return your findings and any recommended improvements."""
+
+            # Create review task in the IT Lead server's task storage
+            # This task will be processed internally by the IT Lead's review_code tool
+            review_task_id = f"{parent_task_id}-review"
+            self.task_storage.create_task(
+                task_id=review_task_id,
+                task_description=code_review_prompt,
+                priority="high",
+                assigned_to="code-reviewer",
+                metadata={
+                    "parent_task_id": parent_task_id,
+                    "review_type": "code_quality",
+                    "code_location": code_git_url,
+                    "tool_call": "review_code",  # Tags it for internal processing by IT Lead
+                    "is_code_review": True
+                }
+            )
+
+            print(f"✅ Created code review task {review_task_id} for parent task {parent_task_id}", flush=True)
+
+        except Exception as e:
+            print(f"❌ Error forwarding to Code Reviewer: {e}", flush=True)

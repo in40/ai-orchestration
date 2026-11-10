@@ -105,9 +105,17 @@ class McpRegistryClient:
         services = self.list_services()
 
         agent_name_lower = agent_name.lower()
-        
-        # Normalize agent name for matching (remove common suffixes/prefixes)
-        agent_name_normalized = agent_name_lower.replace("-engineer", "").replace("_", "-").strip("-")
+
+        # Normalize agent name for matching: spaces → hyphens, underscores → hyphens
+        agent_name_normalized = agent_name_lower.replace(" ", "-").replace("_", "-")
+
+        # Remove common suffixes for core name matching
+        agent_name_core = agent_name_normalized.replace("-engineer", "").replace("-server", "").strip("-")
+
+        # Handle singular/plural mismatch (e.g., "requirements" vs "requirement")
+        agent_name_core_singular = agent_name_core
+        if agent_name_core.endswith("s") and not agent_name_core.endswith("ss"):
+            agent_name_core_singular = agent_name_core[:-1]
 
         for service in services:
             service_name = service.get("name", "").lower()
@@ -120,16 +128,23 @@ class McpRegistryClient:
                 if endpoint:
                     print(f"✅ Found endpoint for {agent_name} (strategy 1): {endpoint}")
                     return endpoint
-            
-            # Strategy 2: Match normalized name (e.g., "devops" matches "devops-release-engineer")
+
+            # Strategy 2: Match full normalized name (e.g., "requirements-engineer" in service name)
             if agent_name_normalized and agent_name_normalized in service_name:
                 endpoint = service.get("endpoint")
                 if endpoint:
                     print(f"✅ Found endpoint for {agent_name} (strategy 2): {endpoint}")
                     return endpoint
-            
-            # Strategy 3: Match against service ID
-            if agent_name_lower in service_id or agent_name_normalized in service_id:
+
+            # Strategy 2.5: Match core name without trailing 's' (e.g., "requirements" matches "requirement-engineer")
+            if agent_name_core_singular and agent_name_core_singular in service_name:
+                endpoint = service.get("endpoint")
+                if endpoint:
+                    print(f"✅ Found endpoint for {agent_name} (strategy 2.5, singular): {endpoint}")
+                    return endpoint
+
+            # Strategy 3: Match core name against service ID
+            if agent_name_lower in service_id or agent_name_core in service_id:
                 endpoint = service.get("endpoint")
                 if endpoint:
                     print(f"✅ Found endpoint for {agent_name} (strategy 3): {endpoint}")
