@@ -531,6 +531,33 @@ def git_push_llm_response(
         }
 
 
+def validate_llm_artifact(llm_response: str) -> None:
+    """Raise ValueError if the response is a truncated envelope or invalid code."""
+    if not llm_response or len(llm_response.strip()) < 50:
+        raise ValueError("invalid_artifact: empty or trivial response")
+    response_data = _parse_llm_json_response(llm_response)
+    if response_data and "code" in response_data:
+        code = response_data["code"]
+        lang = str(response_data.get("language", "")).lower()
+    elif llm_response.lstrip().startswith("{"):
+        raise ValueError("invalid_artifact: JSON envelope failed to parse (truncated?)")
+    else:
+        code = llm_response
+        lang = ""
+    if not code or len(code.strip()) < 100:
+        raise ValueError("invalid_artifact: extracted code too short")
+    stripped = code.lstrip().lower()
+    if stripped.startswith(("<!doctype html", "<html")):
+        if "</html>" not in stripped:
+            raise ValueError("invalid_artifact: HTML missing closing tag (truncated)")
+    elif "javascript" not in lang and "js" not in lang.split(",")[0]:
+        import ast
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            raise ValueError(f"invalid_artifact: python syntax error line {e.lineno}: {e.msg}")
+
+
 def _parse_llm_json_response(response: str) -> Optional[Dict[str, Any]]:
     """
     Parse LLM response as JSON.
@@ -595,7 +622,7 @@ def _parse_llm_json_response(response: str) -> Optional[Dict[str, Any]]:
 
 import requests
 
-def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 14400) -> str:
+def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 1800) -> str:
     """
     Call LM Studio's OpenAI-compatible endpoint using synchronous requests.
 
@@ -607,7 +634,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
         server_handlers: Optional server handlers for system prompt
         max_retries: Maximum number of retry attempts (default: 1 - no retry, let LLM finish)
         retry_delay: Delay between retries in seconds (default: 10)
-        timeout: Request timeout in seconds (default: 14400 = 240 minutes for extensive tasks)
+        timeout: Request timeout in seconds per LLM call (default: 1800)
 
     Returns:
         LLM response content string
@@ -628,24 +655,40 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                 break
 
     last_error = None
+    max_continuations = 3
 
     for attempt in range(max_retries):
         try:
-            response = requests.post(
-                f"{settings.llm_base_url}/chat/completions",
-                json={
-                    "model": settings.llm_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": vibe / 10,  # 0.1 to 1.0
-                    "max_tokens": 16384
-                },
-                timeout=timeout  # Use the timeout parameter (default: 240 minutes)
-            )
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+            full_content = ""
+            for cont in range(max_continuations + 1):
+                response = requests.post(
+                    f"{settings.llm_base_url}/chat/completions",
+                    json={
+                        "model": settings.llm_model,
+                        "messages": messages,
+                        "temperature": vibe / 10,  # 0.1 to 1.0
+                        "max_tokens": 16384
+                    },
+                    timeout=timeout
+                )
+                response.raise_for_status()
+                choice = response.json()["choices"][0]
+                piece = choice["message"].get("content") or ""
+                full_content += piece
+                if choice.get("finish_reason") != "length":
+                    return full_content
+                print(f"⚠️ LLM output truncated at token cap (continuation {cont + 1}/{max_continuations})", flush=True)
+                if cont == max_continuations:
+                    raise RuntimeError(
+                        f"truncated_output: LLM hit token cap after {max_continuations} continuations "
+                        f"({len(full_content)} chars)")
+                messages.append({"role": "assistant", "content": piece})
+                messages.append({"role": "user", "content":
+                    "Continue exactly from where your output stopped. Output only the continuation, no preamble."})
         except requests.exceptions.RequestException as e:
             last_error = e
             if attempt < max_retries - 1:
@@ -925,6 +968,7 @@ def register_vibe_coding_tool(server_handlers):
                         prompt = create_vibe_code_prompt(input_args)
                         print(f"DEBUG: Calling LLM for async task {task_id}")
                         llm_response = call_llm_sync(prompt, input_args.get("vibe_level", 5), server_handlers)
+                        validate_llm_artifact(llm_response)
                         print(f"DEBUG: LLM response received for task {task_id}, calling git_push_llm_response")
                         # Push to Git and return Git URL
                         result = git_push_llm_response(task_id, llm_response, input_args.get("language", "python"))
