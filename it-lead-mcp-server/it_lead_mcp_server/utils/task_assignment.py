@@ -146,7 +146,8 @@ class TaskAssignmentManager:
             raw = self.llm_client.call_llm(
                 f"""Decompose this deliverable into the exact list of files to generate.
 Respond with ONLY valid JSON: {{"file_manifest": [{{"path": "relative/path", "spec": "what this file contains, its exports, under 80 words"}}]}}
-List every file (entry module, helpers, README.md, requirements.txt as needed). No prose.
+List every file (entry module, helpers, README.md, requirements.txt as needed).
+Keep each file small: under 150 lines — split large modules into more files. No prose.
 
 Deliverable task: {task_description}""",
                 temperature=0.2, timeout=240)
@@ -178,20 +179,26 @@ Deliverable task: {task_description}""",
 
         def gen_one(entry):
             path = entry.get("path")
-            try:
-                r = requests.post(coder_endpoint, json={
-                    "jsonrpc": "2.0", "id": f"gen-{task_id}-{path}",
-                    "method": "tools/call",
-                    "params": {"name": "generate_file", "arguments": {
-                        "task_id": task_id, "path": path,
-                        "spec": entry.get("spec", ""), "manifest": manifest_str,
-                        "project_description": task_description}}}, timeout=900)
-                out = r.json().get("result", {})
-                if isinstance(out, dict) and isinstance(out.get("result"), dict):
-                    out = out["result"]
-                return path, (out if isinstance(out, dict) else {})
-            except Exception as e:
-                return path, {"error": str(e)}
+            last = {}
+            for attempt in range(2):  # one retry: generation variance often clears transient truncation
+                try:
+                    r = requests.post(coder_endpoint, json={
+                        "jsonrpc": "2.0", "id": f"gen-{task_id}-{path}-{attempt}",
+                        "method": "tools/call",
+                        "params": {"name": "generate_file", "arguments": {
+                            "task_id": task_id, "path": path,
+                            "spec": entry.get("spec", ""), "manifest": manifest_str,
+                            "project_description": task_description}}}, timeout=900)
+                    out = r.json().get("result", {})
+                    if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                        out = out["result"]
+                    out = out if isinstance(out, dict) else {}
+                    if out.get("success"):
+                        return path, out
+                    last = out
+                except Exception as e:
+                    last = {"error": str(e)}
+            return path, last
 
         results = {}
         with ThreadPoolExecutor(max_workers=3) as ex:
