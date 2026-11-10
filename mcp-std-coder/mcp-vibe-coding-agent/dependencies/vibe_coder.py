@@ -419,9 +419,24 @@ def git_push_llm_response(
         result_dir = local_repo_path / "results" / task_id
         result_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"result{_resolve_extension(language, code)}"
-        filepath = result_dir / filename
-        filepath.write_text(code)
+        files_written = []
+        if response_data and isinstance(response_data.get("files"), list) and response_data["files"]:
+            for f in response_data["files"]:
+                rel = os.path.normpath(str(f.get("path", "")))
+                if not rel or rel.startswith("..") or os.path.isabs(rel):
+                    continue
+                dest = result_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(str(f.get("content", "")))
+                files_written.append(rel)
+            filename = files_written[0] if files_written else "result.txt"
+            filepath = result_dir / filename
+            code = str(response_data["files"][0].get("content", ""))
+        else:
+            filename = f"result{_resolve_extension(language, code)}"
+            filepath = result_dir / filename
+            filepath.write_text(code)
+            files_written = [filename]
 
         # Create comprehensive JSON response file
         json_response = {
@@ -454,10 +469,9 @@ def git_push_llm_response(
         env["GIT_COMMITTER_NAME"] = "mcp-agent"
         env["GIT_COMMITTER_EMAIL"] = "mcp-agent@localhost"
 
-        # Stage the files
+        # Stage the files (whole per-task dir: covers single file, multi-file tree, response.json)
         subprocess.run(
-            ["git", "add", str(filepath.relative_to(local_repo_path)), 
-             str(json_filepath.relative_to(local_repo_path))],
+            ["git", "add", str(result_dir.relative_to(local_repo_path))],
             cwd=str(local_repo_path),
             env=env,
             capture_output=True,
@@ -539,6 +553,22 @@ def validate_llm_artifact(llm_response: str) -> None:
     if response_data and "code" in response_data:
         code = response_data["code"]
         lang = str(response_data.get("language", "")).lower()
+    elif response_data and isinstance(response_data.get("files"), list) and response_data["files"]:
+        import ast as _ast
+        errors = []
+        for f in response_data["files"]:
+            c = str(f.get("content", ""))
+            p = str(f.get("path", ""))
+            if p.endswith(".py"):
+                try:
+                    _ast.parse(c)
+                except SyntaxError as e:
+                    errors.append(f"{p} line {e.lineno}: {e.msg}")
+            elif p.endswith(".html") and "</html>" not in c.lower():
+                errors.append(f"{p}: missing closing tag")
+        if errors:
+            raise ValueError("invalid_artifact: " + "; ".join(errors))
+        return
     elif llm_response.lstrip().startswith("{"):
         raise ValueError("invalid_artifact: JSON envelope failed to parse (truncated?)")
     else:
@@ -733,6 +763,12 @@ You MUST respond with a valid JSON object with the following structure:
     "vibe_check": "A fun comment showing creativity level {vibe_level}"
 }}
 ```
+
+MULTI-FILE DELIVERABLES: if the task requires more than one file (e.g. a project
+template, library with docs, app with config), replace "code"/"filename" with:
+"files": [{{"path": "relative/path.ext", "content": "file contents"}}, ...]
+Paths must be relative (no leading /, no ..). Include a README.md with run
+instructions. The first file is treated as the primary artifact.
 
 ## CRITICAL RULES
 

@@ -588,6 +588,17 @@ class DevOpsReleaseEngineerHandlers:
                 git_workdir
             ], check=True, capture_output=True, timeout=30)
             
+            # Multi-file artifact tree (coder 'files' envelope): anything beyond
+            # the single-file result.* / response.json convention
+            result_root = os.path.join(git_workdir, "results", result_uuid)
+            tree_entries = [f for f in os.listdir(result_root)
+                            if f not in ("result.py", "result.json", "result.html", "response.json")]
+            if tree_entries:
+                deployment_logger.info(f"Multi-file artifact detected: {tree_entries}")
+                return self._deploy_multi_file(task_id, result_root, deploy_dir, 5000,
+                                               deployment_logger, git_url, git_workdir,
+                                               memory_limit, cpu_limit)
+
             # Copy result file to deploy directory (could be .py, .json, or .html)
             # Try result.py first, then result.json, then result.html
             result_file_py = os.path.join(git_workdir, "results", result_uuid, "result.py")
@@ -952,6 +963,76 @@ CMD ["python", "result.py"]
             deployment_logger.error(f"Unexpected deployment error: {error_msg}")
             self._update_task_status_on_deployment_failure(task_id, error_msg)
             return {"error": error_msg}
+
+    def _deploy_multi_file(self, task_id, result_root, deploy_dir, container_port,
+                           deployment_logger, git_url, git_workdir, memory_limit, cpu_limit):
+        """Deploy a multi-file artifact tree: static site if index.html, else python entry."""
+        import subprocess
+        import shutil
+        os.makedirs(deploy_dir, exist_ok=True)
+        for item in os.listdir(result_root):
+            if item == "response.json":
+                continue
+            src = os.path.join(result_root, item)
+            dst = os.path.join(deploy_dir, item)
+            shutil.copytree(src, dst) if os.path.isdir(src) else shutil.copy(src, dst)
+
+        all_files = []
+        for root, _, files in os.walk(deploy_dir):
+            all_files += [os.path.relpath(os.path.join(root, f), deploy_dir) for f in files]
+
+        if "index.html" in all_files:
+            dockerfile = f"""FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+EXPOSE {container_port}
+CMD ["python", "-m", "http.server", "{container_port}"]
+"""
+        else:
+            entry = next((f for f in ("main.py", "app.py", "server.py") if f in all_files),
+                         next((f for f in all_files if f.endswith(".py")), None))
+            if not entry:
+                return {"error": "multi-file artifact has no index.html and no python entry point"}
+            pip_line = ("RUN pip install -r requirements.txt\n"
+                        if "requirements.txt" in all_files else "")
+            entry_dir = os.path.dirname(entry)
+            workdir_line = f"WORKDIR /app/{entry_dir}\n" if entry_dir else ""
+            dockerfile = f"""FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+{workdir_line}{pip_line}EXPOSE {container_port}
+CMD ["python", "{os.path.basename(entry)}"]
+"""
+        with open(os.path.join(deploy_dir, "Dockerfile"), 'w') as f:
+            f.write(dockerfile)
+        host_port = self._find_available_port()
+        deployment_host = os.environ.get("DEPLOYMENT_HOST", "127.0.0.1")
+        image_name = f"deploy-{task_id}"
+        container_name = f"deploy-{task_id}"
+        subprocess.run(["docker", "build", "-t", image_name, deploy_dir],
+                       check=True, capture_output=True, timeout=300)
+        subprocess.run([
+            "docker", "run", "-d",
+            "--name", container_name,
+            "-p", f"{host_port}:{container_port}",
+            "--memory", memory_limit,
+            "--cpus", cpu_limit,
+            "--restart", "unless-stopped",
+            image_name
+        ], check=True, capture_output=True, timeout=30)
+        deployment_url = f"http://{deployment_host}:{host_port}/"
+        self._store_deployment(task_id, container_name, container_port, host_port,
+                               deployment_url, git_url, image_name, memory_limit, cpu_limit)
+        subprocess.run(["rm", "-rf", git_workdir], check=True)
+        subprocess.run(["rm", "-rf", deploy_dir], check=True)
+        self._update_task_with_deployment_url(task_id, git_url, deployment_url)
+        deployment_logger.info(f"Multi-file app deployed at {deployment_url}")
+        return {
+            "success": True, "task_id": task_id, "container_id": container_name,
+            "host_port": host_port, "deployment_url": deployment_url,
+            "files": all_files,
+            "message": f"Multi-file application deployed at {deployment_url}"
+        }
 
     def _deploy_static_html(self, task_id, deploy_dir, container_port, html_content,
                             deployment_logger, git_url, git_workdir, memory_limit, cpu_limit):

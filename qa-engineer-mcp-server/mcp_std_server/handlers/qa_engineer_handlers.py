@@ -92,6 +92,13 @@ class QaEngineerServerHandlers(McpServerHandlers):
             lang = {"result.py": "python", "result.js": "javascript", "result.html": "html"}[fname]
             try:
                 env = json.loads(raw)
+                if isinstance(env, dict) and env.get("files"):
+                    f0 = env["files"][0]
+                    p = str(f0.get("path", ""))
+                    lang = ("python" if p.endswith(".py") else
+                            "html" if p.endswith((".html", ".htm")) else
+                            "javascript" if p.endswith(".js") else lang)
+                    return str(f0.get("content", "")), lang, None
                 if isinstance(env, dict) and "code" in env:
                     lang = str(env.get("language", lang)).lower().split(",")[0].strip()
                     return env["code"], lang, None
