@@ -188,7 +188,7 @@ Deliverable task: {task_description}""",
                         "params": {"name": "generate_file", "arguments": {
                             "task_id": task_id, "path": path,
                             "spec": entry.get("spec", ""), "manifest": manifest_str,
-                            "project_description": task_description}}}, timeout=900)
+                            "project_description": task_description}}}, timeout=3600)
                     out = r.json().get("result", {})
                     if isinstance(out, dict) and isinstance(out.get("result"), dict):
                         out = out["result"]

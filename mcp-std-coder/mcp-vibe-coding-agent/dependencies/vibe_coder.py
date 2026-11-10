@@ -700,7 +700,7 @@ def _parse_llm_json_response(response: str) -> Optional[Dict[str, Any]]:
 
 import requests
 
-def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 1800) -> str:
+def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 3600) -> str:
     """
     Call LM Studio's OpenAI-compatible endpoint using synchronous requests.
 
@@ -749,7 +749,8 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                         "model": settings.llm_model,
                         "messages": messages,
                         "temperature": vibe / 10,  # 0.1 to 1.0
-                        "max_tokens": 16384
+                        "max_tokens": 16384,
+                        "thinking": {"type": "disabled"}
                     },
                     timeout=timeout
                 )
