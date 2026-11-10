@@ -106,6 +106,13 @@ class QaEngineerServerHandlers(McpServerHandlers):
                 if raw.lstrip().startswith("{"):
                     return None, None, f"truncated envelope: {raw[:60]}... ({e.msg} line {e.lineno})"
             return raw, lang, None
+        # Tree of files (fan-out flow): primary = first code file
+        entries = sorted(os.listdir(result_dir))
+        code_files = [f for f in entries if f.endswith((".py", ".js", ".html", ".htm"))]
+        if code_files:
+            primary = code_files[0]
+            lang = {"py": "python", "js": "javascript"}.get(primary.rsplit(".", 1)[-1], "html")
+            return open(os.path.join(result_dir, primary)).read(), lang, None
         return None, None, "no result.py/result.js/result.html found"
 
     def _validate_artifact(self, arguments: Dict[str, Any]) -> Dict[str, Any]:

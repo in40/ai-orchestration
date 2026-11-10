@@ -130,6 +130,59 @@ class TaskAssignmentManager:
             bool(results.get("smoke_run", {}).get("passed"))
         return passed, results
 
+    def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list):
+        """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree."""
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            coder_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
+        except Exception as e:
+            coder_endpoint = None
+            print(f"⚠️ fan-out endpoint lookup failed: {e}")
+        if not coder_endpoint:
+            self._update_task_status(task_id, "failed", "implementation-engineer unavailable for fan-out")
+            return
+        coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
+        manifest_str = "\n".join(f"- {f.get('path')}: {f.get('spec', '')}" for f in file_manifest)
+
+        def gen_one(entry):
+            path = entry.get("path")
+            try:
+                r = requests.post(coder_endpoint, json={
+                    "jsonrpc": "2.0", "id": f"gen-{task_id}-{path}",
+                    "method": "tools/call",
+                    "params": {"name": "generate_file", "arguments": {
+                        "task_id": task_id, "path": path,
+                        "spec": entry.get("spec", ""), "manifest": manifest_str,
+                        "project_description": task_description}}}, timeout=900)
+                out = r.json().get("result", {})
+                if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                    out = out["result"]
+                return path, (out if isinstance(out, dict) else {})
+            except Exception as e:
+                return path, {"error": str(e)}
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            for path, out in ex.map(gen_one, file_manifest):
+                results[path] = out
+                print(f"🧩 fan-out {task_id} {path}: "
+                      f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+        failed = [p for p, o in results.items() if not o.get("success")]
+        if failed:
+            self._update_task_status(task_id, "failed", f"generate_file failed for: {failed}")
+            return
+        git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
+                        if o.get("git_url")), "")
+        qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id)
+        if not qa_ok:
+            self._update_task_status(task_id, "needs_revision",
+                                     f"QA gate failed: {json.dumps(qa_info)[:400]}")
+            return
+        if self.task_storage and git_url:
+            self.task_storage.update_task_with_git_url(task_id, git_url)
+        self._update_task_status(task_id, "done",
+                                 f"Multi-file deliverable: {len(results)} files, QA passed")
+
     def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 7200) -> Optional[Dict[str, Any]]:
         """
         Poll the agent's tasks/result endpoint to get async task result.
@@ -316,6 +369,21 @@ class TaskAssignmentManager:
             # Try to get primary_agent (with fallback to recommended_agent)
             primary_agent = llm_plan.get("primary_agent") or llm_plan.get("recommended_agent")
             print(f"   primary_agent from LLM: {primary_agent}")
+
+            # Fan-out flow: multi-file deliverable -> one generate_file call per file
+            file_manifest = llm_plan.get("file_manifest") if isinstance(llm_plan, dict) else None
+            if file_manifest:
+                print(f"🧩 Multi-file deliverable: {len(file_manifest)} files planned -> fan-out")
+                if self.task_storage:
+                    self._update_task_status(task_id, "in_progress",
+                                             f"Multi-file plan: {len(file_manifest)} files")
+                threading.Thread(target=self._execute_multifile_plan,
+                                 args=(task_id, task_description, file_manifest),
+                                 daemon=True).start()
+                result["status"] = "in_progress"
+                result["message"] = f"Multi-file plan: {len(file_manifest)} files generated in parallel"
+                result["forwarded_to_agent"] = True
+                return result
 
             # Extract detected language from LLM plan
             detected_language = llm_plan.get("language")

@@ -309,8 +309,14 @@ Respond in valid JSON format:
     "tools": {{"agent1": "tool-name"}},
     "reasoning": "Explanation including workflow sequence reasoning",
     "priority": "low|medium|high|critical",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "file_manifest": [{{"path": "relative/file.ext", "spec": "what this file must contain"}}]
 }}
+
+file_manifest is REQUIRED when the deliverable spans multiple files (template,
+framework, SDK, library, multi-service project): list EVERY file to produce with a
+self-contained spec per file (imports, exported names, behavior). Keep each spec
+under 80 words. Omit file_manifest (or []) for single-file deliverables.
 """
 
     def _build_agents_section_from_discovery(self, agents_with_tools: List[Dict[str, Any]]) -> str:
