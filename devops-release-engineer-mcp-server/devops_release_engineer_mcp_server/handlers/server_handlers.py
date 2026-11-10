@@ -547,7 +547,7 @@ class DevOpsReleaseEngineerHandlers:
 
             # Extract UUID from git URL
             # Format: ssh://sorokin@192.168.51.187/home/sorokin/mcp-results/tree/main/results/<uuid>/result.py
-            uuid_match = re.search(r'/results/([^/]+)/', git_url)
+            uuid_match = re.search(r'/results/([^/]+)(?:/|$)', git_url)
             if not uuid_match:
                 error_msg = f"Could not extract UUID from git URL: {git_url}"
                 deployment_logger.error(error_msg)
@@ -969,6 +969,7 @@ CMD ["python", "result.py"]
         """Deploy a multi-file artifact tree: static site if index.html, else python entry."""
         import subprocess
         import shutil
+        shutil.rmtree(deploy_dir, ignore_errors=True)
         os.makedirs(deploy_dir, exist_ok=True)
         for item in os.listdir(result_root):
             if item == "response.json":
@@ -989,18 +990,38 @@ EXPOSE {container_port}
 CMD ["python", "-m", "http.server", "{container_port}"]
 """
         else:
-            entry = next((f for f in ("main.py", "app.py", "server.py") if f in all_files),
-                         next((f for f in all_files if f.endswith(".py")), None))
-            if not entry:
-                return {"error": "multi-file artifact has no index.html and no python entry point"}
-            pip_line = ("RUN pip install -r requirements.txt\n"
-                        if "requirements.txt" in all_files else "")
-            entry_dir = os.path.dirname(entry)
-            workdir_line = f"WORKDIR /app/{entry_dir}\n" if entry_dir else ""
-            dockerfile = f"""FROM python:3.11-slim
+            main_pkg = next((f for f in all_files if f.endswith("__main__.py")), None)
+            if main_pkg:
+                pkg_dir = os.path.dirname(main_pkg)      # e.g. src/mcp_service
+                pkg_name = os.path.basename(pkg_dir)     # e.g. mcp_service
+                parent = os.path.dirname(pkg_dir)        # e.g. src or ""
+                work_root = f"/app/{parent}" if parent else "/app"
+                pip_line = ("RUN pip install -r /app/requirements.txt\n"
+                            if "requirements.txt" in all_files else "")
+                dockerfile = f"""FROM python:3.11-slim
 WORKDIR /app
 COPY . .
-{workdir_line}{pip_line}EXPOSE {container_port}
+{pip_line}WORKDIR {work_root}
+EXPOSE {container_port}
+CMD ["python", "-m", "{pkg_name}"]
+"""
+                entry = main_pkg
+            else:
+                entry = next((f for f in all_files
+                              if os.path.basename(f) in ("main.py", "app.py", "server.py")
+                              and not f.endswith("__init__.py")),
+                             next((f for f in all_files if f.endswith(".py")
+                                   and not f.endswith("__init__.py")), None))
+                if not entry:
+                    return {"error": "multi-file artifact has no index.html and no python entry point"}
+                pip_line = ("RUN pip install -r /app/requirements.txt\n"
+                            if "requirements.txt" in all_files else "")
+                entry_dir = os.path.dirname(entry)
+                workdir_line = f"WORKDIR /app/{entry_dir}\n" if entry_dir else ""
+                dockerfile = f"""FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+{pip_line}{workdir_line}EXPOSE {container_port}
 CMD ["python", "{os.path.basename(entry)}"]
 """
         with open(os.path.join(deploy_dir, "Dockerfile"), 'w') as f:
