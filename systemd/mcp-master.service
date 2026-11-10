@@ -1,24 +1,24 @@
 [Unit]
 Description=MCP Master Orchestration Service - Starts all MCP servers
-Documentation=https://github.com/your-org/mcp-system
-After=network.target postgresql.service
+Documentation=https://github.com/in40/ai-orchestration
+After=network.target postgresql.service mcp-registry.service mcp-implementation-engineer.service mcp-requirements-engineer.service mcp-it-lead.service mcp-team-management.service mcp-devops-release-engineer.service mcp-web-ui-frontend.service
 Wants=postgresql.service
-# Dependencies on individual services (they will be started together)
+# Reverse dependencies: stopping mcp-master stops all of these.
+# mcp-web-ui-backend is intentionally excluded: mcp-web-ui-watchdog owns port 8000.
 Requires=mcp-registry.service
-After=mcp-registry.service
+Requires=mcp-implementation-engineer.service
+Requires=mcp-requirements-engineer.service
+Requires=mcp-it-lead.service
+Requires=mcp-team-management.service
+Requires=mcp-devops-release-engineer.service
+Requires=mcp-web-ui-frontend.service
 
 [Service]
 Type=oneshot
 User=root
 RemainAfterExit=yes
-
-# This service acts as a master orchestrator that pulls in all MCP services
-# The actual work is done by the individual service units
 ExecStart=/bin/true
-ExecStop=/usr/bin/systemctl stop mcp-web-ui-frontend.service mcp-web-ui-backend.service mcp-devops-release-engineer.service mcp-team-management.service mcp-it-lead.service mcp-requirements-engineer.service mcp-implementation-engineer.service mcp-registry.service
-
-# Install all child services
-# Note: Use 'systemctl enable mcp-master' to enable all services
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
@@ -28,5 +28,4 @@ Also=mcp-requirements-engineer.service
 Also=mcp-it-lead.service
 Also=mcp-team-management.service
 Also=mcp-devops-release-engineer.service
-Also=mcp-web-ui-backend.service
 Also=mcp-web-ui-frontend.service

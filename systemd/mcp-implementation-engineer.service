@@ -52,8 +52,6 @@ CPUQuota=100%
 
 # Security hardening
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
 ReadWritePaths=/tmp /root/qwen/base/logs
 
 [Install]
