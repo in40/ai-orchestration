@@ -48,6 +48,16 @@ class LLMTaskPlanner:
             prompt = self._build_conflict_prompt(task_description, routing_context, agents_with_tools)
         else:
             prompt = self._build_general_prompt(task_description, routing_context, agents_with_tools)
+
+        prompt += """
+
+## Multi-file deliverables
+If the deliverable spans multiple files (template, framework, SDK, library,
+multi-service project), you MUST also emit:
+"file_manifest": [{"path": "relative/file.ext", "spec": "what this file contains and exports, under 80 words"}]
+listing EVERY file to produce (entry module, helpers, README.md, requirements.txt),
+each under ~150 lines - split large modules into more files.
+Omit file_manifest (or []) for single-file deliverables."""
         
         # Call LLM
         try:
@@ -423,6 +433,11 @@ under 80 words. Omit file_manifest (or []) for single-file deliverables.
                 # Add metadata
                 result["planning_method"] = "llm"
                 result["task_description"] = task_description
+                import re as _re
+                if not result.get("file_manifest") and _re.search(
+                        r"(?i)template|framework|sdk|library|multi-?file|README|requirements\.txt|service skeleton",
+                        task_description):
+                    result["manifest_needed"] = True
                 result["timestamp"] = time.time()
 
                 return result

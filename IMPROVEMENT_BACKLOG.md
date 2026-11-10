@@ -5,6 +5,19 @@ Sequenced: each phase unblocks the next. P0 items are prerequisites for trusting
 
 ## Status 2026-11-10: P0 ✅ P1 ✅ P2 ✅ P3.1 ✅ | P3.2 deferred (QA gate covers correctness; review adds LLM cost, revisit when false-passes appear) | P4 open
 
+## P5 — Planner/manifest hardening (2026-11-10, from task-1794332820841) ✅
+- P5.1 manifest derivation: JSONL protocol (one {path,spec} per line), line-level
+  error tolerance, 1 retry, legacy whole-JSON fallback — malformed JSON no longer
+  kills fan-out
+- P5.2 planner prompts: file_manifest instruction appended to ALL planning prompts
+  (was only in general prompt); plan flagged manifest_needed when keywords match
+  but LLM omitted it
+- P5.3 workflow order: first forward honors workflow_sequence[0] when it is
+  requirements-engineer (analysis step no longer skipped by the coding->impl rule);
+  "ALL coding tasks MUST go to implementation-engineer" scoped to execution, not ordering
+- Open: pass requirements-engineer spec output as context into coder call (handoff wiring)
+- Open: E2E template task through fan-out with new manifest robustness
+
 
 ## P0 — Stop silent garbage (do first, ~half day)
 

@@ -130,6 +130,33 @@ class TaskAssignmentManager:
             bool(results.get("smoke_run", {}).get("passed"))
         return passed, results
 
+    @staticmethod
+    def _parse_manifest_lines(raw: str):
+        """Parse JSONL manifest (one {path,spec} object per line); tolerate bad lines."""
+        out = []
+        for line in (raw or "").splitlines():
+            line = line.strip().rstrip(",")
+            if not line.startswith("{"):
+                continue
+            try:
+                e = json.loads(line)
+                if isinstance(e, dict) and e.get("path") and e.get("spec") is not None:
+                    out.append({"path": str(e["path"]), "spec": str(e["spec"])})
+            except json.JSONDecodeError:
+                continue
+        if out:
+            return out
+        try:  # legacy whole-JSON fallback
+            s, t = (raw or "").find("{"), (raw or "").rfind("}")
+            if s != -1 and t > s:
+                p = json.loads(raw[s:t + 1])
+                m = p.get("file_manifest")
+                if isinstance(m, list) and m and all(isinstance(x, dict) and x.get("path") for x in m):
+                    return m
+        except Exception:
+            pass
+        return None
+
     def _ensure_file_manifest(self, task_description: str, llm_plan: dict):
         """Return file_manifest from the plan, or derive one with a dedicated LLM
         call when the task is clearly multi-file but the planner omitted it."""
@@ -142,25 +169,23 @@ class TaskAssignmentManager:
         if not self.llm_client:
             return None
         print("🧩 Planner omitted file_manifest for multi-file task -> dedicated manifest call")
-        try:
-            raw = self.llm_client.call_llm(
-                f"""Decompose this deliverable into the exact list of files to generate.
-Respond with ONLY valid JSON: {{"file_manifest": [{{"path": "relative/path", "spec": "what this file contains, its exports, under 80 words"}}]}}
-List every file (entry module, helpers, README.md, requirements.txt as needed).
-Keep each file small: under 150 lines — split large modules into more files. No prose.
-
-Deliverable task: {task_description}""",
-                temperature=0.2, timeout=240)
-            start, end = raw.find("{"), raw.rfind("}")
-            if start == -1 or end == -1:
-                return None
-            parsed = json.loads(raw[start:end + 1])
-            m = parsed.get("file_manifest")
-            if isinstance(m, list) and m and all(isinstance(e, dict) and e.get("path") for e in m):
-                print(f"🧩 Derived manifest: {[e['path'] for e in m]}")
-                return m
-        except Exception as e:
-            print(f"⚠️ manifest derivation failed: {e}")
+        base = ("Decompose this deliverable into the files to generate.\n"
+                "Output JSONL: one JSON object per line, no array wrapper, no prose, no code fences.\n"
+                'Each line: {"path": "relative/path", "spec": "plain text, no quotes, no newlines, under 80 words"}\n'
+                "List every file (entry module, helpers, README.md, requirements.txt as needed).\n"
+                "Keep each file small: under 150 lines - split large modules into more files.\n\n"
+                "Deliverable task: " + task_description)
+        for attempt in range(2):
+            try:
+                prompt = base if attempt == 0 else base + "\n\nIMPORTANT: your previous output was invalid. Emit ONLY valid JSONL lines."
+                raw = self.llm_client.call_llm(prompt, temperature=0.2, timeout=240)
+                m = self._parse_manifest_lines(raw)
+                if m:
+                    print(f"🧩 Derived manifest: {[e['path'] for e in m]}")
+                    return m
+                print(f"⚠️ manifest derivation attempt {attempt + 1}: no valid lines")
+            except Exception as e:
+                print(f"⚠️ manifest derivation failed (attempt {attempt + 1}): {e}")
         return None
 
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list):
@@ -410,6 +435,15 @@ Deliverable task: {task_description}""",
             print(f"   primary_agent from LLM: {primary_agent}")
 
             # Fan-out flow: multi-file deliverable -> one generate_file call per file
+            # Honor workflow order: if the plan starts with an analysis step
+            # (requirements-engineer), forward there first — the "coding belongs
+            # to implementation-engineer" rule scopes to execution, not ordering.
+            wf_seq = (llm_plan.get("workflow_sequence") or []) if isinstance(llm_plan, dict) else []
+            if wf_seq and wf_seq[0] == "requirements-engineer" and primary_agent != "requirements-engineer":
+                print(f"↪️ Honoring workflow order: starting with requirements-engineer (was {primary_agent})")
+                primary_agent = "requirements-engineer"
+                tool = llm_plan.get("tools", {}).get("requirements-engineer", "analyze_requirements")
+
             file_manifest = self._ensure_file_manifest(task_description, llm_plan)
             if file_manifest:
                 print(f"🧩 Multi-file deliverable: {len(file_manifest)} files planned -> fan-out")
