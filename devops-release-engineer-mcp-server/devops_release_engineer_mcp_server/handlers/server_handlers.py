@@ -547,7 +547,7 @@ class DevOpsReleaseEngineerHandlers:
 
             # Extract UUID from git URL
             # Format: ssh://sorokin@192.168.51.187/home/sorokin/mcp-results/tree/main/results/<uuid>/result.py
-            uuid_match = re.search(r'/results/([a-f0-9-]+)/', git_url)
+            uuid_match = re.search(r'/results/([^/]+)/', git_url)
             if not uuid_match:
                 error_msg = f"Could not extract UUID from git URL: {git_url}"
                 deployment_logger.error(error_msg)

@@ -231,7 +231,34 @@ class TaskAssignmentManager:
             return False, qa_info
         return self._run_qa_gate(task_id, git_url, task_id)
 
-    def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list):
+    def _deploy_multifile(self, task_id, git_url):
+        """Call DevOps deploy_web_application for a fan-out tree. Returns result dict."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception as e:
+            return {"error": f"registry lookup failed: {e}"}
+        ep = None
+        for s in services if isinstance(services, list) else []:
+            if "devops" in (s.get("name") or "").lower() and s.get("endpoint"):
+                ep = s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                break
+        if not ep:
+            return {"error": "devops not registered"}
+        try:
+            r = requests.post(ep, json={
+                "jsonrpc": "2.0", "id": f"deploy-{task_id}", "method": "tools/call",
+                "params": {"name": "deploy_web_application",
+                           "arguments": {"task_id": task_id, "git_url": git_url,
+                                         "container_port": 5000}}}, timeout=600)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            return out if isinstance(out, dict) else {}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list,
+                                llm_plan: dict = None, metadata: dict = None):
         """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree."""
         try:
             from concurrent.futures import ThreadPoolExecutor
@@ -279,6 +306,20 @@ class TaskAssignmentManager:
             return
         if self.task_storage and git_url:
             self.task_storage.update_task_with_git_url(task_id, git_url)
+        wf_join = " ".join((llm_plan or {}).get("workflow_sequence", []) if isinstance(llm_plan, dict) else [])
+        want_deploy = "devops" in wf_join or \
+            "deploy_after_implementation\": true" in json.dumps(metadata or {}).lower()
+        if want_deploy and git_url:
+            dep = self._deploy_multifile(task_id, git_url)
+            url = dep.get("deployment_url")
+            if url:
+                self._update_task_status(task_id, "done",
+                                         f"Multi-file deliverable: {len(results)} files, "
+                                         f"QA passed, deployed at {url}")
+                return
+            self._update_task_status(task_id, "needs_revision",
+                                     f"deploy failed: {str(dep)[:200]}")
+            return
         self._update_task_status(task_id, "done",
                                  f"Multi-file deliverable: {len(results)} files, QA passed")
 
@@ -486,7 +527,8 @@ class TaskAssignmentManager:
                     self._update_task_status(task_id, "in_progress",
                                              f"Multi-file plan: {len(file_manifest)} files")
                 threading.Thread(target=self._execute_multifile_plan,
-                                 args=(task_id, task_description, file_manifest),
+                                 args=(task_id, task_description, file_manifest,
+                                       llm_plan, metadata),
                                  daemon=True).start()
                 result["status"] = "in_progress"
                 result["message"] = f"Multi-file plan: {len(file_manifest)} files generated in parallel"
