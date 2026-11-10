@@ -351,7 +351,15 @@ class ItLeadMcpServer:
         elif self.enable_registry and self.heartbeat_manager:
             # Start heartbeat manager for registry server
             self.heartbeat_manager.start()
-
+        # Requeue tasks orphaned in Postgres by a previous restart
+        try:
+            from .utils.stale_task_recovery import schedule_startup_recovery
+            assignment_manager = getattr(self.server_handlers, 'task_assignment_manager', None)
+            if assignment_manager is not None and assignment_manager.task_storage is not None:
+                schedule_startup_recovery(assignment_manager, assignment_manager.task_storage)
+                print("♻️ Stale-task recovery scheduled for startup")
+        except Exception as e:
+            print(f"⚠️ Could not schedule stale-task recovery: {e}")
         # Keep the server running
         last_team_discovery = time.time()
         team_discovery_interval = 30  # seconds
