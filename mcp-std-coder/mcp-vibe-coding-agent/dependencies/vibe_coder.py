@@ -331,6 +331,31 @@ def _get_or_clone_git_repo(repo_url: str, local_path: Path) -> Path:
     return local_path
 
 
+def _normalize_language(language: str) -> str:
+    """Normalize LLM-reported language: first token, lowercased, common aliases."""
+    lang = (language or "").lower().split(",")[0].strip().split()[0] if (language or "").strip() else ""
+    aliases = {"html5": "html", "js": "javascript", "py": "python", "ts": "typescript", "golang": "go"}
+    return aliases.get(lang, lang)
+
+
+LANGUAGE_EXTENSIONS = {
+    "python": ".py", "javascript": ".js", "typescript": ".ts", "java": ".java",
+    "go": ".go", "rust": ".rs", "ruby": ".rb", "php": ".php", "swift": ".swift",
+    "kotlin": ".kt", "terraform": ".tf", "yaml": ".yaml", "json": ".json",
+    "html": ".html", "css": ".css", "sql": ".sql", "yml": ".yaml",
+}
+
+
+def _resolve_extension(language: str, code: str = "") -> str:
+    lang = _normalize_language(language)
+    if code.lstrip().lower().startswith(("<!doctype html", "<html")):
+        lang = "html"
+    if lang in LANGUAGE_EXTENSIONS:
+        return LANGUAGE_EXTENSIONS[lang]
+    sniffed = _normalize_language(detect_language_from_response(code))
+    return LANGUAGE_EXTENSIONS.get(sniffed, ".py")
+
+
 def git_push_llm_response(
     task_id: str,
     llm_response: str,
@@ -394,30 +419,7 @@ def git_push_llm_response(
         result_dir = local_repo_path / "results" / task_id
         result_dir.mkdir(parents=True, exist_ok=True)
 
-        # Determine file extension based on language
-        language_extensions = {
-            "python": ".py",
-            "javascript": ".js",
-            "typescript": ".ts",
-            "java": ".java",
-            "go": ".go",
-            "rust": ".rs",
-            "ruby": ".rb",
-            "php": ".php",
-            "swift": ".swift",
-            "kotlin": ".kt",
-            "terraform": ".tf",
-            "yaml": ".yaml",
-            "yml": ".yaml",
-            "json": ".json",
-            "html": ".html",
-            "css": ".css",
-            "sql": ".sql",
-        }
-        extension = language_extensions.get(language.lower(), ".py")
-
-        # Write code to file
-        filename = f"result{extension}"
+        filename = f"result{_resolve_extension(language, code)}"
         filepath = result_dir / filename
         filepath.write_text(code)
 
