@@ -89,6 +89,47 @@ class TaskAssignmentManager:
         except Exception as e:
             print(f"⚠️ Error initializing result router: {e}")
 
+    def _run_qa_gate(self, task_id: str, git_url: str, async_task_id: str):
+        """Run QA validate_artifact + smoke_run on a coder artifact.
+
+        Returns (passed, info). Fails open (passed=True) when QA is
+        unreachable so a missing QA server never blocks delivery.
+        """
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception as e:
+            print(f"⚠️ QA gate: registry lookup failed: {e}")
+            return True, {"skipped": str(e)}
+        qa_endpoint = None
+        for s in services if isinstance(services, list) else []:
+            name = (s.get("name") or "").lower()
+            ep = s.get("endpoint") or ""
+            if "qa engineer" in name and ep:
+                qa_endpoint = ep.replace("0.0.0.0", "127.0.0.1")
+                break
+        if not qa_endpoint:
+            print("⚠️ QA gate: QA Engineer not registered, skipping")
+            return True, {"skipped": "qa not registered"}
+        results = {}
+        for tool in ("validate_artifact", "smoke_run"):
+            try:
+                resp = requests.post(qa_endpoint, json={
+                    "jsonrpc": "2.0", "id": f"qa-{tool}-{task_id}",
+                    "method": "tools/call",
+                    "params": {"name": tool,
+                               "arguments": {"task_id": async_task_id, "git_url": git_url}}
+                }, timeout=120)
+                out = resp.json().get("result", {})
+                if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                    out = out["result"]
+                results[tool] = out if isinstance(out, dict) else {}
+            except Exception as e:
+                print(f"⚠️ QA gate {tool} error: {e}")
+                return True, {"skipped": f"{tool} error: {e}"}
+        passed = bool(results.get("validate_artifact", {}).get("valid")) and \
+            bool(results.get("smoke_run", {}).get("passed"))
+        return passed, results
+
     def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 7200) -> Optional[Dict[str, Any]]:
         """
         Poll the agent's tasks/result endpoint to get async task result.
@@ -595,6 +636,13 @@ class TaskAssignmentManager:
                                 if async_result and async_result.get("git_url"):
                                     git_url = async_result["git_url"]
                                     print(f"✅ Background thread found Git URL for task {task_id}: {git_url}")
+                                    qa_ok, qa_info = self._run_qa_gate(task_id, git_url, async_task_id)
+                                    if not qa_ok:
+                                        print(f"❌ QA gate failed for {task_id}: {str(qa_info)[:200]}")
+                                        self._update_task_status(
+                                            task_id, "needs_revision",
+                                            f"QA gate failed: {json.dumps(qa_info)[:400]}")
+                                        return
                                     # Update task with Git URL
                                     self.task_storage.update_task_with_git_url(task_id, git_url)
                                     

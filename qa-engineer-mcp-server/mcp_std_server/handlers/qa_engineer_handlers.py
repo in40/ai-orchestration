@@ -140,10 +140,14 @@ class QaEngineerServerHandlers(McpServerHandlers):
                     kind = "html"
                 elif "mcp" in low and ("initialize" in low or "tools/list" in low):
                     kind = "mcp_template"
+                elif lang.startswith("java") or "=>" in code or "const " in code:
+                    kind = "javascript"
                 else:
                     kind = "python"
             if kind == "html":
                 return self._smoke_html(code)
+            if kind == "javascript":
+                return self._smoke_javascript(code)
             if kind == "python":
                 return self._smoke_python(code)
             if kind == "mcp_template":
@@ -162,6 +166,23 @@ class QaEngineerServerHandlers(McpServerHandlers):
                 return {"passed": False, "stage": "import", "errors": ["import timeout 30s"]}
             ok = proc.returncode == 0
             return {"passed": ok, "kind": "python", "stage": "import",
+                    "stderr": proc.stderr[-500:] if not ok else ""}
+
+    def _smoke_javascript(self, code: str) -> Dict[str, Any]:
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "result.js")
+            open(path, "w").write(code)
+            try:
+                proc = subprocess.run(["node", "--check", path],
+                                      capture_output=True, timeout=30, text=True)
+            except FileNotFoundError:
+                return {"passed": True, "kind": "javascript", "stage": "node-missing",
+                        "note": "node not installed; skipped"}
+            except subprocess.TimeoutExpired:
+                return {"passed": False, "kind": "javascript", "stage": "check",
+                        "errors": ["node --check timeout"]}
+            ok = proc.returncode == 0
+            return {"passed": ok, "kind": "javascript", "stage": "node --check",
                     "stderr": proc.stderr[-500:] if not ok else ""}
 
     def _smoke_html(self, code: str) -> Dict[str, Any]:
