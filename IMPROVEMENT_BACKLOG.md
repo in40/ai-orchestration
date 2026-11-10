@@ -16,9 +16,9 @@ Sequenced: each phase unblocks the next. P0 items are prerequisites for trusting
   requirements-engineer (analysis step no longer skipped by the coding->impl rule);
   "ALL coding tasks MUST go to implementation-engineer" scoped to execution, not ordering
 - Open: pass requirements-engineer spec output as context into coder call (handoff wiring)
-- Open: E2E template task through fan-out with new manifest robustness
+- E2E: tmpl8 18-file package, QA passed in ~7min (2026-11-10) ✅
 
-## P6 — Fan-out interface drift (from tmpl7, 2026-11-10)
+## P6 — Fan-out interface drift (from tmpl7, 2026-11-10) ✅
 tmpl7: 8/8 files generated in ~9 min (per-step budgets work), validate passed,
 smoke caught real ImportError: server.py imports register_default_tools that
 service_handlers.py never defines. Independent per-file generation drifts on
