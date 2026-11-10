@@ -174,14 +174,21 @@ class TaskAssignmentManager:
                         # Check for error
                         if result_data.get("error"):
                             error_msg = result_data.get("error", "")
+                            low = error_msg.lower()
+                            if "failed" in low:
+                                print(f"❌ Async task failed at agent: {error_msg}")
+                                return None
                             # Only return None if it's a real error, not "working" or "submitted" status
-                            if "not completed" in error_msg.lower() or "working" in error_msg.lower() or "submitted" in error_msg.lower():
+                            if "not completed" in low or "working" in low or "submitted" in low:
                                 print(f"⏳ Task still processing ({error_msg}), continuing to poll...")
                             else:
                                 print(f"❌ Async task error: {error_msg}")
                                 return None
                         # Task still working, continue polling
                         task_status = result_data.get("status", "unknown")
+                        if task_status == "failed":
+                            print(f"❌ Async task {task_id} failed at agent")
+                            return None
                         if task_status in ("working", "submitted") and attempt < max_retries - 1:
                             wait_time = min(2 + (attempt * 0.5), 10)  # Exponential backoff, max 10s
                             print(f"⏳ Task status: {task_status}, waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
@@ -655,6 +662,9 @@ class TaskAssignmentManager:
                                     self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, None)
                                 else:
                                     print(f"❌ Background thread failed to get result for task {task_id}")
+                                    self._update_task_status(
+                                        task_id, "failed",
+                                        "Agent task failed or polling timed out without result")
 
                             threading.Thread(target=background_poller, daemon=True).start()
                             print(f"✅ Background polling thread spawned for task {task_id}")

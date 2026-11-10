@@ -708,6 +708,10 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                 response.raise_for_status()
                 choice = response.json()["choices"][0]
                 piece = choice["message"].get("content") or ""
+                for k in range(min(100, len(full_content), len(piece)), 0, -1):
+                    if full_content[-k:] == piece[:k]:
+                        piece = piece[k:]
+                        break
                 full_content += piece
                 if choice.get("finish_reason") != "length":
                     return full_content
@@ -717,8 +721,13 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                         f"truncated_output: LLM hit token cap after {max_continuations} continuations "
                         f"({len(full_content)} chars)")
                 messages.append({"role": "assistant", "content": piece})
+                tail = piece[-200:]
                 messages.append({"role": "user", "content":
-                    "Continue exactly from where your output stopped. Output only the continuation, no preamble."})
+                    "Your output was cut off. The LAST characters you produced were exactly:\n"
+                    f"...{tail}\n"
+                    "Continue from that exact point: output ONLY the remaining text that follows "
+                    "those characters. Do NOT repeat anything already written. Do NOT restart "
+                    "from the beginning. No preamble."})
         except requests.exceptions.RequestException as e:
             last_error = e
             if attempt < max_retries - 1:

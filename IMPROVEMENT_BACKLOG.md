@@ -1,0 +1,87 @@
+# Improvement Backlog — MCP Orchestration System
+
+Derived from E2E testing 2026-11-10 (flappy-bird + MCP-template tasks).
+Sequenced: each phase unblocks the next. P0 items are prerequisites for trusting any pipeline output.
+
+## Status 2026-11-10: P0 ✅ P1 ✅ P2 ✅ P3.1 ✅ | P3.2 deferred (QA gate covers correctness; review adds LLM cost, revisit when false-passes appear) | P4 open
+
+
+## P0 — Stop silent garbage (do first, ~half day)
+
+### P0.1 Truncation detection in vibe-coder
+- Where: `mcp-std-coder/mcp-vibe-coding-agent/dependencies/vibe_coder.py` (~line 632 LLM call)
+- Problem: `finish_reason=length` ignored; truncated envelope saved as success (task-1794307611315: 10.6KB cut mid-JSON)
+- Do:
+  - read `finish_reason` from response
+  - if `length`: re-send with conversation continuation ("continue from cutoff") up to N=3 attempts
+  - if still truncated: mark agent task `failed` with reason `truncated_output`
+- Accept: task producing >max_tokens output ends `failed`, not `done`
+
+### P0.2 Artifact validation gate before `done`
+- Where: vibe-coder before `git_push_llm_response`; IT Lead status update
+- Do:
+  - envelope must parse as JSON (or be raw code)
+  - extracted code must pass `ast.parse` (python) / basic HTML close-tag check
+  - reject empty or <200-byte code
+  - on fail: status `needs_revision` + reason, skip git push
+- Accept: no truncated/empty artifact can reach `done`
+
+### P0.3 Coder request timeout + engine health probe
+- Where: `vibe_coder.py` requests.post — no timeout today
+- Do: add `timeout=600`; on timeout mark `failed: llm_timeout`
+- Accept: hung engine doesn't wedge the coder worker thread
+
+## P1 — New team member: QA/Test Engineer (~1-2 days)
+
+### P1.1 Scaffold QA agent
+- Where: new `qa-engineer-mcp-server/` from `mcp-std-skeleton`
+- Tools: `validate_artifact(task_id, git_url)`, `smoke_run(task_id, kind)`
+  - python: `ast.parse` + import in venv sandbox
+  - html: serve + HTTP 200 + `<html>`/`</html>` present
+  - mcp-template: start server, `initialize` + `tools/list` handshake
+- Registers with registry :3031, systemd unit `mcp-qa-engineer.service` port 3072
+- Accept: appears in `/api/agents`, responds to `tools/list`
+
+### P1.2 Wire QA into IT Lead flow
+- Where: `it_lead_mcp_server/utils/task_routing_rules.py` + planner prompt
+- Do: after coder `done`, IT Lead calls QA `validate_artifact`; fail → existing rework loop (`/api/tasks/{id}/request-rework`)
+- Status flow: `done` → `validating` → `done`/`needs_revision`
+- Accept: flappy-bird + template tasks both pass QA; a hand-broken artifact triggers rework
+
+## P2 — Multi-file artifacts (~1 day)
+
+### P2.1 File manifest support in coder
+- Where: `vibe_coder.py` envelope schema + `git_push_llm_response`
+- Do: envelope `files: [{path, content}]` → push directory `results/<task_id>/<paths>`; keep single-file fallback
+- Accept: MCP-template task produces `server.py + README + requirements.txt` tree
+
+### P2.2 Deployer multi-file awareness
+- Where: devops `_deploy_web_application`
+- Do: deploy whole result dir (not just result.py/html); Dockerfile COPY tree
+- Accept: multi-file template deploys and serves
+
+## P3 — Orchestration intelligence (~1 day)
+
+### P3.1 Task-class routing to decomposition
+- Where: IT Lead planner (`llm_task_planner.py`) + `sequence_sdlc_tasks`
+- Do: classify task (app | library/template | multi-service); non-trivial → Requirements Engineer decomposition → ordered subtasks, each through coder+QA
+- Accept: "MCP service template" produces a 3+ subtask plan, not one vibe shot
+
+### P3.2 Wire review_code before done
+- Where: IT Lead post-QA step
+- Do: `review_code` on final artifact; findings stored in task metadata
+- Accept: review notes visible in task history
+
+## P4 — Infra (investigate)
+
+### P4.1 Halogen engine long-generation behavior
+- Symptom: >100s hang on 2000-line request; ~10KB output cap suspected despite `max_tokens=16384`
+- Do: check engine config (max output, queue, slots); test dedicated slot for coder; consider bigger coding model
+- Accept: deterministic known output ceiling documented; coder budget set below it
+
+### P4.2 Push + tidy
+- submodule `team-management-ui/mcp-skeleton-repo` dirty — commit or reset
+- stale `.env` keys: `WEB_UI_*` now correct; audit remaining defaults (192.168.51.237 hardcodes in argparse defaults)
+
+## Definition of done for backlog
+E2E: submit "MCP service template" task → plan decomposed → files generated → QA handshake passes → deployed → URL live.

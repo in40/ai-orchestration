@@ -295,6 +295,9 @@ Analyze and provide optimal task assignment.
 - **ALWAYS provide the full workflow_sequence** - list ALL agents that should be involved in order
 - If task lacks technical details: workflow should start with requirements-engineer
 - If task is clear implementation: workflow can be just ["implementation-engineer"]
+- For TEMPLATE / FRAMEWORK / SDK / LIBRARY / "service skeleton" deliverables: the coder
+  supports multi-file output (files manifest with README + requirements); if the spec is
+  ambiguous start with requirements-engineer, else ["implementation-engineer", "qa-engineer"]
 - **If task mentions deployment**: workflow MUST end with devops-release-engineer
 - **DO NOT include "it-lead" in workflow_sequence** - the IT Lead routes tasks but does not execute them
 
