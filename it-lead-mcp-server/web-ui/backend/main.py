@@ -62,6 +62,8 @@ _planner: Optional[DynamicPlanner] = None
 # IT Lead server configuration (from settings)
 IT_LEAD_HOST = settings.IT_LEAD_HOST
 IT_LEAD_PORT = settings.IT_LEAD_PORT
+DEVOPS_HOST = settings.REGISTRY_HOST
+DEVOPS_PORT = settings.DEVOPS_PORT
 
 # Store active WebSocket connections for real-time updates
 active_connections: List[WebSocket] = []
@@ -1688,7 +1690,8 @@ async def redeploy_task(task_id: str):
                 raise HTTPException(status_code=500, detail="Failed to fetch task information")
             
             tasks_result = tasks_response.json()
-            tasks = tasks_result.get("result", {}).get("tasks", [])
+            inner = tasks_result.get("result", {})
+            tasks = inner.get("tasks") or inner.get("result", {}).get("tasks", [])
             task = next((t for t in tasks if t.get("task_id") == task_id), None)
             
             if not task:
@@ -1698,9 +1701,9 @@ async def redeploy_task(task_id: str):
             if not git_url:
                 raise HTTPException(status_code=400, detail="Task has no git_url")
             
-            # Call DevOps to deploy from git
+            # Call DevOps directly to deploy from git
             deploy_response = await client.post(
-                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                f"http://{DEVOPS_HOST}:{DEVOPS_PORT}/mcp",
                 json={
                     "jsonrpc": "2.0",
                     "id": f"deploy-{task_id}",

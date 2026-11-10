@@ -624,6 +624,12 @@ class DevOpsReleaseEngineerHandlers:
                 with open(result_file, 'r') as f:
                     json_content = f.read()
 
+                if json_content.lstrip().lower().startswith(("<!doctype html", "<html")):
+                    deployment_logger.info("Static HTML artifact detected; deploying via http.server")
+                    return self._deploy_static_html(task_id, deploy_dir, 5000, json_content,
+                                                    deployment_logger, git_url, git_workdir,
+                                                    memory_limit, cpu_limit)
+
                 code_content = ""
                 parsed_successfully = False
 
@@ -646,6 +652,12 @@ class DevOpsReleaseEngineerHandlers:
                     final_content = code_content
                 else:
                     final_content = json.dumps(code_content, indent=2)
+
+                if final_content.lstrip().lower().startswith(("<!doctype html", "<html")):
+                    deployment_logger.info("Static HTML artifact detected; deploying via http.server")
+                    return self._deploy_static_html(task_id, deploy_dir, 5000, final_content,
+                                                    deployment_logger, git_url, git_workdir,
+                                                    memory_limit, cpu_limit)
 
                 with open(os.path.join(deploy_dir, "result.py"), 'w') as f:
                     f.write(final_content)
@@ -940,6 +952,50 @@ CMD ["python", "result.py"]
             deployment_logger.error(f"Unexpected deployment error: {error_msg}")
             self._update_task_status_on_deployment_failure(task_id, error_msg)
             return {"error": error_msg}
+
+    def _deploy_static_html(self, task_id, deploy_dir, container_port, html_content,
+                            deployment_logger, git_url, git_workdir, memory_limit, cpu_limit):
+        """Serve a static HTML artifact via python http.server in Docker."""
+        import subprocess
+        with open(os.path.join(deploy_dir, "index.html"), 'w') as f:
+            f.write(html_content)
+        dockerfile_content = f"""FROM python:3.11-slim
+WORKDIR /app
+COPY index.html .
+EXPOSE {container_port}
+CMD ["python", "-m", "http.server", "{container_port}"]
+"""
+        with open(os.path.join(deploy_dir, "Dockerfile"), 'w') as f:
+            f.write(dockerfile_content)
+        host_port = self._find_available_port()
+        deployment_host = os.environ.get("DEPLOYMENT_HOST", "127.0.0.1")
+        image_name = f"deploy-{task_id}"
+        container_name = f"deploy-{task_id}"
+        subprocess.run(["docker", "build", "-t", image_name, deploy_dir], check=True, capture_output=True, timeout=120)
+        subprocess.run([
+            "docker", "run", "-d",
+            "--name", container_name,
+            "-p", f"{host_port}:{container_port}",
+            "--memory", memory_limit,
+            "--cpus", cpu_limit,
+            "--restart", "unless-stopped",
+            image_name
+        ], check=True, capture_output=True, timeout=30)
+        deployment_url = f"http://{deployment_host}:{host_port}/"
+        self._store_deployment(task_id, container_name, container_port, host_port,
+                               deployment_url, git_url, image_name, memory_limit, cpu_limit)
+        subprocess.run(["rm", "-rf", git_workdir], check=True)
+        subprocess.run(["rm", "-rf", deploy_dir], check=True)
+        self._update_task_with_deployment_url(task_id, git_url, deployment_url)
+        deployment_logger.info(f"Static HTML deployed at {deployment_url}")
+        return {
+            "success": True,
+            "task_id": task_id,
+            "container_id": container_name,
+            "host_port": host_port,
+            "deployment_url": deployment_url,
+            "message": f"Static application deployed at {deployment_url}"
+        }
 
     def _stop_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Stop a deployment (keep container for restart)"""
