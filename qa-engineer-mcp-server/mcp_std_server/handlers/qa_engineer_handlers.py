@@ -98,27 +98,29 @@ class QaEngineerServerHandlers(McpServerHandlers):
                     lang = ("python" if p.endswith(".py") else
                             "html" if p.endswith((".html", ".htm")) else
                             "javascript" if p.endswith(".js") else lang)
-                    return str(f0.get("content", "")), lang, None
+                    return str(f0.get("content", "")), lang, None, None
                 if isinstance(env, dict) and "code" in env:
                     lang = str(env.get("language", lang)).lower().split(",")[0].strip()
-                    return env["code"], lang, None
+                    return env["code"], lang, None, None
             except json.JSONDecodeError as e:
                 if raw.lstrip().startswith("{"):
-                    return None, None, f"truncated envelope: {raw[:60]}... ({e.msg} line {e.lineno})"
-            return raw, lang, None
-        # Tree of files (fan-out flow): primary = first code file
-        entries = sorted(os.listdir(result_dir))
-        code_files = [f for f in entries if f.endswith((".py", ".js", ".html", ".htm"))]
+                    return None, None, f"truncated envelope: {raw[:60]}... ({e.msg} line {e.lineno})", None
+            return raw, lang, None, None
+        # Tree of files (fan-out flow): primary = first code file, recursive
+        code_files = []
+        for root, _, files in os.walk(result_dir):
+            code_files += [os.path.relpath(os.path.join(root, f), result_dir)
+                           for f in files if f.endswith((".py", ".js", ".html", ".htm"))]
         if code_files:
-            primary = code_files[0]
+            primary = sorted(code_files)[0]
             lang = {"py": "python", "js": "javascript"}.get(primary.rsplit(".", 1)[-1], "html")
-            return open(os.path.join(result_dir, primary)).read(), lang, None
-        return None, None, "no result.py/result.js/result.html found"
+            return open(os.path.join(result_dir, primary)).read(), lang, None, primary.replace("\\", "/")
+        return None, None, "no result.py/result.js/result.html found", None
 
     def _validate_artifact(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
             result_dir = self._fetch_result_dir(arguments["task_id"], arguments.get("git_url", ""))
-            code, lang, err = self._extract_code(result_dir)
+            code, lang, err, primary = self._extract_code(result_dir)
             if err:
                 return {"valid": False, "errors": [err]}
             errors = []
@@ -144,7 +146,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
     def _smoke_run(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
             result_dir = self._fetch_result_dir(arguments["task_id"], arguments.get("git_url", ""))
-            code, lang, err = self._extract_code(result_dir)
+            code, lang, err, primary = self._extract_code(result_dir)
             if err:
                 return {"passed": False, "stage": "extract", "errors": [err]}
             kind = arguments.get("kind", "auto")
@@ -163,18 +165,29 @@ class QaEngineerServerHandlers(McpServerHandlers):
             if kind == "javascript":
                 return self._smoke_javascript(code)
             if kind == "python":
-                return self._smoke_python(code)
+                return self._smoke_python(code, result_dir=result_dir, primary=primary)
             if kind == "mcp_template":
                 return self._smoke_mcp_template(code)
             return {"passed": False, "stage": "kind", "errors": [f"unknown kind {kind}"]}
         except Exception as e:
             return {"passed": False, "stage": "fetch", "errors": [str(e)]}
 
-    def _smoke_python(self, code: str) -> Dict[str, Any]:
+    def _smoke_python(self, code: str, result_dir: str = None, primary: str = None) -> Dict[str, Any]:
         with tempfile.TemporaryDirectory() as td:
-            open(os.path.join(td, "result.py"), "w").write(code)
+            if result_dir and primary:
+                # multi-file tree: copy everything so package imports resolve
+                for root, _, files in os.walk(result_dir):
+                    dst = os.path.join(td, os.path.relpath(root, result_dir))
+                    os.makedirs(dst, exist_ok=True)
+                    for f in files:
+                        shutil.copy(os.path.join(root, f), dst)
+                mod = primary.rsplit(".", 1)[0].replace("/", ".")
+                stmt = f"import {mod}"
+            else:
+                open(os.path.join(td, "result.py"), "w").write(code)
+                stmt = "import result"
             try:
-                proc = subprocess.run(["python", "-c", "import result"], cwd=td,
+                proc = subprocess.run(["python", "-c", stmt], cwd=td,
                                       capture_output=True, timeout=30, text=True)
             except subprocess.TimeoutExpired:
                 return {"passed": False, "stage": "import", "errors": ["import timeout 30s"]}
