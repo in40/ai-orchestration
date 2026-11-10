@@ -18,6 +18,19 @@ Sequenced: each phase unblocks the next. P0 items are prerequisites for trusting
 - Open: pass requirements-engineer spec output as context into coder call (handoff wiring)
 - Open: E2E template task through fan-out with new manifest robustness
 
+## P6 — Fan-out interface drift (from tmpl7, 2026-11-10)
+tmpl7: 8/8 files generated in ~9 min (per-step budgets work), validate passed,
+smoke caught real ImportError: server.py imports register_default_tools that
+service_handlers.py never defines. Independent per-file generation drifts on
+cross-file contracts.
+- P6.1 contract-first: manifest spec must pin exact exports/imports per file;
+  inject the full interface contract (not just one-line specs) into every
+  generate_file call
+- P6.2 repair loop: on smoke ImportError, feed error + both files back to coder
+  to regenerate the offending file (1 pass), then re-QA
+- P6.3 (cheap option): prompt rule "prefer lazy imports inside functions so
+  module import never fails on sibling gaps"
+
 
 ## P0 — Stop silent garbage (do first, ~half day)
 
