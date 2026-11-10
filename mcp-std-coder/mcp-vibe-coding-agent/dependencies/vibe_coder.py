@@ -637,7 +637,8 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": vibe / 10  # 0.1 to 1.0
+                    "temperature": vibe / 10,  # 0.1 to 1.0
+                    "max_tokens": 16384
                 },
                 timeout=timeout  # Use the timeout parameter (default: 240 minutes)
             )
