@@ -173,7 +173,9 @@ class TaskAssignmentManager:
                 "Output JSONL: one JSON object per line, no array wrapper, no prose, no code fences.\n"
                 'Each line: {"path": "relative/path", "spec": "plain text, no quotes, no newlines, under 80 words"}\n'
                 "List every file (entry module, helpers, README.md, requirements.txt as needed).\n"
-                "Keep each file small: under 150 lines - split large modules into more files.\n\n"
+                "Keep each file small: under 150 lines - split large modules into more files.\n"
+                "Each spec MUST pin the contract: exact top-level names the file exports and\n"
+                "exact sibling imports it uses, so independently generated files fit together.\n\n"
                 "Deliverable task: " + task_description)
         for attempt in range(2):
             try:
@@ -187,6 +189,47 @@ class TaskAssignmentManager:
             except Exception as e:
                 print(f"⚠️ manifest derivation failed (attempt {attempt + 1}): {e}")
         return None
+
+    def _generate_one(self, coder_endpoint, task_id, path, spec, manifest_str, task_description):
+        try:
+            r = requests.post(coder_endpoint, json={
+                "jsonrpc": "2.0", "id": f"gen-{task_id}-{path}",
+                "method": "tools/call",
+                "params": {"name": "generate_file", "arguments": {
+                    "task_id": task_id, "path": path, "spec": spec,
+                    "manifest": manifest_str, "project_description": task_description}}},
+                timeout=3600)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            return out if isinstance(out, dict) else {}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _repair_and_recheck(self, task_id, task_description, file_manifest,
+                            coder_endpoint, git_url, manifest_str, qa_info):
+        """One repair pass: parse smoke ImportError, regenerate the target file, re-QA."""
+        import re as _re
+        smoke = qa_info.get("smoke_run", {}) if isinstance(qa_info, dict) else {}
+        err = str(smoke.get("stderr") or "") + str(smoke.get("errors") or "")
+        m = _re.search(r"cannot import name '(\w+)' from '([\w.]+)'", err)
+        if not m:
+            return False, qa_info
+        missing, modpath = m.group(1), m.group(2)
+        module = modpath.rsplit(".", 1)[-1]
+        target = next((f for f in file_manifest
+                       if f.get("path", "").rsplit("/", 1)[-1].rsplit(".", 1)[0] == module), None)
+        if not target:
+            return False, qa_info
+        print(f"🔧 Repair: regenerating {target['path']} to define '{missing}'")
+        spec = (target.get("spec", "") +
+                f". FIX REQUIRED: this module MUST define top-level '{missing}' imported by "
+                f"siblings. Smoke error: {err[-300:]}")
+        out = self._generate_one(coder_endpoint, task_id, target["path"], spec,
+                                 manifest_str, task_description)
+        if not out.get("success"):
+            return False, qa_info
+        return self._run_qa_gate(task_id, git_url, task_id)
 
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list):
         """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree."""
@@ -206,23 +249,11 @@ class TaskAssignmentManager:
             path = entry.get("path")
             last = {}
             for attempt in range(2):  # one retry: generation variance often clears transient truncation
-                try:
-                    r = requests.post(coder_endpoint, json={
-                        "jsonrpc": "2.0", "id": f"gen-{task_id}-{path}-{attempt}",
-                        "method": "tools/call",
-                        "params": {"name": "generate_file", "arguments": {
-                            "task_id": task_id, "path": path,
-                            "spec": entry.get("spec", ""), "manifest": manifest_str,
-                            "project_description": task_description}}}, timeout=3600)
-                    out = r.json().get("result", {})
-                    if isinstance(out, dict) and isinstance(out.get("result"), dict):
-                        out = out["result"]
-                    out = out if isinstance(out, dict) else {}
-                    if out.get("success"):
-                        return path, out
-                    last = out
-                except Exception as e:
-                    last = {"error": str(e)}
+                out = self._generate_one(coder_endpoint, task_id, path,
+                                         entry.get("spec", ""), manifest_str, task_description)
+                if out.get("success"):
+                    return path, out
+                last = out
             return path, last
 
         results = {}
@@ -238,6 +269,10 @@ class TaskAssignmentManager:
         git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
                         if o.get("git_url")), "")
         qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id)
+        if not qa_ok:
+            qa_ok, qa_info = self._repair_and_recheck(
+                task_id, task_description, file_manifest, coder_endpoint,
+                git_url, manifest_str, qa_info)
         if not qa_ok:
             self._update_task_status(task_id, "needs_revision",
                                      f"QA gate failed: {json.dumps(qa_info)[:400]}")

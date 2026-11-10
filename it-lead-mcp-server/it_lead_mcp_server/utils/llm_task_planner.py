@@ -57,6 +57,9 @@ multi-service project), you MUST also emit:
 "file_manifest": [{"path": "relative/file.ext", "spec": "what this file contains and exports, under 80 words"}]
 listing EVERY file to produce (entry module, helpers, README.md, requirements.txt),
 each under ~150 lines - split large modules into more files.
+Each spec MUST pin the contract: exact top-level names the file exports
+(function/class names) and exact sibling imports it relies on, so files
+generated independently still fit together.
 Omit file_manifest (or []) for single-file deliverables."""
         
         # Call LLM
