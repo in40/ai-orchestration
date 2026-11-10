@@ -749,7 +749,7 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                         "model": settings.llm_model,
                         "messages": messages,
                         "temperature": vibe / 10,  # 0.1 to 1.0
-                        "max_tokens": 262144
+                        "max_tokens": 65536  # engine server cap; raise via halogen --max-tokens-cap
                     },
                     timeout=timeout
                 )
