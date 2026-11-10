@@ -130,6 +130,38 @@ class TaskAssignmentManager:
             bool(results.get("smoke_run", {}).get("passed"))
         return passed, results
 
+    def _ensure_file_manifest(self, task_description: str, llm_plan: dict):
+        """Return file_manifest from the plan, or derive one with a dedicated LLM
+        call when the task is clearly multi-file but the planner omitted it."""
+        manifest = llm_plan.get("file_manifest") if isinstance(llm_plan, dict) else None
+        if isinstance(manifest, list) and manifest:
+            return manifest
+        import re as _re
+        if not _re.search(r"(?i)template|framework|sdk|library|multi-?file|README|requirements\.txt|service skeleton", task_description):
+            return None
+        if not self.llm_client:
+            return None
+        print("🧩 Planner omitted file_manifest for multi-file task -> dedicated manifest call")
+        try:
+            raw = self.llm_client.call_llm(
+                f"""Decompose this deliverable into the exact list of files to generate.
+Respond with ONLY valid JSON: {{"file_manifest": [{{"path": "relative/path", "spec": "what this file contains, its exports, under 80 words"}}]}}
+List every file (entry module, helpers, README.md, requirements.txt as needed). No prose.
+
+Deliverable task: {task_description}""",
+                temperature=0.2, timeout=240)
+            start, end = raw.find("{"), raw.rfind("}")
+            if start == -1 or end == -1:
+                return None
+            parsed = json.loads(raw[start:end + 1])
+            m = parsed.get("file_manifest")
+            if isinstance(m, list) and m and all(isinstance(e, dict) and e.get("path") for e in m):
+                print(f"🧩 Derived manifest: {[e['path'] for e in m]}")
+                return m
+        except Exception as e:
+            print(f"⚠️ manifest derivation failed: {e}")
+        return None
+
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list):
         """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree."""
         try:
@@ -371,7 +403,7 @@ class TaskAssignmentManager:
             print(f"   primary_agent from LLM: {primary_agent}")
 
             # Fan-out flow: multi-file deliverable -> one generate_file call per file
-            file_manifest = llm_plan.get("file_manifest") if isinstance(llm_plan, dict) else None
+            file_manifest = self._ensure_file_manifest(task_description, llm_plan)
             if file_manifest:
                 print(f"🧩 Multi-file deliverable: {len(file_manifest)} files planned -> fan-out")
                 if self.task_storage:
