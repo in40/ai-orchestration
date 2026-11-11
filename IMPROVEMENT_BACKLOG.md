@@ -162,3 +162,8 @@ Fixed status_history persistence bug (was never written after INSERT). Added
 activity jsonb timeline: agent_call/agent_done(+duration)/agent_error,
 file_generated, qa_gate, security_gate, deploy. Rendered in Task History modal.
 Guarded migration (lock_timeout) after DDL-on-startup caused a lock pileup.
+
+## Phase B — opencode fixer in patch_file ✅ (3c557da)
+patch_file: opencode run --agent fixer --session ses-fix-<task> (reproduce,
+fix, re-verify) with single-shot fallback; live: 67s cold / 17s warm.
+Bonus fix: latent settings-shadowing NameError that broke patch_file.
