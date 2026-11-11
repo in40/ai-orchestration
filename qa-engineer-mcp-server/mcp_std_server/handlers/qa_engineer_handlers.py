@@ -229,6 +229,39 @@ class QaEngineerServerHandlers(McpServerHandlers):
         except Exception as e:
             return {"valid": False, "error": str(e)}
 
+    def _run_generated_tests(self, result_dir, cwd, env):
+        """If the artifact ships tests (tests/ dir or test_*.py), run them with pytest
+        in the smoke venv. Returns {'ran': False} when no tests exist."""
+        test_files = []
+        for root, _, fs in os.walk(result_dir):
+            test_files += [f for f in fs if f.startswith("test_") and f.endswith(".py")]
+        if not test_files:
+            return {"ran": False, "reason": "no tests generated"}
+        venv = os.path.join(result_dir, ".qa_venv")
+        py = os.path.join(venv, "bin", "python")
+        if not os.path.exists(py):
+            try:
+                import sys as _sys
+                subprocess.run([_sys.executable, "-m", "venv", venv],
+                               check=True, capture_output=True, timeout=180)
+            except Exception as e:
+                return {"ran": True, "passed": False, "stage": "venv", "output": str(e)[:300]}
+        try:
+            chk = subprocess.run([py, "-m", "pytest", "--version"],
+                                 capture_output=True, timeout=30)
+            if chk.returncode != 0:
+                raise RuntimeError("pytest missing")
+        except Exception:
+            subprocess.run([py, "-m", "pip", "install", "-q", "pytest"],
+                           capture_output=True, timeout=300)
+        try:
+            p = subprocess.run([py, "-m", "pytest", "-q", "--no-header", "-x"], cwd=cwd,
+                               env=env, capture_output=True, text=True, timeout=240)
+            tail = ((p.stdout or "") + (p.stderr or ""))[-800:]
+            return {"ran": True, "passed": p.returncode == 0, "output": tail}
+        except subprocess.TimeoutExpired:
+            return {"ran": True, "passed": False, "output": "pytest timeout 240s"}
+
     def _smoke_contract(self, contract: Dict[str, Any], result_dir: str) -> Dict[str, Any]:
         """Execute a run contract: install, run, health-check."""
         import urllib.request
@@ -260,8 +293,13 @@ class QaEngineerServerHandlers(McpServerHandlers):
             try:
                 p = subprocess.run(run, shell=True, executable="/bin/bash", cwd=cwd, env=env,
                                    capture_output=True, text=True, timeout=60)
-                return {"passed": p.returncode == 0, "kind": "cli", "stage": "run",
-                        "stderr": p.stderr[-1500:]}
+                if p.returncode != 0:
+                    return {"passed": p.returncode == 0, "kind": "cli", "stage": "run",
+                            "stderr": p.stderr[-1500:]}
+                tests = self._run_generated_tests(result_dir, cwd, env)
+                if tests.get("ran") and not tests.get("passed"):
+                    return {"passed": False, "kind": "cli", "stage": "tests", "tests": tests}
+                return {"passed": True, "kind": "cli", "stage": "run", "tests": tests}
             except subprocess.TimeoutExpired:
                 return {"passed": False, "kind": "cli", "stage": "run", "errors": ["timeout"]}
         if kind == "static":
@@ -312,8 +350,12 @@ class QaEngineerServerHandlers(McpServerHandlers):
                             except Exception as e:
                                 return {"passed": False, "kind": "service",
                                         "stage": "conformance", "errors": [str(e)]}
+                        tests = self._run_generated_tests(result_dir, cwd, env)
+                        if tests.get("ran") and not tests.get("passed"):
+                            return {"passed": False, "kind": "service", "stage": "tests",
+                                    "tests": tests}
                         return {"passed": True, "kind": "service", "stage": "healthcheck",
-                                "response": body[:200]}
+                                "response": body[:200], "tests": tests}
                     last = body[:200]
                 except Exception as e:
                     last = str(e)
