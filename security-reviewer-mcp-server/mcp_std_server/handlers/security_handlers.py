@@ -94,9 +94,19 @@ class SecurityReviewerHandlers(McpServerHandlers):
                                      "severity": "high", "pattern": "dependency-vuln",
                                      "detail": v})
                 high = [x for x in findings if x["severity"] == "high"]
+            llm_findings = self._llm_audit(root)
+            for f in llm_findings:
+                if not isinstance(f, dict):
+                    continue
+                findings.append({"file": str(f.get("file", ""))[:120], "line": f.get("line", 0),
+                                 "severity": "medium",  # advisory cap: LLM never blocks deploy
+                                 "pattern": "llm:" + str(f.get("pattern", ""))[:40],
+                                 "detail": str(f.get("detail", ""))[:200]})
+            high = [x for x in findings if x["severity"] == "high"]
             return {"safe": not high, "findings": findings,
                     "high": len(high), "medium": len(findings) - len(high),
-                    "dependency_audit": audit.get("status")}
+                    "dependency_audit": audit.get("status"),
+                    "llm_audit": "ran" if llm_findings is not None else "skipped"}
         except Exception as e:
             return {"safe": False, "errors": [str(e)]}
 
@@ -123,3 +133,23 @@ class SecurityReviewerHandlers(McpServerHandlers):
                     "vulnerabilities": vulns[:10]}
         except Exception as e:
             return {"status": f"audit-error: {str(e)[:120]}"}  # non-fatal
+
+    def _llm_audit(self, root):
+        """opencode sec-reviewer pass over the artifact: catches non-template issues
+        (regex misses). Advisory only — findings capped to medium by the caller."""
+        if os.environ.get("OPENCODE_SEC", "1") == "0":
+            return []
+        try:
+            from .opencode_run import opencode_agent, extract_json
+            ok, text, err = opencode_agent("sec-reviewer", root,
+                                           "Audit this project for security issues.",
+                                           timeout=420)
+            if not ok:
+                print(f"⚠️ security llm audit skipped: {err[:150]}", flush=True)
+                return []
+            data = extract_json(text) or {}
+            out = data.get("findings", [])
+            return out if isinstance(out, list) else []
+        except Exception as e:
+            print(f"⚠️ security llm audit error: {str(e)[:150]}", flush=True)
+            return []

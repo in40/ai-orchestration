@@ -289,8 +289,9 @@ class TaskAssignmentManager:
             return True, {"skipped": str(e)}
 
     def _advisory_review(self, task_id):
-        """Non-blocking LLM code review; verdict stored in task metadata."""
-        if not self.llm_client or not self.task_storage:
+        """Non-blocking code review; verdict stored in task metadata.
+        opencode reviewer agent first (full repo access), single-shot blob fallback."""
+        if not self.task_storage:
             return
         import shutil
         import subprocess
@@ -302,26 +303,43 @@ class TaskAssignmentManager:
                             os.environ.get("MCP_GIT_REPO_URL",
                                            "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"),
                             work], check=True, capture_output=True, timeout=90)
-            blob = ""
             root = os.path.join(work, "results", task_id)
-            for dp, _, fs in os.walk(root):
-                for f in sorted(fs):
-                    if f.endswith((".py", ".js", ".html")):
-                        blob += f"\n--- {f} ---\n" + \
-                            open(os.path.join(dp, f), errors="ignore").read()[:3000]
+            review = None
+            if os.environ.get("OPENCODE_REVIEW", "1") != "0":
+                try:
+                    from .opencode_run import opencode_agent, extract_json
+                    ok, text, err = opencode_agent(
+                        "code-reviewer", root, "Review this project.",
+                        session=f"ses-review-{task_id}", timeout=420)
+                    review = extract_json(text) if ok else None
+                    if review and review.get("quality") not in ("good", "minor", "major"):
+                        review = None
+                    if not review:
+                        print(f"⚠️ advisory review opencode fell back: {(err or 'bad json')[:150]}", flush=True)
+                except Exception as e:
+                    print(f"⚠️ advisory review opencode error: {str(e)[:150]}", flush=True)
+            if review is None:
+                if not self.llm_client:
+                    return
+                blob = ""
+                for dp, _, fs in os.walk(root):
+                    for f in sorted(fs):
+                        if f.endswith((".py", ".js", ".html")):
+                            blob += f"\n--- {f} ---\n" + \
+                                open(os.path.join(dp, f), errors="ignore").read()[:3000]
+                        if len(blob) > 12000:
+                            break
                     if len(blob) > 12000:
                         break
-                if len(blob) > 12000:
-                    break
-            verdict = self.llm_client.call_llm(
-                "You are a code reviewer. Assess correctness risks, error handling, "
-                'security smells, structure. Return JSON only: {"quality": '
-                '"good|minor|major", "notes": ["up to 5 short notes"]}\n\n' + blob[:12000],
-                temperature=0.2, timeout=240)
-            s, e = verdict.find("{"), verdict.rfind("}")
-            if s == -1 or e <= s:
-                return
-            review = json.loads(verdict[s:e + 1])
+                verdict = self.llm_client.call_llm(
+                    "You are a code reviewer. Assess correctness risks, error handling, "
+                    'security smells, structure. Return JSON only: {"quality": '
+                    '"good|minor|major", "notes": ["up to 5 short notes"]}\n\n' + blob[:12000],
+                    temperature=0.2, timeout=240)
+                s, e = verdict.find("{"), verdict.rfind("}")
+                if s == -1 or e <= s:
+                    return
+                review = json.loads(verdict[s:e + 1])
             cursor = self.task_storage.connection.cursor()
             cursor.execute(
                 "UPDATE task_registry SET metadata = COALESCE(metadata::jsonb,'{}') "

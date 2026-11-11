@@ -191,33 +191,53 @@ class QaEngineerServerHandlers(McpServerHandlers):
             files = []
             for root, _, fs in os.walk(result_dir):
                 files += [os.path.relpath(os.path.join(root, f), result_dir) for f in fs]
-            readme = ""
-            for f in sorted(files):
-                if f.lower().endswith("readme.md"):
-                    readme = open(os.path.join(result_dir, f), errors="ignore").read()[:1500]
-                    break
-            cands = "\n\n".join(
-                f"--- {f} ---\n" + open(os.path.join(result_dir, f), errors="ignore").read()[:500]
-                for f in sorted(files) if f.endswith((".py", ".js", ".html")))[:6000]
-            contract = self._llm_json(
-                "You are a release engineer. Decide how to install, run and health-check this "
-                "generated artifact on Linux.\n"
-                f"Files: {files}\nREADME excerpt:\n{readme}\nEntry candidates:\n{cands}\n\n"
-                'Respond ONLY JSON: {"install": "shell cmd or empty", '
-                '"run": "shell cmd starting the service/CLI, or empty for static", '
-                '"cwd": "dir relative to artifact root", "env": {"K":"V"}, '
-                '"kind": "service|cli|static", "healthcheck": {"type": "http|process|static", '
-                '"url": "path e.g. /mcp", "method": "POST|GET", "body": "json string or empty", '
-                '"expect_substring": "text expected in response or empty", "port": 5000}}\n'
-                "kind=service: run starts a server, healthcheck.type MUST be http with url/port, "
-                "polling http://127.0.0.1:PORT+url. "
-                "kind=cli: run must exit 0 quickly. kind=static: run empty, healthcheck static. "
-                "The server binds the port from env PORT.")
-            if not contract or not contract.get("kind"):
-                contract = self._heuristic_contract(files)
-                contract["source"] = "heuristic"
-            else:
-                contract["source"] = "llm"
+            contract = None
+            # opencode-first: explore agent reads the ACTUAL entry points
+            if os.environ.get("OPENCODE_QA", "1") != "0":
+                try:
+                    from .opencode_run import opencode_agent, extract_json
+                    ok, text, err = opencode_agent(
+                        "contract-planner", result_dir,
+                        "Determine the run contract for this artifact.",
+                        session=f"ses-contract-{arguments['task_id']}", timeout=300)
+                    contract = extract_json(text) if ok else None
+                    if contract and not contract.get("kind"):
+                        contract = None
+                    if contract:
+                        contract["source"] = "opencode"
+                    else:
+                        print(f"⚠️ contract opencode fell back: {err or 'bad json'}", flush=True)
+                except Exception as e:
+                    contract = None
+                    print(f"⚠️ contract opencode error: {str(e)[:150]}", flush=True)
+            if contract is None:
+                readme = ""
+                for f in sorted(files):
+                    if f.lower().endswith("readme.md"):
+                        readme = open(os.path.join(result_dir, f), errors="ignore").read()[:1500]
+                        break
+                cands = "\n\n".join(
+                    f"--- {f} ---\n" + open(os.path.join(result_dir, f), errors="ignore").read()[:500]
+                    for f in sorted(files) if f.endswith((".py", ".js", ".html")))[:6000]
+                contract = self._llm_json(
+                    "You are a release engineer. Decide how to install, run and health-check this "
+                    "generated artifact on Linux.\n"
+                    f"Files: {files}\nREADME excerpt:\n{readme}\nEntry candidates:\n{cands}\n\n"
+                    'Respond ONLY JSON: {"install": "shell cmd or empty", '
+                    '"run": "shell cmd starting the service/CLI, or empty for static", '
+                    '"cwd": "dir relative to artifact root", "env": {"K":"V"}, '
+                    '"kind": "service|cli|static", "healthcheck": {"type": "http|process|static", '
+                    '"url": "path e.g. /mcp", "method": "POST|GET", "body": "json string or empty", '
+                    '"expect_substring": "text expected in response or empty", "port": 5000}}\n'
+                    "kind=service: run starts a server, healthcheck.type MUST be http with url/port, "
+                    "polling http://127.0.0.1:PORT+url. "
+                    "kind=cli: run must exit 0 quickly. kind=static: run empty, healthcheck static. "
+                    "The server binds the port from env PORT.")
+                if not contract or not contract.get("kind"):
+                    contract = self._heuristic_contract(files)
+                    contract["source"] = "heuristic"
+                else:
+                    contract["source"] = "llm"
             contract["task_id"] = arguments["task_id"]
             try:
                 os.makedirs(cache_dir, exist_ok=True)

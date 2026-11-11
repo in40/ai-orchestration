@@ -570,8 +570,11 @@ def _opencode_fix(work_dir, session_id, path, error_text, timeout=None):
            "--session", f"ses-fix-{session_id}",
            "--auto", "--title", f"fix-{session_id}", prompt]
     try:
+        env = os.environ.copy()
+        env["PWD"] = str(work_dir)  # opencode CLI resolves project from $PWD, not getcwd
         p = subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True,
-                           timeout=timeout or int(os.environ.get("OPENCODE_FIX_TIMEOUT", "900")))
+                           timeout=timeout or int(os.environ.get("OPENCODE_FIX_TIMEOUT", "900")),
+                           env=env)
     except subprocess.TimeoutExpired:
         return False, f"opencode fix timeout"
     except Exception as e:
