@@ -652,6 +652,50 @@ const TaskManagement = () => {
                   No status history available
                 </Typography>
               )}
+
+              <Typography variant="subtitle1" gutterBottom sx={{ mt: 3 }}>
+                Team Activity ({selectedTaskHistory.activity?.length || 0} events)
+              </Typography>
+
+              {selectedTaskHistory.activity && selectedTaskHistory.activity.length > 0 ? (
+                <Box>
+                  {selectedTaskHistory.activity.map((ev, index) => (
+                    <Paper
+                      key={index}
+                      sx={{
+                        p: 1.5,
+                        mb: 1,
+                        borderLeft: 4,
+                        borderColor:
+                          String(ev.event).endsWith('_error') || String(ev.detail).includes('FAIL') ? 'error.main' :
+                          ['agent_done', 'qa_gate', 'security_gate', 'deploy_done'].includes(ev.event) ? 'success.main' :
+                          ['agent_call', 'deploy', 'file_generated'].includes(ev.event) ? 'info.main' : 'grey.400'
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Box>
+                          <Chip label={ev.event} size="small" variant="outlined" sx={{ mr: 1 }} />
+                          {ev.agent && (
+                            <Chip label={ev.agent} size="small" color="primary" variant="outlined" />
+                          )}
+                        </Box>
+                        <Typography variant="caption" color="textSecondary">
+                          {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : ''}
+                        </Typography>
+                      </Box>
+                      {ev.detail && (
+                        <Typography variant="body2" sx={{ mt: 0.5, wordBreak: 'break-word' }}>
+                          {ev.detail}
+                        </Typography>
+                      )}
+                    </Paper>
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="textSecondary">
+                  No team activity recorded
+                </Typography>
+              )}
             </Box>
           )}
         </DialogContent>

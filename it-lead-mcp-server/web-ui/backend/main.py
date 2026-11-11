@@ -1071,9 +1071,11 @@ async def get_task_progress(task_id: str):
 
         # Extract history from get_task_history response
         status_history = []
+        activity = []
         if "result" in history_data and "result" in history_data["result"]:
             hist_result = history_data["result"]["result"]
             status_history = hist_result.get("status_history", [])
+            activity = hist_result.get("activity", [])
 
         # Build progress report with MCP communication tracking
         progress_report = {
@@ -1094,6 +1096,17 @@ async def get_task_progress(task_id: str):
                     "reason": entry.get("reason")
                 }
                 for entry in status_history
+            ],
+
+            # Team activity log: who was called, when it finished, duration
+            "activity": [
+                {
+                    "ts": entry.get("ts"),
+                    "event": entry.get("event"),
+                    "agent": entry.get("agent"),
+                    "detail": entry.get("detail")
+                }
+                for entry in activity
             ],
             
             # Metadata contains routing decisions and tool calls
@@ -1225,7 +1238,8 @@ async def get_task_history(task_id: str):
                         "assigned_to": history_result.get("assigned_to", "unassigned"),
                         "created_at": history_result.get("created_at"),
                         "updated_at": history_result.get("updated_at"),
-                        "status_history": history_result.get("status_history", [])
+                        "status_history": history_result.get("status_history", []),
+                        "activity": history_result.get("activity", [])
                     }
                     return formatted_history
                 else:

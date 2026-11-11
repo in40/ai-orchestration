@@ -1341,6 +1341,11 @@ class ExtendedItLeadServerHandlers:
                         })
                     
                     # Add timestamp fields from the task
+                    activity = []
+                    try:
+                        activity = self.task_storage.get_task_activity(task_id) or []
+                    except Exception:
+                        activity = []
                     result = {
                         "task_id": task_id,
                         "title": task.get("title", ""),
@@ -1355,6 +1360,7 @@ class ExtendedItLeadServerHandlers:
                         "started_at": task.get("started_at"),
                         "completed_at": task.get("completed_at"),
                         "status_history": history_entries,
+                        "activity": activity,
                         "total_status_changes": len(history_entries)
                     }
                     

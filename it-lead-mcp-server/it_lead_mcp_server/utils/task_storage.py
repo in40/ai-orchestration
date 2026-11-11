@@ -93,7 +93,8 @@ class TaskStorage:
                     target_server VARCHAR(255),
                     result TEXT,
                     metadata JSONB DEFAULT '{}',
-                    status_history JSONB DEFAULT '[]'
+                    status_history JSONB DEFAULT '[]',
+                    activity JSONB DEFAULT '[]'
                 )
             """)
 
@@ -133,6 +134,29 @@ class TaskStorage:
                 print("Status constraint updated successfully")
             except Exception as e:
                 print(f"  Note: Could not update status constraint (may already exist or user lacks permissions): {e}")
+
+            # Add activity log column for existing databases.
+            # Guarded: only ALTER when missing, with a short lock_timeout so a
+            # concurrent idle-in-transaction connection can never hang startup.
+            try:
+                cursor = self.connection.cursor()
+                cursor.execute("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'task_registry' AND column_name = 'activity'
+                """)
+                if not cursor.fetchone():
+                    cursor.execute("SET lock_timeout = '5s'")
+                    cursor.execute("ALTER TABLE task_registry ADD COLUMN IF NOT EXISTS activity JSONB DEFAULT '[]'")
+                    cursor.execute("RESET lock_timeout")
+                    print("  Added activity column to task_registry")
+                self.connection.commit()
+                cursor.close()
+            except Exception as e:
+                print(f"  Note: Could not add activity column: {e}")
+                try:
+                    self.connection.rollback()
+                except Exception:
+                    pass
 
         except Exception as e:
             print(f"Error initializing PostgreSQL task storage database: {e}")
@@ -686,22 +710,25 @@ class TaskStorage:
         """
         try:
             cursor = self.connection.cursor()
-
+            entry = json.dumps({"status": status, "timestamp": time.time(), "reason": status_reason})
+            append_hist = """status_history = COALESCE(status_history, '[]'::jsonb) || %s::jsonb,"""
             if metadata:
                 cursor.execute("""
                     UPDATE task_registry
                     SET status = %s,
                         status_reason = %s,
-                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                        status_history = COALESCE(status_history, '[]'::jsonb) || %s::jsonb
                     WHERE task_id = %s
-                """, (status, status_reason, json.dumps(metadata), task_id))
+                """, (status, status_reason, json.dumps(metadata), "[" + entry + "]", task_id))
             else:
                 cursor.execute("""
                     UPDATE task_registry
                     SET status = %s,
-                        status_reason = %s
+                        status_reason = %s,
+                        status_history = COALESCE(status_history, '[]'::jsonb) || %s::jsonb
                     WHERE task_id = %s
-                """, (status, status_reason, task_id))
+                """, (status, status_reason, "[" + entry + "]", task_id))
 
             affected_rows = cursor.rowcount
             self.connection.commit()
@@ -720,3 +747,43 @@ class TaskStorage:
             traceback.print_exc()
             self.connection.rollback()
             return False
+
+    def log_activity(self, task_id: str, event: str, agent: Optional[str] = None,
+                     detail: Optional[str] = None) -> bool:
+        """Append a team-activity event (who was called, when it finished, etc.).
+
+        Each entry: {ts, event, agent, detail}. Non-fatal on error.
+        """
+        try:
+            cursor = self.connection.cursor()
+            entry = json.dumps({"ts": time.time(), "event": event,
+                                "agent": agent, "detail": (detail[:500] if detail else None)})
+            cursor.execute("""
+                UPDATE task_registry
+                SET activity = COALESCE(activity, '[]'::jsonb) || %s::jsonb
+                WHERE task_id = %s
+            """, ("[" + entry + "]", task_id))
+            self.connection.commit()
+            cursor.close()
+            return True
+        except Exception as e:
+            print(f"Error logging activity for {task_id}: {e}")
+            try:
+                self.connection.rollback()
+            except Exception:
+                pass
+            return False
+
+    def get_task_activity(self, task_id: str):
+        """Return the activity log list for a task (empty list if none)."""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("SELECT activity FROM task_registry WHERE task_id = %s", (task_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            if not row or row[0] is None:
+                return []
+            return row[0] if isinstance(row[0], list) else json.loads(row[0])
+        except Exception as e:
+            print(f"Error reading activity for {task_id}: {e}")
+            return []

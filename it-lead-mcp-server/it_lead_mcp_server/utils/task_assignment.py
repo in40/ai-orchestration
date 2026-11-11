@@ -419,11 +419,15 @@ class TaskAssignmentManager:
         with ThreadPoolExecutor(max_workers=3) as ex:
             for path, out in ex.map(gen_one, main_files):
                 results[path] = out
+                self._log_activity(task_id, "file_generated", agent="implementation-engineer",
+                                   detail=f"{path}: {'ok' if out.get('success') else 'FAILED'}")
                 print(f"🧩 fan-out {task_id} {path}: "
                       f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
         for entry in deferred_files:  # deterministic, needs siblings on disk
             path, out = gen_one(entry)
             results[path] = out
+            self._log_activity(task_id, "file_generated", agent="implementation-engineer",
+                               detail=f"{path}: {'ok' if out.get('success') else 'FAILED'}")
             print(f"🧩 fan-out {task_id} {path} (deferred): "
                   f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
         failed = [p for p, o in results.items() if not o.get("success")]
@@ -442,6 +446,8 @@ class TaskAssignmentManager:
         git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
                         if o.get("git_url")), "")
         qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id)
+        self._log_activity(task_id, "qa_gate", agent="qa-engineer",
+                           detail="PASS" if qa_ok else f"FAIL: {json.dumps(qa_info)[:200]}")
         if not qa_ok:
             qa_ok, qa_info = self._repair_and_recheck(
                 task_id, task_description, file_manifest, coder_endpoint,
@@ -453,6 +459,8 @@ class TaskAssignmentManager:
         if self.task_storage and git_url:
             self.task_storage.update_task_with_git_url(task_id, git_url)
         sec_ok, sec_info = self._security_gate(task_id, git_url)
+        self._log_activity(task_id, "security_gate", agent="security-reviewer",
+                           detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_info)[:200]}")
         if not sec_ok:
             self._update_task_status(task_id, "needs_revision",
                                      f"security scan failed: {json.dumps(sec_info)[:400]}")
@@ -462,8 +470,11 @@ class TaskAssignmentManager:
         want_deploy = "devops" in wf_join or \
             "deploy_after_implementation\": true" in json.dumps(metadata or {}).lower()
         if want_deploy and git_url:
+            self._log_activity(task_id, "deploy", agent="devops-release-engineer", detail="started")
             dep = self._deploy_multifile(task_id, git_url)
             url = dep.get("deployment_url")
+            self._log_activity(task_id, "deploy_done", agent="devops-release-engineer",
+                               detail=url or f"error: {str(dep.get('error'))[:200]}")
             if not url and dep.get("error"):
                 # container crash after green QA: feed traceback into repair, redeploy once
                 fake_qa = {"smoke_run": {"stderr": str(dep["error"])[-1500:]}}
@@ -1309,6 +1320,9 @@ class TaskAssignmentManager:
         max_retries = 5
         base_delay = 5  # seconds
 
+        self._log_activity(task_id, "agent_call", agent=agent_id,
+                           detail=f"tool={tool} endpoint={agent_endpoint}")
+        _t0 = time.time()
         for attempt in range(max_retries):
             try:
                 # Use sync requests to match existing server handler pattern
@@ -1328,6 +1342,8 @@ class TaskAssignmentManager:
 
                 if response.status_code == 200:
                     response_data = response.json()
+                    self._log_activity(task_id, "agent_done", agent=agent_id,
+                                       detail=f"tool={tool} in {time.time() - _t0:.0f}s")
                     return {
                         "success": True,
                         "response": response_data,
@@ -1336,6 +1352,8 @@ class TaskAssignmentManager:
                     }
                 else:
                     if attempt == max_retries - 1:
+                        self._log_activity(task_id, "agent_error", agent=agent_id,
+                                           detail=f"status {response.status_code} after {time.time() - _t0:.0f}s")
                         return {
                             "success": False,
                             "error": f"Agent returned status {response.status_code}: {response.text}"
@@ -1346,6 +1364,8 @@ class TaskAssignmentManager:
 
             except requests.RequestException as e:
                 if attempt == max_retries - 1:
+                    self._log_activity(task_id, "agent_error", agent=agent_id,
+                                       detail=f"request failed after {time.time() - _t0:.0f}s: {str(e)[:200]}")
                     return {"success": False, "error": f"Request failed: {str(e)}"}
                 # Retry on timeout/connection errors
                 print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed: {e}, retrying in {base_delay}s...")
@@ -1497,6 +1517,15 @@ class TaskAssignmentManager:
             import traceback
             traceback.print_exc()
             return False
+
+    def _log_activity(self, task_id: str, event: str, agent: Optional[str] = None,
+                      detail: Optional[str] = None):
+        """Best-effort team-activity log entry (who was called, when it finished)."""
+        try:
+            if self.task_storage:
+                self.task_storage.log_activity(task_id, event, agent, detail)
+        except Exception:
+            pass
 
     def _handle_workflow_sequence(self, task_id: str, task_description: str, current_agent: str, llm_plan: Optional[Dict[str, Any]], git_url: Optional[str], prev_result=None):
         """
