@@ -1156,18 +1156,11 @@ Rules:
 Overall project goal:
 {arguments.get('project_description', '')}""",
                 arguments.get("vibe_level", 3), server_handlers,
-                    max_tokens=(512 if base == "requirements.txt" else
-                                (2048 if not base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css"))
-                                 else 16384)),
+                    max_tokens=16384,
                     reasoning_effort="low",
                     allow_continuations=base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css")),
                     return_partial_on_cap=not base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css")))
                 content = _strip_code_fences(content)
-                if base == "requirements.txt":
-                    pkgs = sorted({t for t in re.split(r"[,\s`\n]+", content)
-                                   if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,40}", t)
-                                   and t.lower() not in {"the", "and", "for", "with", "list", "file", "requirements", "txt", "include", "must", "should", "spec"}})
-                    content = ("\n".join(pkgs[:30]) + "\n") if pkgs else "# dependencies\n"
                 if not content.strip():
                     return {"error": "generate_file produced empty content"}
                 if path.endswith(".py"):
