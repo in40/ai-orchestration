@@ -545,6 +545,54 @@ def git_push_llm_response(
         }
 
 
+def _opencode_fix(work_dir, session_id, path, error_text, timeout=None):
+    """Run an opencode fixer session in the task dir; agent edits files in place.
+
+    Returns (ok, detail). ok=True only if the target file actually changed and
+    (for .py) parses. Any failure -> caller falls back to the legacy path.
+    """
+    import shutil
+    binary = shutil.which("opencode") or "/root/.opencode/bin/opencode"
+    if not os.path.exists(binary):
+        return False, "opencode binary not found"
+    fp = work_dir / path
+    if not fp.exists():
+        return False, f"{path} missing"
+    try:
+        before = fp.read_bytes()
+    except Exception as e:
+        return False, str(e)
+    py_hint = ".qa_venv/bin/python" if (work_dir / ".qa_venv").exists() else "python3"
+    prompt = (f"Target file: {path}\nUse interpreter: {py_hint}\n\n"
+              f"Reported error:\n{error_text}\n\nFix it now.")
+    cmd = [binary, "run", "--agent", "fixer",
+           "--model", "hallogen/qwen3.8-next",
+           "--session", f"ses-fix-{session_id}",
+           "--auto", "--title", f"fix-{session_id}", prompt]
+    try:
+        p = subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True,
+                           timeout=timeout or int(os.environ.get("OPENCODE_FIX_TIMEOUT", "900")))
+    except subprocess.TimeoutExpired:
+        return False, f"opencode fix timeout"
+    except Exception as e:
+        return False, f"opencode spawn failed: {e}"
+    if p.returncode != 0:
+        return False, f"opencode rc={p.returncode}: {(p.stderr or p.stdout or '')[-300:]}"
+    try:
+        if fp.read_bytes() == before:
+            return False, "opencode made no change to " + path
+    except Exception as e:
+        return False, str(e)
+    if path.endswith(".py"):
+        import ast as _ast
+        try:
+            _ast.parse(fp.read_text(errors="ignore"))
+        except SyntaxError as e:
+            fp.write_bytes(before)  # restore
+            return False, f"opencode produced invalid python: line {e.lineno}: {e.msg}"
+    return True, "fixed via opencode session " + str(session_id)
+
+
 def _derive_requirements(task_id: str) -> str:
     """Deterministically build requirements.txt from sibling .py imports in the repo."""
     import ast as _ast
@@ -965,16 +1013,19 @@ def register_vibe_coding_tool(server_handlers):
             print(f"DEBUG: Using server postgres config: {task_postgres_config}")
         else:
             # Fall back to settings configuration
-            from ..config import settings
+            # NOTE: import under an alias — a bare `settings` here would make it
+            # local to register_vibe_coding_tool and shadow the module-level
+            # import inside enhanced_execute_tool (NameError in patch_file).
+            from ..config import settings as _pg_settings
             task_postgres_config = {
-                "host": settings.postgres_host,
-                "port": settings.postgres_port,
-                "database": settings.postgres_db,
-                "user": settings.postgres_user,
-                "password": settings.postgres_password
+                "host": _pg_settings.postgres_host,
+                "port": _pg_settings.postgres_port,
+                "database": _pg_settings.postgres_db,
+                "user": _pg_settings.postgres_user,
+                "password": _pg_settings.postgres_password
             }
             # Use PostgreSQL for tasks if it's configured and available
-            use_postgres = bool(settings.postgres_password and settings.postgres_password.strip())
+            use_postgres = bool(_pg_settings.postgres_password and _pg_settings.postgres_password.strip())
     except Exception as e:
         # If config is not available, use in-memory storage
         print(f"Error configuring PostgreSQL task storage: {e}")
@@ -1189,22 +1240,31 @@ Overall project goal:
                 if not fp.exists():
                     return {"error": f"patch_file: {path} not found in results/{tid}"}
                 original = fp.read_text()
-                fixed = _strip_code_fences(call_llm_sync(
-                    "Fix this file. Keep every existing export and behavior; change only what "
-                    "is needed to resolve the reported error. Output ONLY the complete fixed "
-                    "file content, no fences or commentary.\n\nFile path: " + path +
-                    "\nReported error:\n" + str(arguments.get("error", ""))[-2000:] +
-                    "\n\nCurrent file:\n" + original,
-                    2, server_handlers, max_tokens=16384, reasoning_effort="low"))
-                if not fixed.strip():
-                    return {"error": "patch_file produced empty output"}
-                if path.endswith(".py"):
-                    import ast as _ast
-                    try:
-                        _ast.parse(fixed)
-                    except SyntaxError as e:
-                        return {"error": f"patched {path} invalid: line {e.lineno}: {e.msg}"}
-                fp.write_text(fixed)
+                oc_via = ""
+                if os.environ.get("OPENCODE_PATCH", "1") != "0":
+                    ok, detail = _opencode_fix(local / "results" / tid, tid, path,
+                                               str(arguments.get("error", ""))[-2000:])
+                    if ok:
+                        oc_via = detail
+                    else:
+                        print(f"⚠️ patch_file opencode fell back to single-shot: {detail}", flush=True)
+                if not oc_via:
+                    fixed = _strip_code_fences(call_llm_sync(
+                        "Fix this file. Keep every existing export and behavior; change only what "
+                        "is needed to resolve the reported error. Output ONLY the complete fixed "
+                        "file content, no fences or commentary.\n\nFile path: " + path +
+                        "\nReported error:\n" + str(arguments.get("error", ""))[-2000:] +
+                        "\n\nCurrent file:\n" + original,
+                        2, server_handlers, max_tokens=16384, reasoning_effort="low"))
+                    if not fixed.strip():
+                        return {"error": "patch_file produced empty output"}
+                    if path.endswith(".py"):
+                        import ast as _ast
+                        try:
+                            _ast.parse(fixed)
+                        except SyntaxError as e:
+                            return {"error": f"patched {path} invalid: line {e.lineno}: {e.msg}"}
+                    fp.write_text(fixed)
                 _ensure_git_config(local)
                 env = os.environ.copy()
                 env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "mcp-agent"
@@ -1218,7 +1278,8 @@ Overall project goal:
                                       env=env, capture_output=True, text=True)
                 if push.returncode != 0:
                     return {"error": f"patch_file push failed: {(push.stderr or '')[-200:]}"}
-                return {"success": True, "patched": True, "file_path": f"results/{tid}/{path}"}
+                return {"success": True, "patched": True,
+                        "file_path": f"results/{tid}/{path}", "via": oc_via or "single-shot"}
             except Exception as e:
                 return {"error": f"patch_file failed: {type(e).__name__}: {e}"}
 
