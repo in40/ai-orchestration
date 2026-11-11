@@ -212,19 +212,26 @@ class TaskAssignmentManager:
         import re as _re
         smoke = qa_info.get("smoke_run", {}) if isinstance(qa_info, dict) else {}
         err = str(smoke.get("stderr") or "") + str(smoke.get("errors") or "")
+        target = None
+        fix_note = ""
         m = _re.search(r"cannot import name '(\w+)' from '([\w.]+)'", err)
-        if not m:
-            return False, qa_info
-        missing, modpath = m.group(1), m.group(2)
-        module = modpath.rsplit(".", 1)[-1]
-        target = next((f for f in file_manifest
-                       if f.get("path", "").rsplit("/", 1)[-1].rsplit(".", 1)[0] == module), None)
+        if m:
+            module = m.group(2).rsplit(".", 1)[-1]
+            target = next((f for f in file_manifest
+                           if f.get("path", "").rsplit("/", 1)[-1].rsplit(".", 1)[0] == module), None)
+            fix_note = (f"this module MUST define top-level '{m.group(1)}' imported by siblings")
+        else:
+            tb = _re.findall(r'File "[^"]*/([\w.]+\.py)", line \d+', err)
+            last = err.strip().splitlines()[-1] if err.strip() else ""
+            if tb and last and ("Error" in last or "Exception" in last):
+                target = next((f for f in file_manifest
+                               if f.get("path", "").endswith("/" + tb[-1])
+                               or f.get("path", "") == tb[-1]), None)
+                fix_note = f"fix runtime error: {last}. Traceback tail: {err[-300:]}"
         if not target:
             return False, qa_info
-        print(f"🔧 Repair: regenerating {target['path']} to define '{missing}'")
-        spec = (target.get("spec", "") +
-                f". FIX REQUIRED: this module MUST define top-level '{missing}' imported by "
-                f"siblings. Smoke error: {err[-300:]}")
+        print(f"🔧 Repair: regenerating {target['path']}")
+        spec = target.get("spec", "") + ". FIX REQUIRED: " + fix_note
         out = self._generate_one(coder_endpoint, task_id, target["path"], spec,
                                  manifest_str, task_description)
         if not out.get("success"):
@@ -244,12 +251,30 @@ class TaskAssignmentManager:
                 break
         if not ep:
             return {"error": "devops not registered"}
+        contract = {}
+        try:
+            qa_ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                          for s in services if "qa engineer" in (s.get("name") or "").lower()
+                          and s.get("endpoint")), None)
+            if qa_ep:
+                cr = requests.post(qa_ep, json={
+                    "jsonrpc": "2.0", "id": f"contract-{task_id}", "method": "tools/call",
+                    "params": {"name": "plan_run_contract",
+                               "arguments": {"task_id": task_id, "git_url": git_url}}},
+                    timeout=300)
+                out = cr.json().get("result", {})
+                if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                    out = out["result"]
+                contract = (out or {}).get("contract", {}) if isinstance(out, dict) else {}
+        except Exception as e:
+            print(f"⚠️ run contract lookup failed: {e}")
         try:
             r = requests.post(ep, json={
                 "jsonrpc": "2.0", "id": f"deploy-{task_id}", "method": "tools/call",
                 "params": {"name": "deploy_web_application",
                            "arguments": {"task_id": task_id, "git_url": git_url,
-                                         "container_port": 5000}}}, timeout=600)
+                                         "container_port": 5000,
+                                         "run_contract": contract}}}, timeout=600)
             out = r.json().get("result", {})
             if isinstance(out, dict) and isinstance(out.get("result"), dict):
                 out = out["result"]

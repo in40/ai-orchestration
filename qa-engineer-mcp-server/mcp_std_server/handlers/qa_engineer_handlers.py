@@ -57,12 +57,29 @@ class QaEngineerServerHandlers(McpServerHandlers):
             },
         })
 
+        self.tools.append({
+            "name": "plan_run_contract",
+            "description": "Read a task's artifact tree and decide how to install, run and "
+                           "health-check it (LLM reads README + entry files). Returns a run "
+                           "contract consumed by smoke_run and by the deployer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "git_url": {"type": "string"},
+                },
+                "required": ["task_id"],
+            },
+        })
+
     def _execute_tool(self, tool: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
         name = tool.get("name")
         if name == "validate_artifact":
             return self._validate_artifact(arguments)
         if name == "smoke_run":
             return self._smoke_run(arguments)
+        if name == "plan_run_contract":
+            return self._plan_run_contract(arguments)
         return super()._execute_tool(tool, arguments)
 
     # ---- helpers ----
@@ -117,6 +134,170 @@ class QaEngineerServerHandlers(McpServerHandlers):
             return open(os.path.join(result_dir, primary)).read(), lang, None, primary.replace("\\", "/")
         return None, None, "no result.py/result.js/result.html found", None
 
+    def _llm_json(self, prompt: str):
+        """Small LLM call returning a parsed JSON object, or None."""
+        import requests as _rq
+        url = os.environ.get("LLM_PROVIDER_URL", "")
+        model = os.environ.get("LLM_MODEL", "")
+        if not url or not model:
+            return None
+        try:
+            r = _rq.post(url, json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2, "max_tokens": 2048,
+                "reasoning_effort": "low"}, timeout=240)
+            txt = r.json()["choices"][0]["message"]["content"]
+            s, t = txt.find("{"), txt.rfind("}")
+            if s == -1 or t <= s:
+                return None
+            return json.loads(txt[s:t + 1])
+        except Exception as e:
+            print(f"⚠️ QA LLM call failed: {e}")
+            return None
+
+    def _heuristic_contract(self, files):
+        """Fallback contract when no LLM available: mirror legacy deployer heuristics."""
+        if "index.html" in files:
+            return {"kind": "static", "run": "", "cwd": "", "env": {},
+                    "healthcheck": {"type": "static"}}
+        main_pkg = next((f for f in files if f.endswith("__main__.py")), None)
+        if main_pkg:
+            pkg_dir = os.path.dirname(main_pkg)
+            return {"kind": "service", "run": f"python -m {os.path.basename(pkg_dir)}",
+                    "cwd": os.path.dirname(pkg_dir), "env": {"PORT": "5000"},
+                    "healthcheck": {"type": "http", "url": "/mcp", "method": "POST",
+                                    "port": 5000, "expect_substring": ""}}
+        entry = next((f for f in files if f.endswith(".py") and not f.endswith("__init__.py")), None)
+        if entry:
+            return {"kind": "cli", "run": f"python {os.path.basename(entry)}",
+                    "cwd": os.path.dirname(entry), "env": {},
+                    "healthcheck": {"type": "process"}}
+        return {"kind": "static", "run": "", "cwd": "", "env": {},
+                "healthcheck": {"type": "static"}}
+
+    def _plan_run_contract(self, arguments: Dict[str, Any], result_dir: str = None) -> Dict[str, Any]:
+        try:
+            if result_dir is None:
+                result_dir = self._fetch_result_dir(arguments["task_id"], arguments.get("git_url", ""))
+            files = []
+            for root, _, fs in os.walk(result_dir):
+                files += [os.path.relpath(os.path.join(root, f), result_dir) for f in fs]
+            readme = ""
+            for f in sorted(files):
+                if f.lower().endswith("readme.md"):
+                    readme = open(os.path.join(result_dir, f), errors="ignore").read()[:1500]
+                    break
+            cands = "\n\n".join(
+                f"--- {f} ---\n" + open(os.path.join(result_dir, f), errors="ignore").read()[:500]
+                for f in sorted(files) if f.endswith((".py", ".js", ".html")))[:6000]
+            contract = self._llm_json(
+                "You are a release engineer. Decide how to install, run and health-check this "
+                "generated artifact on Linux.\n"
+                f"Files: {files}\nREADME excerpt:\n{readme}\nEntry candidates:\n{cands}\n\n"
+                'Respond ONLY JSON: {"install": "shell cmd or empty", '
+                '"run": "shell cmd starting the service/CLI, or empty for static", '
+                '"cwd": "dir relative to artifact root", "env": {"K":"V"}, '
+                '"kind": "service|cli|static", "healthcheck": {"type": "http|process|static", '
+                '"url": "path e.g. /mcp", "method": "POST|GET", "body": "json string or empty", '
+                '"expect_substring": "text expected in response or empty", "port": 5000}}\n'
+                "kind=service: run starts a server, healthcheck.type MUST be http with url/port, "
+                "polling http://127.0.0.1:PORT+url. "
+                "kind=cli: run must exit 0 quickly. kind=static: run empty, healthcheck static. "
+                "The server binds the port from env PORT.")
+            if not contract or not contract.get("kind"):
+                contract = self._heuristic_contract(files)
+                contract["source"] = "heuristic"
+            else:
+                contract["source"] = "llm"
+            contract["task_id"] = arguments["task_id"]
+            return {"valid": True, "contract": contract}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    def _smoke_contract(self, contract: Dict[str, Any], result_dir: str) -> Dict[str, Any]:
+        """Execute a run contract: install, run, health-check."""
+        import urllib.request
+        kind = contract.get("kind", "static")
+        cwd = os.path.join(result_dir, str(contract.get("cwd") or ""))
+        env = dict(os.environ)
+        env.update({str(k): str(v) for k, v in (contract.get("env") or {}).items()})
+        if contract.get("install"):
+            venv = os.path.join(result_dir, ".qa_venv")
+            try:
+                import sys as _sys
+                subprocess.run([_sys.executable, "-m", "venv", venv],
+                               check=True, capture_output=True, timeout=180)
+                venv_bin = os.path.join(venv, "bin")
+                env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+                env["VIRTUAL_ENV"] = venv
+            except Exception as e:
+                return {"passed": False, "stage": "venv", "errors": [str(e)[:200]]}
+            try:
+                p = subprocess.run(contract["install"], shell=True, cwd=cwd, env=env,
+                                   capture_output=True, text=True, timeout=300)
+                if p.returncode != 0:
+                    return {"passed": False, "stage": "install", "stderr": p.stderr[-400:]}
+            except subprocess.TimeoutExpired:
+                return {"passed": False, "stage": "install", "errors": ["install timeout"]}
+        hc = contract.get("healthcheck") or {}
+        run = contract.get("run") or ""
+        if kind == "cli":
+            try:
+                p = subprocess.run(run, shell=True, cwd=cwd, env=env,
+                                   capture_output=True, text=True, timeout=60)
+                return {"passed": p.returncode == 0, "kind": "cli", "stage": "run",
+                        "stderr": p.stderr[-400:]}
+            except subprocess.TimeoutExpired:
+                return {"passed": False, "kind": "cli", "stage": "run", "errors": ["timeout"]}
+        if kind == "static":
+            html_file = next((os.path.join(r, f) for r, _, fs in os.walk(result_dir)
+                              for f in fs if f.endswith((".html", ".htm"))), None)
+            if not html_file:
+                return {"passed": False, "kind": "static", "stage": "find",
+                        "errors": ["no html file found"]}
+            return self._smoke_html(open(html_file, errors="ignore").read())
+        # kind == service: http healthcheck regardless of what the contract said
+        port = hc.get("port") or (contract.get("env") or {}).get("PORT") or 5000
+        url_path = hc.get("url") or "/mcp"
+        env["PORT"] = str(port)
+        proc = subprocess.Popen(run, shell=True, cwd=cwd, env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.time() + 25
+            last = ""
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    return {"passed": False, "kind": "service", "stage": "startup",
+                            "stderr": (proc.stderr.read() or "")[-500:]}
+                try:
+                    url = f"http://127.0.0.1:{port}{url_path}"
+                    body = hc.get("body") or ""
+                    if not body and "mcp" in url_path:
+                        body = ('{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+                                '{"protocolVersion":"2024-11-05","capabilities":{},'
+                                '"clientInfo":{"name":"qa","version":"1"}}}')
+                    data = body.encode() if body else None
+                    req = urllib.request.Request(
+                        url, data=data,
+                        headers={"Content-Type": "application/json"},
+                        method=hc.get("method") or ("POST" if data else "GET"))
+                    body = urllib.request.urlopen(req, timeout=3).read().decode()
+                    if not hc.get("expect_substring") or hc["expect_substring"] in body:
+                        return {"passed": True, "kind": "service", "stage": "healthcheck",
+                                "response": body[:200]}
+                    last = body[:200]
+                except Exception as e:
+                    last = str(e)
+                time.sleep(1)
+            return {"passed": False, "kind": "service", "stage": "healthcheck", "errors": [last]}
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+
     def _validate_artifact(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
             result_dir = self._fetch_result_dir(arguments["task_id"], arguments.get("git_url", ""))
@@ -149,6 +330,15 @@ class QaEngineerServerHandlers(McpServerHandlers):
             code, lang, err, primary = self._extract_code(result_dir)
             if err:
                 return {"passed": False, "stage": "extract", "errors": [err]}
+            if primary is not None:
+                # fan-out tree: contract-driven smoke (install/run/healthcheck decided per artifact)
+                cr = self._plan_run_contract(arguments, result_dir=result_dir)
+                if not cr.get("valid"):
+                    return {"passed": False, "stage": "contract", "errors": [cr.get("error", "")]}
+                contract = cr["contract"]
+                result = self._smoke_contract(contract, result_dir)
+                result["contract"] = contract
+                return result
             kind = arguments.get("kind", "auto")
             if kind == "auto":
                 low = code.lstrip().lower()

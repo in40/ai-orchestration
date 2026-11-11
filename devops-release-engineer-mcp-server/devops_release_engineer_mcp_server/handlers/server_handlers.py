@@ -597,7 +597,8 @@ class DevOpsReleaseEngineerHandlers:
                 deployment_logger.info(f"Multi-file artifact detected: {tree_entries}")
                 return self._deploy_multi_file(task_id, result_root, deploy_dir, 5000,
                                                deployment_logger, git_url, git_workdir,
-                                               memory_limit, cpu_limit)
+                                               memory_limit, cpu_limit,
+                                               run_contract=arguments.get("run_contract"))
 
             # Copy result file to deploy directory (could be .py, .json, or .html)
             # Try result.py first, then result.json, then result.html
@@ -964,8 +965,35 @@ CMD ["python", "result.py"]
             self._update_task_status_on_deployment_failure(task_id, error_msg)
             return {"error": error_msg}
 
+    @staticmethod
+    def _dockerfile_from_contract(rc, container_port):
+        kind = rc.get("kind")
+        if kind == "static":
+            return f"""FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+EXPOSE {container_port}
+CMD ["python", "-m", "http.server", "{container_port}"]
+"""
+        install = rc.get("install")
+        install_line = f"RUN {install}\n" if install else ""
+        env_lines = "".join(f'ENV {k}="{v}"\n' for k, v in (rc.get("env") or {}).items())
+        cwd = str(rc.get("cwd") or "").strip("/")
+        work = f"/app/{cwd}" if cwd else "/app"
+        hc = rc.get("healthcheck") or {}
+        port = hc.get("port") or container_port
+        run = str(rc.get("run") or "").replace('"', '\\"')
+        return f"""FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+{install_line}{env_lines}WORKDIR {work}
+EXPOSE {port}
+CMD ["/bin/sh", "-c", "{run}"]
+"""
+
     def _deploy_multi_file(self, task_id, result_root, deploy_dir, container_port,
-                           deployment_logger, git_url, git_workdir, memory_limit, cpu_limit):
+                           deployment_logger, git_url, git_workdir, memory_limit, cpu_limit,
+                           run_contract=None):
         """Deploy a multi-file artifact tree: static site if index.html, else python entry."""
         import subprocess
         import shutil
@@ -982,7 +1010,14 @@ CMD ["python", "result.py"]
         for root, _, files in os.walk(deploy_dir):
             all_files += [os.path.relpath(os.path.join(root, f), deploy_dir) for f in files]
 
-        if "index.html" in all_files:
+        rc = run_contract or {}
+        if rc.get("kind") in ("service", "cli", "static"):
+            hc = rc.get("healthcheck") or {}
+            if hc.get("port"):
+                container_port = int(hc["port"])
+            dockerfile = self._dockerfile_from_contract(rc, container_port)
+            deployment_logger.info(f"Dockerfile from run contract (source={rc.get('source', '?')})")
+        elif "index.html" in all_files:
             dockerfile = f"""FROM python:3.11-slim
 WORKDIR /app
 COPY . .
