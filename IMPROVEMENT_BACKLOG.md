@@ -31,6 +31,14 @@ cross-file contracts.
 - P6.3 (cheap option): prompt rule "prefer lazy imports inside functions so
   module import never fails on sibling gaps"
 
+## P6.4 — Run-contract architecture ✅ (2026-11-11)
+QA plan_run_contract (LLM reads README+entries -> install/run/cwd/env/kind/healthcheck,
+heuristic fallback); contract-driven smoke (venv install, kind-based healthcheck,
+startup tracebacks); IT Lead passes contract to DevOps; DevOps Dockerfile from
+contract; repair loop handles import AND runtime errors (stderr window 1500,
+bash for source-commands). Found via E2E: tmplA repair blind spot (truncated
+stderr), tmplB 'source' under dash. E2E tmplC running with deploy flag.
+
 
 ## P0 — Stop silent garbage (do first, ~half day)
 
