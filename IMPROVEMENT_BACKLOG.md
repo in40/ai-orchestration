@@ -39,6 +39,18 @@ contract; repair loop handles import AND runtime errors (stderr window 1500,
 bash for source-commands). Found via E2E: tmplA repair blind spot (truncated
 stderr), tmplB 'source' under dash. E2E tmplC running with deploy flag.
 
+## P6.5 — found in tmplC E2E (2026-11-11, OPEN)
+- Contract non-determinism: plan_run_contract is an LLM call; smoke-time and
+  deploy-time contracts can differ -> verdicts unstable. Fix: plan contract ONCE
+  per task, store (task metadata or results repo run_contract.json), reuse everywhere.
+- Generated-code quality: tmplC capabilities.py calls official mcp SDK API
+  (server.list_tools) against the template's own Server class -> runtime crash
+  that passed QA. Fix options: manifest spec rule "implement against stdlib only,
+  do not mimic third-party SDK APIs", or add mcp SDK to requirements and use it for real.
+- Deploy-time healthcheck: container crash-loop after successful QA is invisible
+  to the pipeline. Fix: devops post-run healthcheck + failure feeds repair.
+- Fixed along the way: docker tags must be lowercase (67e8193).
+
 
 ## P0 — Stop silent garbage (do first, ~half day)
 
