@@ -156,3 +156,9 @@ prev_result flows through _handle_workflow_sequence into coder prompt
 
 ## Definition of done for backlog
 E2E: submit "MCP service template" task → plan decomposed → files generated → QA handshake passes → deployed → URL live.
+
+## Task activity log ✅ (803c154)
+Fixed status_history persistence bug (was never written after INSERT). Added
+activity jsonb timeline: agent_call/agent_done(+duration)/agent_error,
+file_generated, qa_gate, security_gate, deploy. Rendered in Task History modal.
+Guarded migration (lock_timeout) after DDL-on-startup caused a lock pileup.
