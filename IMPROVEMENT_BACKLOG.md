@@ -57,6 +57,10 @@ stderr), tmplB 'source' under dash. E2E tmplC running with deploy flag.
   (no artifact versioning); QA retest = smoke_run w/ cached contract
 - tmplD E2E pending (S fixes untested live)
 
+## task-1794401907867 postmortem fixes ✅ (62e9f4a, 065f209)
+requirements.txt: deterministic import-derivation (no LLM), deferred after code
+wave; per-extension token budgets; repetitive-loop guard in continuations.
+
 ## T6 — requirements-spec handoff ✅ (c674dae)
 prev_result flows through _handle_workflow_sequence into coder prompt
 (as authoritative TECHNICAL SPECIFICATION, 4K cap). Fan-out path unaffected
