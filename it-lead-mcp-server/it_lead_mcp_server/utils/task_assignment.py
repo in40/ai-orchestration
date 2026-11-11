@@ -392,6 +392,13 @@ class TaskAssignmentManager:
             self._update_task_status(task_id, "failed", "implementation-engineer unavailable for fan-out")
             return
         coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
+        # Derived boilerplate (requirements.txt is built from sibling .py imports)
+        # must run AFTER the parallel code wave, not inside it.
+        def _is_deferred(f):
+            import os as _os
+            return _os.path.basename(str(f.get("path", "")).lower()) in ("requirements.txt", ".env.example")
+        deferred_files = [f for f in file_manifest if _is_deferred(f)]
+        main_files = [f for f in file_manifest if not _is_deferred(f)]
         manifest_str = "\n".join(f"- {f.get('path')}: {f.get('spec', '')}" for f in file_manifest)
 
         def gen_one(entry):
@@ -410,10 +417,15 @@ class TaskAssignmentManager:
 
         results = {}
         with ThreadPoolExecutor(max_workers=3) as ex:
-            for path, out in ex.map(gen_one, file_manifest):
+            for path, out in ex.map(gen_one, main_files):
                 results[path] = out
                 print(f"🧩 fan-out {task_id} {path}: "
                       f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+        for entry in deferred_files:  # deterministic, needs siblings on disk
+            path, out = gen_one(entry)
+            results[path] = out
+            print(f"🧩 fan-out {task_id} {path} (deferred): "
+                  f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
         failed = [p for p, o in results.items() if not o.get("success")]
         for p in list(failed):  # sequential second pass after parallel burst
             entry = next((f for f in file_manifest if f.get("path") == p), None)
