@@ -39,7 +39,7 @@ contract; repair loop handles import AND runtime errors (stderr window 1500,
 bash for source-commands). Found via E2E: tmplA repair blind spot (truncated
 stderr), tmplB 'source' under dash. E2E tmplC running with deploy flag.
 
-## P6.5 — found in tmplC E2E (2026-11-11, OPEN)
+## P6.5 — found in tmplC E2E (2026-11-11) ✅ impl 69dd89e, E2E pending
 - Contract non-determinism: plan_run_contract is an LLM call; smoke-time and
   deploy-time contracts can differ -> verdicts unstable. Fix: plan contract ONCE
   per task, store (task metadata or results repo run_contract.json), reuse everywhere.
