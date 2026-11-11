@@ -545,6 +545,13 @@ def git_push_llm_response(
         }
 
 
+def _looks_like_pkg_list(spec: str) -> bool:
+    """True if spec is plausibly a bare comma/space-separated package list."""
+    toks = [t for t in re.split(r"[,\s]+", (spec or "").strip()) if t]
+    return bool(toks) and len(toks) <= 12 and all(
+        re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,40}", t) for t in toks)
+
+
 def _strip_code_fences(text: str) -> str:
     t = (text or "").strip()
     if t.startswith("```"):
@@ -1053,6 +1060,21 @@ def register_vibe_coding_tool(server_handlers):
         ])
     if not any(t["name"] == "generate_file" for t in server_handlers.tools):
         server_handlers.tools.append(generate_file_tool)
+    if not any(t["name"] == "patch_file" for t in server_handlers.tools):
+        server_handlers.tools.append({
+            "name": "patch_file",
+            "description": "Surgically fix an existing result file given a reported error. "
+                           "Keeps all existing exports; changes only what the error requires.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "path": {"type": "string", "description": "Path relative to results/<task_id>/"},
+                    "error": {"type": "string", "description": "Error text / traceback to fix"},
+                },
+                "required": ["task_id", "path", "error"],
+            },
+        })
 
     # Notify that tools have changed
     if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:
@@ -1064,7 +1086,19 @@ def register_vibe_coding_tool(server_handlers):
     def enhanced_execute_tool(tool, arguments):
         if tool["name"] == "generate_file":
             path = arguments.get("path", "")
-            content = call_llm_sync(
+            base = path.rsplit("/", 1)[-1]
+            spec_txt = str(arguments.get("spec", ""))
+            # S3: boilerplate files need no LLM round-trip
+            if base == "requirements.txt" and _looks_like_pkg_list(spec_txt):
+                pkgs = sorted({t for t in re.split(r"[,\s]+", spec_txt.strip())
+                               if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,40}", t)})
+                return git_push_single_file(arguments.get("task_id", "unassigned"), path,
+                                            "\n".join(pkgs) + "\n")
+            if base == ".env.example":
+                return git_push_single_file(arguments.get("task_id", "unassigned"), path,
+                                            "# Environment configuration\nPORT=5000\n")
+            try:
+                content = call_llm_sync(
                 f"""Generate exactly ONE file for a software project. Output ONLY the raw file content — no markdown fences, no commentary, no JSON wrapper.
 
 File path: {path}
@@ -1083,16 +1117,63 @@ Overall project goal:
 {arguments.get('project_description', '')}""",
                 arguments.get("vibe_level", 3), server_handlers,
                 max_tokens=16384, reasoning_effort="low")
-            content = _strip_code_fences(content)
-            if not content.strip():
-                return {"error": "generate_file produced empty content"}
-            if path.endswith(".py"):
-                import ast as _ast
-                try:
-                    _ast.parse(content)
-                except SyntaxError as e:
-                    return {"error": f"generated {path} invalid python: line {e.lineno}: {e.msg}"}
-            return git_push_single_file(arguments.get("task_id", "unassigned"), path, content)
+                content = _strip_code_fences(content)
+                if not content.strip():
+                    return {"error": "generate_file produced empty content"}
+                if path.endswith(".py"):
+                    import ast as _ast
+                    try:
+                        _ast.parse(content)
+                    except SyntaxError as e:
+                        return {"error": f"generated {path} invalid python: line {e.lineno}: {e.msg}"}
+                return git_push_single_file(arguments.get("task_id", "unassigned"), path, content)
+            except Exception as e:
+                return {"error": f"generate_file {path} failed: {type(e).__name__}: {e}"}
+
+        if tool["name"] == "patch_file":
+            path = arguments.get("path", "")
+            tid = arguments.get("task_id", "unassigned")
+            try:
+                repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
+                    "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
+                _get_or_clone_git_repo(repo_url, local)
+                fp = local / "results" / tid / path
+                if not fp.exists():
+                    return {"error": f"patch_file: {path} not found in results/{tid}"}
+                original = fp.read_text()
+                fixed = _strip_code_fences(call_llm_sync(
+                    "Fix this file. Keep every existing export and behavior; change only what "
+                    "is needed to resolve the reported error. Output ONLY the complete fixed "
+                    "file content, no fences or commentary.\n\nFile path: " + path +
+                    "\nReported error:\n" + str(arguments.get("error", ""))[-2000:] +
+                    "\n\nCurrent file:\n" + original,
+                    2, server_handlers, max_tokens=16384, reasoning_effort="low"))
+                if not fixed.strip():
+                    return {"error": "patch_file produced empty output"}
+                if path.endswith(".py"):
+                    import ast as _ast
+                    try:
+                        _ast.parse(fixed)
+                    except SyntaxError as e:
+                        return {"error": f"patched {path} invalid: line {e.lineno}: {e.msg}"}
+                fp.write_text(fixed)
+                _ensure_git_config(local)
+                env = os.environ.copy()
+                env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "mcp-agent"
+                env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "mcp-agent@localhost"
+                subprocess.run(["git", "add", f"results/{tid}"], cwd=str(local), env=env, capture_output=True)
+                subprocess.run(["git", "commit", "-m", f"[patch_file] {tid}: {path}"],
+                               cwd=str(local), env=env, capture_output=True)
+                subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                               cwd=str(local), env=env, capture_output=True)
+                push = subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=str(local),
+                                      env=env, capture_output=True, text=True)
+                if push.returncode != 0:
+                    return {"error": f"patch_file push failed: {(push.stderr or '')[-200:]}"}
+                return {"success": True, "patched": True, "file_path": f"results/{tid}/{path}"}
+            except Exception as e:
+                return {"error": f"patch_file failed: {type(e).__name__}: {e}"}
 
         if tool["name"] == "vibe_code":
             # Construct prompt with style and vibe

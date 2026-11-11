@@ -298,6 +298,20 @@ class QaEngineerServerHandlers(McpServerHandlers):
                         method=hc.get("method") or ("POST" if data else "GET"))
                     body = urllib.request.urlopen(req, timeout=3).read().decode()
                     if not hc.get("expect_substring") or hc["expect_substring"] in body:
+                        if "mcp" in url_path:
+                            # conformance: a real MCP service must answer tools/list
+                            probe = ('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}').encode()
+                            try:
+                                req2 = urllib.request.Request(url, data=probe, method="POST",
+                                                              headers={"Content-Type": "application/json"})
+                                body2 = urllib.request.urlopen(req2, timeout=5).read().decode()
+                                if '"result"' not in body2:
+                                    return {"passed": False, "kind": "service",
+                                            "stage": "conformance",
+                                            "errors": ["tools/list: " + body2[:200]]}
+                            except Exception as e:
+                                return {"passed": False, "kind": "service",
+                                        "stage": "conformance", "errors": [str(e)]}
                         return {"passed": True, "kind": "service", "stage": "healthcheck",
                                 "response": body[:200]}
                     last = body[:200]

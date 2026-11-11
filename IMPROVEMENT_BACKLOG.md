@@ -40,6 +40,22 @@ bash for source-commands). Found via E2E: tmplA repair blind spot (truncated
 stderr), tmplB 'source' under dash. E2E tmplC running with deploy flag.
 
 ## P6.5 — found in tmplC E2E (2026-11-11) ✅ impl 69dd89e, E2E pending
+
+## P7 — tmplD lessons + team buildout (2026-11-11) ✅
+- S1 generate_file try/except + raw-response logging (opaque {} failures)
+- S2 3x retry w/ backoff + sequential second pass for failed files
+- S3 requirements.txt/.env.example generated deterministically (no LLM)
+- T1 coder patch_file(task_id,path,error): surgical repair; IT Lead repair
+  now patches first, regenerates only if patch fails
+- T2 QA conformance probe: tools/list must answer on MCP services
+- T3 Security Reviewer agent :3073 (scan_artifact: eval/exec/shell=True/pickle/
+  unsafe yaml/AWS keys/hardcoded secrets; high findings block deploy);
+  IT Lead security gate between QA and deploy
+- T4 deployment warden (systemd timer, 5min): running deployments re-checked,
+  flipped to unhealthy on death/restart-loop
+- T5 get_deployment_status already covers healthcheck; rollback deferred
+  (no artifact versioning); QA retest = smoke_run w/ cached contract
+- tmplD E2E pending (S fixes untested live)
 - Contract non-determinism: plan_run_contract is an LLM call; smoke-time and
   deploy-time contracts can differ -> verdicts unstable. Fix: plan contract ONCE
   per task, store (task metadata or results repo run_contract.json), reuse everywhere.

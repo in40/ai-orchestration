@@ -1,7 +1,7 @@
 [Unit]
 Description=MCP Master Orchestration Service - Starts all MCP servers
 Documentation=https://github.com/in40/ai-orchestration
-After=network.target mcp-qa-engineer.service postgresql.service mcp-registry.service mcp-implementation-engineer.service mcp-requirements-engineer.service mcp-it-lead.service mcp-team-management.service mcp-devops-release-engineer.service mcp-web-ui-frontend.service
+After=network.target mcp-security-reviewer.service mcp-qa-engineer.service postgresql.service mcp-registry.service mcp-implementation-engineer.service mcp-requirements-engineer.service mcp-it-lead.service mcp-team-management.service mcp-devops-release-engineer.service mcp-web-ui-frontend.service
 Wants=postgresql.service
 # Reverse dependencies: stopping mcp-master stops all of these.
 # mcp-web-ui-backend is intentionally excluded: mcp-web-ui-watchdog owns port 8000.
@@ -13,6 +13,7 @@ Requires=mcp-team-management.service
 Requires=mcp-devops-release-engineer.service
 Requires=mcp-web-ui-frontend.service
 Requires=mcp-qa-engineer.service
+Requires=mcp-security-reviewer.service
 
 [Service]
 Type=oneshot
@@ -31,3 +32,4 @@ Also=mcp-team-management.service
 Also=mcp-devops-release-engineer.service
 Also=mcp-web-ui-frontend.service
 Also=mcp-qa-engineer.service
+Also=mcp-security-reviewer.service

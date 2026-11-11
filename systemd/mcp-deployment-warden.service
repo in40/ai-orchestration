@@ -1,0 +1,8 @@
+[Unit]
+Description=Deployment Warden - re-check health of running deployments
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/root/qwen/base/.env
+ExecStart=/usr/bin/python3 /root/qwen/base/scripts/deployment_warden.py

@@ -204,6 +204,23 @@ class TaskAssignmentManager:
             out = r.json().get("result", {})
             if isinstance(out, dict) and isinstance(out.get("result"), dict):
                 out = out["result"]
+            if not isinstance(out, dict):
+                out = {}
+            if not out:
+                print(f"⚠️ generate_file {path}: empty result; raw: {r.text[:300]}", flush=True)
+            return out
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _patch_one(self, coder_endpoint, task_id, path, error_text):
+        try:
+            r = requests.post(coder_endpoint, json={
+                "jsonrpc": "2.0", "id": f"patch-{task_id}-{path}", "method": "tools/call",
+                "params": {"name": "patch_file", "arguments": {
+                    "task_id": task_id, "path": path, "error": error_text}}}, timeout=3600)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
             return out if isinstance(out, dict) else {}
         except Exception as e:
             return {"error": str(e)}
@@ -234,13 +251,42 @@ class TaskAssignmentManager:
                 fix_note = f"fix runtime error: {last}. Traceback tail: {err[-300:]}"
         if not target:
             return False, qa_info
-        print(f"🔧 Repair: regenerating {target['path']}")
-        spec = target.get("spec", "") + ". FIX REQUIRED: " + fix_note
-        out = self._generate_one(coder_endpoint, task_id, target["path"], spec,
-                                 manifest_str, task_description)
+        print(f"🔧 Repair: patching {target['path']}")
+        out = self._patch_one(coder_endpoint, task_id, target["path"], err[-2000:])
+        if not out.get("success"):
+            print(f"🔧 patch failed ({str(out)[:120]}), regenerating {target['path']}")
+            spec = target.get("spec", "") + ". FIX REQUIRED: " + fix_note
+            out = self._generate_one(coder_endpoint, task_id, target["path"], spec,
+                                     manifest_str, task_description)
         if not out.get("success"):
             return False, qa_info
         return self._run_qa_gate(task_id, git_url, task_id)
+
+    def _security_gate(self, task_id, git_url):
+        """Security Reviewer scan; fails open when the reviewer is unavailable."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception:
+            return True, {}
+        ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                   for s in services if isinstance(s, dict)
+                   and "security reviewer" in (s.get("name") or "").lower()
+                   and s.get("endpoint")), None)
+        if not ep:
+            return True, {"skipped": "security reviewer not registered"}
+        try:
+            r = requests.post(ep, json={
+                "jsonrpc": "2.0", "id": f"sec-{task_id}", "method": "tools/call",
+                "params": {"name": "scan_artifact",
+                           "arguments": {"task_id": task_id, "git_url": git_url}}}, timeout=180)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            out = out if isinstance(out, dict) else {}
+            return bool(out.get("safe", True)), out
+        except Exception as e:
+            print(f"⚠️ security gate error: {e}")
+            return True, {"skipped": str(e)}
 
     def _deploy_multifile(self, task_id, git_url):
         """Call DevOps deploy_web_application for a fan-out tree. Returns result dict."""
@@ -304,12 +350,15 @@ class TaskAssignmentManager:
         def gen_one(entry):
             path = entry.get("path")
             last = {}
-            for attempt in range(2):  # one retry: generation variance often clears transient truncation
+            for attempt in range(3):  # transient engine contention is real (batch-1 GPU)
                 out = self._generate_one(coder_endpoint, task_id, path,
                                          entry.get("spec", ""), manifest_str, task_description)
                 if out.get("success"):
                     return path, out
                 last = out
+                if attempt < 2:
+                    import time as _t
+                    _t.sleep(10 * (attempt + 1))
             return path, last
 
         results = {}
@@ -317,6 +366,15 @@ class TaskAssignmentManager:
             for path, out in ex.map(gen_one, file_manifest):
                 results[path] = out
                 print(f"🧩 fan-out {task_id} {path}: "
+                      f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+        failed = [p for p, o in results.items() if not o.get("success")]
+        for p in list(failed):  # sequential second pass after parallel burst
+            entry = next((f for f in file_manifest if f.get("path") == p), None)
+            if entry:
+                print(f"🧩 fan-out retry {task_id} {p}", flush=True)
+                _, out = gen_one(entry)
+                results[p] = out
+                print(f"🧩 fan-out {task_id} {p} (retry): "
                       f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
         failed = [p for p, o in results.items() if not o.get("success")]
         if failed:
@@ -335,6 +393,11 @@ class TaskAssignmentManager:
             return
         if self.task_storage and git_url:
             self.task_storage.update_task_with_git_url(task_id, git_url)
+        sec_ok, sec_info = self._security_gate(task_id, git_url)
+        if not sec_ok:
+            self._update_task_status(task_id, "needs_revision",
+                                     f"security scan failed: {json.dumps(sec_info)[:400]}")
+            return
         wf_join = " ".join((llm_plan or {}).get("workflow_sequence", []) if isinstance(llm_plan, dict) else [])
         want_deploy = "devops" in wf_join or \
             "deploy_after_implementation\": true" in json.dumps(metadata or {}).lower()
