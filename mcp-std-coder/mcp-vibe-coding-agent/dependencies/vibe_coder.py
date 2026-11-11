@@ -545,6 +545,38 @@ def git_push_llm_response(
         }
 
 
+def _derive_requirements(task_id: str) -> str:
+    """Deterministically build requirements.txt from sibling .py imports in the repo."""
+    import ast as _ast
+    import sys as _sys
+    repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
+        "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
+    _get_or_clone_git_repo(repo_url, local)
+    root = local / "results" / task_id
+    aliases = {"yaml": "pyyaml", "PIL": "pillow", "sklearn": "scikit-learn",
+               "bs4": "beautifulsoup4", "cv2": "opencv-python", "fitz": "pymupdf",
+               "dateutil": "python-dateutil", "dotenv": "python-dotenv", "jwt": "PyJWT"}
+    stdlib = getattr(_sys, "stdlib_module_names", set())
+    pkgs = set()
+    for py in root.rglob("*.py") if root.is_dir() else []:
+        try:
+            tree = _ast.parse(py.read_text(errors="ignore"))
+        except SyntaxError:
+            continue
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                mods = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+                mods = [node.module.split(".")[0]]
+            else:
+                continue
+            for m in mods:
+                if m and m not in stdlib and m != task_id.replace("-", "_"):
+                    pkgs.add(aliases.get(m, m))
+    return ("\n".join(sorted(pkgs)) + "\n") if pkgs else "# dependencies (stdlib only)\n"
+
+
 def _looks_like_pkg_list(spec: str) -> bool:
     """True if spec is plausibly a bare comma/space-separated package list."""
     toks = [t for t in re.split(r"[,\s]+", (spec or "").strip()) if t]
@@ -707,7 +739,7 @@ def _parse_llm_json_response(response: str) -> Optional[Dict[str, Any]]:
 
 import requests
 
-def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 3600, max_tokens: int = 65536, reasoning_effort: Optional[str] = None) -> str:
+def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 3600, max_tokens: int = 65536, reasoning_effort: Optional[str] = None, allow_continuations: bool = True, return_partial_on_cap: bool = False) -> str:
     """
     Call LM Studio's OpenAI-compatible endpoint using synchronous requests.
 
@@ -740,7 +772,8 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                 break
 
     last_error = None
-    max_continuations = 3
+    max_continuations = 3 if allow_continuations else 0
+    prev_piece = ""
 
     for attempt in range(max_retries):
         try:
@@ -773,11 +806,17 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                 full_content += piece
                 if choice.get("finish_reason") != "length":
                     return full_content
-                print(f"⚠️ LLM output truncated at token cap (continuation {cont + 1}/{max_continuations})", flush=True)
                 if cont == max_continuations:
+                    if return_partial_on_cap:
+                        return full_content
                     raise RuntimeError(
                         f"truncated_output: LLM hit token cap after {max_continuations} continuations "
                         f"({len(full_content)} chars)")
+                if piece[:200] and piece[:200] == prev_piece[:200]:
+                    raise RuntimeError(
+                        f"truncated_output: repetitive generation loop detected ({len(full_content)} chars)")
+                prev_piece = piece
+                print(f"⚠️ LLM output truncated at token cap (continuation {cont + 1}/{max_continuations})", flush=True)
                 messages.append({"role": "assistant", "content": piece})
                 tail = piece[-200:]
                 messages.append({"role": "user", "content":
@@ -1089,11 +1128,12 @@ def register_vibe_coding_tool(server_handlers):
             base = path.rsplit("/", 1)[-1]
             spec_txt = str(arguments.get("spec", ""))
             # S3: boilerplate files need no LLM round-trip
-            if base == "requirements.txt" and _looks_like_pkg_list(spec_txt):
-                pkgs = sorted({t for t in re.split(r"[,\s]+", spec_txt.strip())
-                               if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,40}", t)})
-                return git_push_single_file(arguments.get("task_id", "unassigned"), path,
-                                            "\n".join(pkgs) + "\n")
+            if base == "requirements.txt":
+                try:
+                    content = _derive_requirements(arguments.get("task_id", "unassigned"))
+                except Exception:
+                    content = "# dependencies\n"
+                return git_push_single_file(arguments.get("task_id", "unassigned"), path, content)
             if base == ".env.example":
                 return git_push_single_file(arguments.get("task_id", "unassigned"), path,
                                             "# Environment configuration\nPORT=5000\n")
@@ -1116,8 +1156,18 @@ Rules:
 Overall project goal:
 {arguments.get('project_description', '')}""",
                 arguments.get("vibe_level", 3), server_handlers,
-                max_tokens=16384, reasoning_effort="low")
+                    max_tokens=(512 if base == "requirements.txt" else
+                                (2048 if not base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css"))
+                                 else 16384)),
+                    reasoning_effort="low",
+                    allow_continuations=base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css")),
+                    return_partial_on_cap=not base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css")))
                 content = _strip_code_fences(content)
+                if base == "requirements.txt":
+                    pkgs = sorted({t for t in re.split(r"[,\s`\n]+", content)
+                                   if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,40}", t)
+                                   and t.lower() not in {"the", "and", "for", "with", "list", "file", "requirements", "txt", "include", "must", "should", "spec"}})
+                    content = ("\n".join(pkgs[:30]) + "\n") if pkgs else "# dependencies\n"
                 if not content.strip():
                     return {"error": "generate_file produced empty content"}
                 if path.endswith(".py"):
@@ -1128,6 +1178,10 @@ Overall project goal:
                         return {"error": f"generated {path} invalid python: line {e.lineno}: {e.msg}"}
                 return git_push_single_file(arguments.get("task_id", "unassigned"), path, content)
             except Exception as e:
+                if base in ("requirements.txt", ".env.example"):
+                    fb = ("# dependencies\n" if base == "requirements.txt"
+                          else "# Environment configuration\nPORT=5000\n")
+                    return git_push_single_file(arguments.get("task_id", "unassigned"), path, fb)
                 return {"error": f"generate_file {path} failed: {type(e).__name__}: {e}"}
 
         if tool["name"] == "patch_file":
