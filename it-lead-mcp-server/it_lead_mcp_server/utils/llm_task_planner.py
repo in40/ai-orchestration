@@ -59,7 +59,9 @@ listing EVERY file to produce (entry module, helpers, README.md, requirements.tx
 each under ~150 lines - split large modules into more files.
 Each spec MUST pin the contract: exact top-level names the file exports
 (function/class names) and exact sibling imports it relies on, so files
-generated independently still fit together.
+generated independently still fit together. Specs may rely only on the
+stdlib or packages explicitly listed in the deliverable - never assume a
+third-party SDK API.
 Omit file_manifest (or []) for single-file deliverables."""
         
         # Call LLM

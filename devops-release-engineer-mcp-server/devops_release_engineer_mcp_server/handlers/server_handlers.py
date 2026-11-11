@@ -1076,6 +1076,19 @@ CMD ["python", "{os.path.basename(entry)}"]
             "--restart", "unless-stopped",
             image_name
         ], check=True, capture_output=True, timeout=30)
+        time.sleep(6)
+        st = subprocess.run(["docker", "inspect", "-f",
+                             "{{.State.Status}} {{.RestartCount}}", container_name],
+                            capture_output=True, text=True)
+        state = (st.stdout or "").strip()
+        parts = state.split()
+        restarts = parts[1] if len(parts) > 1 else "0"
+        if "running" not in state or restarts != "0":
+            logs = subprocess.run(["docker", "logs", "--tail", "30", container_name],
+                                  capture_output=True, text=True)
+            tail = ((logs.stdout or "") + (logs.stderr or ""))[-1200:]
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+            return {"error": f"container unhealthy after start ({state}): {tail}"}
         deployment_url = f"http://{deployment_host}:{host_port}/"
         self._store_deployment(task_id, container_name, container_port, host_port,
                                deployment_url, git_url, image_name, memory_limit, cpu_limit)

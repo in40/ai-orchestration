@@ -1077,6 +1077,7 @@ Rules:
 - Define EXACTLY the exports your spec promises; import from siblings only what their spec says they export.
 - Prefer lazy imports inside functions for sibling modules, so importing this file never fails.
 - If this file starts a network server, it MUST bind 0.0.0.0 (not 127.0.0.1) and read the port from env PORT (default 5000).
+- Use ONLY the Python stdlib or packages explicitly listed in this project's requirements. NEVER mimic third-party SDK APIs on your own classes (e.g. do not add SDK-style decorators/methods to your own Server object) - implement exactly what the sibling specs say.
 
 Overall project goal:
 {arguments.get('project_description', '')}""",

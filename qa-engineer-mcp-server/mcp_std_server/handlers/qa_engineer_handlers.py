@@ -178,6 +178,14 @@ class QaEngineerServerHandlers(McpServerHandlers):
 
     def _plan_run_contract(self, arguments: Dict[str, Any], result_dir: str = None) -> Dict[str, Any]:
         try:
+            cache_dir = os.path.join(tempfile.gettempdir(), "qa-contracts")
+            cache = os.path.join(cache_dir, f"{arguments['task_id']}.json")
+            if os.path.exists(cache):  # deterministic: one contract per task, reused by smoke+deploy
+                try:
+                    with open(cache) as f:
+                        return {"valid": True, "contract": json.load(f)}
+                except Exception:
+                    pass
             if result_dir is None:
                 result_dir = self._fetch_result_dir(arguments["task_id"], arguments.get("git_url", ""))
             files = []
@@ -211,6 +219,12 @@ class QaEngineerServerHandlers(McpServerHandlers):
             else:
                 contract["source"] = "llm"
             contract["task_id"] = arguments["task_id"]
+            try:
+                os.makedirs(cache_dir, exist_ok=True)
+                with open(cache, "w") as f:
+                    json.dump(contract, f)
+            except Exception:
+                pass
             return {"valid": True, "contract": contract}
         except Exception as e:
             return {"valid": False, "error": str(e)}

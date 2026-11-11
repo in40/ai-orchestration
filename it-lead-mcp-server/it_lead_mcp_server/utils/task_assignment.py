@@ -175,7 +175,9 @@ class TaskAssignmentManager:
                 "List every file (entry module, helpers, README.md, requirements.txt as needed).\n"
                 "Keep each file small: under 150 lines - split large modules into more files.\n"
                 "Each spec MUST pin the contract: exact top-level names the file exports and\n"
-                "exact sibling imports it uses, so independently generated files fit together.\n\n"
+                "exact sibling imports it uses, so independently generated files fit together.\n"
+                "Specs may rely only on the stdlib or packages explicitly listed in the deliverable;\n"
+                "never assume a third-party SDK API.\n\n"
                 "Deliverable task: " + task_description)
         for attempt in range(2):
             try:
@@ -339,6 +341,15 @@ class TaskAssignmentManager:
         if want_deploy and git_url:
             dep = self._deploy_multifile(task_id, git_url)
             url = dep.get("deployment_url")
+            if not url and dep.get("error"):
+                # container crash after green QA: feed traceback into repair, redeploy once
+                fake_qa = {"smoke_run": {"stderr": str(dep["error"])[-1500:]}}
+                fixed, _ = self._repair_and_recheck(
+                    task_id, task_description, file_manifest, coder_endpoint,
+                    git_url, manifest_str, fake_qa)
+                if fixed:
+                    dep = self._deploy_multifile(task_id, git_url)
+                    url = dep.get("deployment_url")
             if url:
                 self._update_task_status(task_id, "done",
                                          f"Multi-file deliverable: {len(results)} files, "
