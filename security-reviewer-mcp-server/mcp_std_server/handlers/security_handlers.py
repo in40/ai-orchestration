@@ -87,7 +87,39 @@ class SecurityReviewerHandlers(McpServerHandlers):
                                 findings.append({"file": os.path.relpath(p, root),
                                                  "line": i, "severity": sev, "pattern": name})
             high = [x for x in findings if x["severity"] == "high"]
+            audit = self._audit_requirements(root)
+            if audit.get("vulnerabilities"):
+                for v in audit["vulnerabilities"]:
+                    findings.append({"file": "requirements.txt", "line": 0,
+                                     "severity": "high", "pattern": "dependency-vuln",
+                                     "detail": v})
+                high = [x for x in findings if x["severity"] == "high"]
             return {"safe": not high, "findings": findings,
-                    "high": len(high), "medium": len(findings) - len(high)}
+                    "high": len(high), "medium": len(findings) - len(high),
+                    "dependency_audit": audit.get("status")}
         except Exception as e:
             return {"safe": False, "errors": [str(e)]}
+
+    def _audit_requirements(self, root):
+        """pip-audit the artifact's requirements.txt inside a throwaway container."""
+        req = None
+        for dirpath, _, files in os.walk(root):
+            if "requirements.txt" in files:
+                req = os.path.join(dirpath, "requirements.txt")
+                break
+        if not req:
+            return {"status": "no-requirements"}
+        try:
+            p = subprocess.run(
+                ["docker", "run", "--rm", "-v", f"{req}:/r.txt:ro", "python:3.11-slim",
+                 "sh", "-c", "pip install -q pip-audit >/dev/null 2>&1 && "
+                             "pip-audit -r /r.txt --desc off"],
+                capture_output=True, text=True, timeout=420)
+            out = (p.stdout or "") + (p.stderr or "")
+            if p.returncode == 0 and "vulnerabilities" not in out.lower():
+                return {"status": "clean"}
+            vulns = [l.strip() for l in out.splitlines() if "vulnerabilities" in l.lower()]
+            return {"status": "vulnerable" if vulns else "clean",
+                    "vulnerabilities": vulns[:10]}
+        except Exception as e:
+            return {"status": f"audit-error: {str(e)[:120]}"}  # non-fatal

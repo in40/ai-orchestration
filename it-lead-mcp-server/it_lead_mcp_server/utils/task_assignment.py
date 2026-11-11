@@ -288,6 +288,53 @@ class TaskAssignmentManager:
             print(f"⚠️ security gate error: {e}")
             return True, {"skipped": str(e)}
 
+    def _advisory_review(self, task_id):
+        """Non-blocking LLM code review; verdict stored in task metadata."""
+        if not self.llm_client or not self.task_storage:
+            return
+        import shutil
+        import subprocess
+        import tempfile
+        work = os.path.join(tempfile.gettempdir(), f"review-{task_id}")
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+            subprocess.run(["git", "clone", "--depth", "1",
+                            os.environ.get("MCP_GIT_REPO_URL",
+                                           "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"),
+                            work], check=True, capture_output=True, timeout=90)
+            blob = ""
+            root = os.path.join(work, "results", task_id)
+            for dp, _, fs in os.walk(root):
+                for f in sorted(fs):
+                    if f.endswith((".py", ".js", ".html")):
+                        blob += f"\n--- {f} ---\n" + \
+                            open(os.path.join(dp, f), errors="ignore").read()[:3000]
+                    if len(blob) > 12000:
+                        break
+                if len(blob) > 12000:
+                    break
+            verdict = self.llm_client.call_llm(
+                "You are a code reviewer. Assess correctness risks, error handling, "
+                'security smells, structure. Return JSON only: {"quality": '
+                '"good|minor|major", "notes": ["up to 5 short notes"]}\n\n' + blob[:12000],
+                temperature=0.2, timeout=240)
+            s, e = verdict.find("{"), verdict.rfind("}")
+            if s == -1 or e <= s:
+                return
+            review = json.loads(verdict[s:e + 1])
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "UPDATE task_registry SET metadata = COALESCE(metadata::jsonb,'{}') "
+                "|| %s::jsonb WHERE task_id = %s",
+                (json.dumps({"code_review": review}), task_id))
+            self.task_storage.connection.commit()
+            cursor.close()
+            print(f"🔍 advisory review: {review.get('quality')}")
+        except Exception as e:
+            print(f"⚠️ advisory review skipped: {str(e)[:150]}")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     def _deploy_multifile(self, task_id, git_url):
         """Call DevOps deploy_web_application for a fan-out tree. Returns result dict."""
         try:
@@ -398,6 +445,7 @@ class TaskAssignmentManager:
             self._update_task_status(task_id, "needs_revision",
                                      f"security scan failed: {json.dumps(sec_info)[:400]}")
             return
+        self._advisory_review(task_id)  # non-blocking; verdict in metadata
         wf_join = " ".join((llm_plan or {}).get("workflow_sequence", []) if isinstance(llm_plan, dict) else [])
         want_deploy = "devops" in wf_join or \
             "deploy_after_implementation\": true" in json.dumps(metadata or {}).lower()
