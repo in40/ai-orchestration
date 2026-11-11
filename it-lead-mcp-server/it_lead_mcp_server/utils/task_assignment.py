@@ -973,12 +973,12 @@ class TaskAssignmentManager:
                                     self.task_storage.update_task_with_git_url(task_id, git_url)
                                     
                                     # Check if there's a workflow sequence and forward to next agent
-                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, git_url)
+                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, git_url, prev_result=async_result)
                                     
                                 elif async_result:
                                     print(f"⚠️ Background thread completed but no Git URL found for task {task_id}")
                                     # Still check workflow sequence even without git_url
-                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, None)
+                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, None, prev_result=async_result)
                                 else:
                                     print(f"❌ Background thread failed to get result for task {task_id}")
                                     self._update_task_status(
@@ -1036,7 +1036,7 @@ class TaskAssignmentManager:
                                         )
 
                                     # ✅ Forward to next agent in workflow
-                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, sync_git_url)
+                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, sync_git_url, prev_result=result_data)
                                 else:
                                     # Agent failed but we have workflow sequence - log and mark task for manual review
                                     error_msg = forward_result.get("error", "Unknown error")
@@ -1309,8 +1309,14 @@ class TaskAssignmentManager:
         if agent_id == "implementation-engineer":
             # Use vibe_code_async for async processing with LLM
             if tool == "vibe_code_async":
+                desc = task_description
+                spec_ctx = (metadata or {}).get("spec_context")
+                if spec_ctx:
+                    desc = (task_description +
+                            "\n\nTECHNICAL SPECIFICATION from requirements analysis "
+                            "(authoritative - follow it):\n" + str(spec_ctx)[:4000])
                 return {
-                    "task_description": task_description,
+                    "task_description": desc,
                     "language": metadata.get("language", "python") if metadata else "python",
                     "vibe_level": metadata.get("vibe_level", 5) if metadata else 5,
                     "style_guide": metadata.get("style_guide", "") if metadata else ""
@@ -1432,7 +1438,7 @@ class TaskAssignmentManager:
             traceback.print_exc()
             return False
 
-    def _handle_workflow_sequence(self, task_id: str, task_description: str, current_agent: str, llm_plan: Optional[Dict[str, Any]], git_url: Optional[str]):
+    def _handle_workflow_sequence(self, task_id: str, task_description: str, current_agent: str, llm_plan: Optional[Dict[str, Any]], git_url: Optional[str], prev_result=None):
         """
         Handle workflow sequence - forward task to next agent in sequence if applicable.
 
@@ -1563,6 +1569,13 @@ class TaskAssignmentManager:
             "previous_git_url": git_url,
             "workflow_position": f"{current_index + 2}/{len(workflow_sequence)}"
         }
+        if prev_result:
+            try:
+                spec_text = prev_result if isinstance(prev_result, str) else json.dumps(prev_result, default=str)
+            except Exception:
+                spec_text = str(prev_result)
+            context_for_next["spec_context"] = spec_text[:4000]
+            print(f"📋 Passing requirements spec ({len(spec_text[:4000])} chars) to {next_agent}")
 
         # Special handling for devops-release-engineer - pass git_url and result path
         next_agent_normalized = next_agent.lower().replace("_", "-")
