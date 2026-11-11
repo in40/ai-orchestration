@@ -56,6 +56,11 @@ stderr), tmplB 'source' under dash. E2E tmplC running with deploy flag.
 - T5 get_deployment_status already covers healthcheck; rollback deferred
   (no artifact versioning); QA retest = smoke_run w/ cached contract
 - tmplD E2E pending (S fixes untested live)
+
+## T6 — requirements-spec handoff ✅ (c674dae)
+prev_result flows through _handle_workflow_sequence into coder prompt
+(as authoritative TECHNICAL SPECIFICATION, 4K cap). Fan-out path unaffected
+(manifest already carries per-file specs).
 - Contract non-determinism: plan_run_contract is an LLM call; smoke-time and
   deploy-time contracts can differ -> verdicts unstable. Fix: plan contract ONCE
   per task, store (task metadata or results repo run_contract.json), reuse everywhere.
