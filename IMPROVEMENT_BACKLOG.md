@@ -167,3 +167,9 @@ Guarded migration (lock_timeout) after DDL-on-startup caused a lock pileup.
 patch_file: opencode run --agent fixer --session ses-fix-<task> (reproduce,
 fix, re-verify) with single-shot fallback; live: 67s cold / 17s warm.
 Bonus fix: latent settings-shadowing NameError that broke patch_file.
+
+## Phase C — opencode tool-agents ✅
+contract-planner (QA), sec-reviewer (advisory llm findings), code-reviewer
+(advisory review) via shared opencode_run helper. Key fix: PWD env for
+project resolution; fresh sessions per task (contaminated sessions keep
+their first project binding).
