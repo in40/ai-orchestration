@@ -903,8 +903,8 @@ CMD ["python", "result.py"]
             deployment_host = os.environ.get("DEPLOYMENT_HOST", "127.0.0.1")
 
             # Build Docker image
-            image_name = f"deploy-{task_id}"
-            container_name = f"deploy-{task_id}"
+            image_name = f"deploy-{task_id}".lower()
+            container_name = f"deploy-{task_id}".lower()
 
             subprocess.run([
                 "docker", "build", "-t", image_name, deploy_dir
@@ -1063,8 +1063,8 @@ CMD ["python", "{os.path.basename(entry)}"]
             f.write(dockerfile)
         host_port = self._find_available_port()
         deployment_host = os.environ.get("DEPLOYMENT_HOST", "127.0.0.1")
-        image_name = f"deploy-{task_id}"
-        container_name = f"deploy-{task_id}"
+        image_name = f"deploy-{task_id}".lower()
+        container_name = f"deploy-{task_id}".lower()
         subprocess.run(["docker", "build", "-t", image_name, deploy_dir],
                        check=True, capture_output=True, timeout=300)
         subprocess.run([
@@ -1106,8 +1106,8 @@ CMD ["python", "-m", "http.server", "{container_port}"]
             f.write(dockerfile_content)
         host_port = self._find_available_port()
         deployment_host = os.environ.get("DEPLOYMENT_HOST", "127.0.0.1")
-        image_name = f"deploy-{task_id}"
-        container_name = f"deploy-{task_id}"
+        image_name = f"deploy-{task_id}".lower()
+        container_name = f"deploy-{task_id}".lower()
         subprocess.run(["docker", "build", "-t", image_name, deploy_dir], check=True, capture_output=True, timeout=120)
         subprocess.run([
             "docker", "run", "-d",
@@ -1139,7 +1139,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
         import subprocess
 
         task_id = arguments.get("task_id")
-        container_name = f"deploy-{task_id}"
+        container_name = f"deploy-{task_id}".lower()
 
         try:
             # Check if container exists
@@ -1262,7 +1262,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
         import subprocess
         
         task_id = arguments.get("task_id")
-        container_name = f"deploy-{task_id}"
+        container_name = f"deploy-{task_id}".lower()
         
         try:
             # Check if container is running
@@ -1521,7 +1521,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                 
                 # Get actual Docker status
                 task_id = dep_dict.get("task_id", "")
-                container_name = f"deploy-{task_id}"
+                container_name = f"deploy-{task_id}".lower()
 
                 try:
                     # Check container status from Docker
