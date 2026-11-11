@@ -237,7 +237,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
                 p = subprocess.run(contract["install"], shell=True, cwd=cwd, env=env,
                                    capture_output=True, text=True, timeout=300)
                 if p.returncode != 0:
-                    return {"passed": False, "stage": "install", "stderr": p.stderr[-400:]}
+                    return {"passed": False, "stage": "install", "stderr": p.stderr[-1500:]}
             except subprocess.TimeoutExpired:
                 return {"passed": False, "stage": "install", "errors": ["install timeout"]}
         hc = contract.get("healthcheck") or {}
@@ -247,7 +247,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
                 p = subprocess.run(run, shell=True, cwd=cwd, env=env,
                                    capture_output=True, text=True, timeout=60)
                 return {"passed": p.returncode == 0, "kind": "cli", "stage": "run",
-                        "stderr": p.stderr[-400:]}
+                        "stderr": p.stderr[-1500:]}
             except subprocess.TimeoutExpired:
                 return {"passed": False, "kind": "cli", "stage": "run", "errors": ["timeout"]}
         if kind == "static":
@@ -269,7 +269,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
             while time.time() < deadline:
                 if proc.poll() is not None:
                     return {"passed": False, "kind": "service", "stage": "startup",
-                            "stderr": (proc.stderr.read() or "")[-500:]}
+                            "stderr": (proc.stderr.read() or "")[-1500:]}
                 try:
                     url = f"http://127.0.0.1:{port}{url_path}"
                     body = hc.get("body") or ""

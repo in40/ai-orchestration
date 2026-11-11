@@ -222,7 +222,9 @@ class TaskAssignmentManager:
             fix_note = (f"this module MUST define top-level '{m.group(1)}' imported by siblings")
         else:
             tb = _re.findall(r'File "[^"]*/([\w.]+\.py)", line \d+', err)
-            last = err.strip().splitlines()[-1] if err.strip() else ""
+            lines = err.strip().splitlines()
+            last = next((l for l in reversed(lines)
+                         if "Error" in l or "Exception" in l), "")
             if tb and last and ("Error" in last or "Exception" in last):
                 target = next((f for f in file_manifest
                                if f.get("path", "").endswith("/" + tb[-1])
