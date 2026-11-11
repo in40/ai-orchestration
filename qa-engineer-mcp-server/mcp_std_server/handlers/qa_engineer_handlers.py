@@ -234,7 +234,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
             except Exception as e:
                 return {"passed": False, "stage": "venv", "errors": [str(e)[:200]]}
             try:
-                p = subprocess.run(contract["install"], shell=True, cwd=cwd, env=env,
+                p = subprocess.run(contract["install"], shell=True, executable="/bin/bash", cwd=cwd, env=env,
                                    capture_output=True, text=True, timeout=300)
                 if p.returncode != 0:
                     return {"passed": False, "stage": "install", "stderr": p.stderr[-1500:]}
@@ -244,7 +244,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
         run = contract.get("run") or ""
         if kind == "cli":
             try:
-                p = subprocess.run(run, shell=True, cwd=cwd, env=env,
+                p = subprocess.run(run, shell=True, executable="/bin/bash", cwd=cwd, env=env,
                                    capture_output=True, text=True, timeout=60)
                 return {"passed": p.returncode == 0, "kind": "cli", "stage": "run",
                         "stderr": p.stderr[-1500:]}
@@ -261,7 +261,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
         port = hc.get("port") or (contract.get("env") or {}).get("PORT") or 5000
         url_path = hc.get("url") or "/mcp"
         env["PORT"] = str(port)
-        proc = subprocess.Popen(run, shell=True, cwd=cwd, env=env,
+        proc = subprocess.Popen(run, shell=True, executable="/bin/bash", cwd=cwd, env=env,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         try:
             deadline = time.time() + 25
