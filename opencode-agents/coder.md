@@ -17,6 +17,9 @@ permissions:
     resource: "sudo *"
     effect: ask
   - action: shell
+    resource: "rm -rf /tmp/oc-builds*"
+    effect: allow
+  - action: shell
     resource: "git push*"
     effect: deny
   - action: shell
