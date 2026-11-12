@@ -571,6 +571,30 @@ class TaskAssignmentManager:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    def _route_policy(self, task_description, metadata, llm_plan):
+        """Deterministic routing policy: which pipeline a task takes.
+
+        'gated'  = multi-file flow: build_project (or fan-out fallback) + QA
+                   + security + deploy + client acceptance. Everything that
+                   runs on a network or spans files belongs here.
+        'simple' = legacy single-shot flow: plain scripts/utilities without
+                   deploy/client requirements.
+        First matching rule wins; the decision is logged to the activity feed.
+        """
+        md = metadata or {}
+        desc = (task_description or "").lower()
+        if md.get("requires_client") or md.get("deploy_after_implementation"):
+            return "gated", "deploy/client flags force the gated pipeline"
+        if isinstance(llm_plan, dict) and llm_plan.get("file_manifest"):
+            return "gated", "planner emitted a multi-file manifest"
+        if any(k in desc for k in ("service", "server", "api", "endpoint", "http",
+                                   "mcp", "website", "microservice", "web ",
+                                   "deploy", "publish", "url")):
+            return "gated", "task describes a network service - must pass QA/security gates"
+        if any(k in desc for k in ("template", "sdk", "library", "package")):
+            return "gated", "multi-file deliverable keywords"
+        return "simple", "plain script/utility - single-shot flow"
+
     def _build_via_opencode(self, task_id, task_description, file_manifest,
                             coder_endpoint, metadata):
         """Phase A: one opencode coder session for the whole manifest.
@@ -956,10 +980,13 @@ class TaskAssignmentManager:
                 tool = llm_plan.get("tools", {}).get("requirements-engineer", "analyze_requirements")
 
             file_manifest = self._ensure_file_manifest(task_description, llm_plan)
-            if not file_manifest and ((metadata or {}).get("requires_client")
-                                      or (metadata or {}).get("deploy_after_implementation")):
-                # deploy/client acceptance lives in the gated multi-file flow;
-                # give single-service tasks a minimal manifest so they route there
+            route, route_reason = self._route_policy(task_description, metadata, llm_plan)
+            self._log_activity(task_id, "route", agent="it-lead",
+                               detail=f"{route}: {route_reason}")
+            print(f"🧭 route={route} ({route_reason})")
+            if route == "gated" and not file_manifest:
+                # deploy/client/service tasks need the gated flow even when the
+                # planner classified them as single-file
                 file_manifest = [
                     {"path": "main.py",
                      "spec": "HTTP service entry point implementing exactly what the task "
