@@ -571,6 +571,12 @@ class TaskAssignmentManager:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    @staticmethod
+    def _md_flag(metadata, name):
+        """Flag lookup that tolerates nesting (context lands under
+        original_arguments.original_arguments.metadata depending on the path)."""
+        return ('"%s": true' % name) in json.dumps(metadata or {}).lower()
+
     def _route_policy(self, task_description, metadata, llm_plan):
         """Deterministic routing policy: which pipeline a task takes.
 
@@ -583,7 +589,7 @@ class TaskAssignmentManager:
         """
         md = metadata or {}
         desc = (task_description or "").lower()
-        if md.get("requires_client") or md.get("deploy_after_implementation"):
+        if self._md_flag(md, "requires_client") or self._md_flag(md, "deploy_after_implementation"):
             return "gated", "deploy/client flags force the gated pipeline"
         if isinstance(llm_plan, dict) and llm_plan.get("file_manifest"):
             return "gated", "planner emitted a multi-file manifest"
@@ -651,7 +657,7 @@ class TaskAssignmentManager:
             return
         coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
         # "Requires client": guarantee a verification client regardless of planner mood
-        if (metadata or {}).get("requires_client") and \
+        if self._md_flag(metadata, "requires_client") and \
                 not any(str(f.get("path", "")).endswith("client.py") for f in file_manifest):
             file_manifest = list(file_manifest) + [{
                 "path": "client.py",
