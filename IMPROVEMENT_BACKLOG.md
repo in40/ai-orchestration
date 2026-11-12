@@ -194,3 +194,10 @@ manifest (deterministic); QA smoke runs client.py against the live service
 (stage=client); IT Lead runs it against the public URL post-deploy
 (client_acceptance activity; FAIL -> needs_revision). Pact-style "contract by
 example", stdlib-only client, no new infra.
+
+## Requires-client E2E ✅ (e2e-c5)
+Route rule1 (nested flags) -> synthesized manifest + injected client.py ->
+agent self-ran client at build -> QA -> security -> deploy behind nginx ->
+client_acceptance PASS vs public URL. 11 min end-to-end. Permission ask on
+workspace cleanup auto-rejected, agent recovered (allow-rule added for
+/tmp/oc-builds). Independent re-run of artifact client.py: 6/6 PASS.
