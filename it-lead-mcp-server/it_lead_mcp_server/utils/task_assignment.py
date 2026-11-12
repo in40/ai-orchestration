@@ -956,6 +956,24 @@ class TaskAssignmentManager:
                 tool = llm_plan.get("tools", {}).get("requirements-engineer", "analyze_requirements")
 
             file_manifest = self._ensure_file_manifest(task_description, llm_plan)
+            if not file_manifest and ((metadata or {}).get("requires_client")
+                                      or (metadata or {}).get("deploy_after_implementation")):
+                # deploy/client acceptance lives in the gated multi-file flow;
+                # give single-service tasks a minimal manifest so they route there
+                file_manifest = [
+                    {"path": "main.py",
+                     "spec": "HTTP service entry point implementing exactly what the task "
+                             "describes; bind 0.0.0.0, port from env PORT (default 5000); "
+                             "stdlib only unless requirements.txt lists packages"},
+                    {"path": "requirements.txt",
+                     "spec": "third-party packages actually imported, or "
+                             "'# dependencies (stdlib only)'"},
+                    {"path": "README.md",
+                     "spec": "run command (python main.py) and every endpoint: method, path, "
+                             "request and response example"},
+                ]
+                print("🧩 deployable/client task without planner manifest -> "
+                      "synthesized minimal manifest (gated flow)")
             if file_manifest:
                 print(f"🧩 Multi-file deliverable: {len(file_manifest)} files planned -> fan-out")
                 if self.task_storage:
