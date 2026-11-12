@@ -624,6 +624,7 @@ class TaskAssignmentManager:
         # Phase A: one self-verifying opencode coder session for the whole manifest;
         # per-file fan-out remains the fallback.
         git_url = None
+        results = None
         if os.environ.get("OPENCODE_BUILD", "1") != "0":
             git_url = self._build_via_opencode(task_id, task_description, file_manifest,
                                                coder_endpoint, metadata)
@@ -670,7 +671,10 @@ class TaskAssignmentManager:
                                      f"QA gate failed: {json.dumps(qa_info)[:400]}")
             return
         if self.task_storage and git_url:
-            self.task_storage.update_task_with_git_url(task_id, git_url)
+            # store git_url without flipping status to done mid-pipeline
+            self._merge_metadata(task_id, {"git_url": git_url, "path": git_url,
+                                                   "storage_type": "git"})
+            self._update_task_status(task_id, "review", "QA passed, gates in progress")
         sec_ok, sec_info = self._security_gate(task_id, git_url)
         self._log_activity(task_id, "security_gate", agent="security-reviewer",
                            detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_info)[:200]}")
@@ -699,14 +703,14 @@ class TaskAssignmentManager:
                     url = dep.get("deployment_url")
             if url:
                 self._update_task_status(task_id, "done",
-                                         f"Multi-file deliverable: {len(results)} files, "
+                                         f"Multi-file deliverable: {len(results or file_manifest)} files, "
                                          f"QA passed, deployed at {url}")
                 return
             self._update_task_status(task_id, "needs_revision",
                                      f"deploy failed: {str(dep)[:200]}")
             return
         self._update_task_status(task_id, "done",
-                                 f"Multi-file deliverable: {len(results)} files, QA passed")
+                                 f"Multi-file deliverable: {len(results or file_manifest)} files, QA passed")
 
     def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 7200) -> Optional[Dict[str, Any]]:
         """
