@@ -253,7 +253,8 @@ class QaEngineerServerHandlers(McpServerHandlers):
         """If the artifact ships tests (tests/ dir or test_*.py), run them with pytest
         in the smoke venv. Returns {'ran': False} when no tests exist."""
         test_files = []
-        for root, _, fs in os.walk(result_dir):
+        for root, dirs, fs in os.walk(result_dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
             test_files += [f for f in fs if f.startswith("test_") and f.endswith(".py")]
         if not test_files:
             return {"ran": False, "reason": "no tests generated"}
@@ -380,8 +381,12 @@ class QaEngineerServerHandlers(McpServerHandlers):
                                 return {"passed": False, "kind": "service",
                                         "stage": "conformance", "errors": [str(e)]}
                         # artifact-provided verification client (contract by example)
-                        cl = next((os.path.join(dp, f) for dp, _, fs in os.walk(result_dir)
-                                   for f in fs if f == "client.py"), None)
+                        cl = None
+                        for dp, dns, fs in os.walk(result_dir):
+                            dns[:] = [d for d in dns if not d.startswith(".") and d != "__pycache__"]
+                            if "client.py" in fs:
+                                cl = os.path.join(dp, "client.py")
+                                break
                         if cl:
                             try:
                                 import urllib.parse as _up

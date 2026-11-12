@@ -516,7 +516,8 @@ async def handle_task_assignment_via_it_lead(task_data: dict):
                     "framework": context.get("framework"),
                     "acceptance_criteria": context.get("acceptance_criteria"),
                     "business_context": context.get("business_context"),
-                    "deploy_after_implementation": context.get("deploy_after_implementation", False)
+                    "deploy_after_implementation": context.get("deploy_after_implementation", False),
+                    "requires_client": context.get("requires_client", False)
                 }
                 logger.info(f"Built metadata with deploy_after_implementation={base_arguments['metadata'].get('deploy_after_implementation')}")
 
