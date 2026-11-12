@@ -178,3 +178,12 @@ their first project binding).
 build_project: one opencode session implements + self-verifies the whole
 manifest; fan-out = fallback. QA smoke uses free port. Live chain
 build->contract->smoke->fixer(same session)->green verified on buildtest-a.
+
+## Phases D1-D3 + first opencode E2E ✅
+D1 serve runtime (HTTP transport, :4097 unit) / D2 live agent_step feed
++ token accounting (metadata.opencode_usage) / D3 permission asks ->
+resolve_permission tool + auto-reject.
+E2E e2e-d-1794473641: plan 5m -> build 19 files in 9m (self-tested) -> QA PASS
+-> security PASS -> review stored -> deploy correctly failed (stdio template,
+not deployable) -> needs_revision. Fixed: premature done, len(results) NameError,
+planner HTTP-transport rule for deployable tasks.
