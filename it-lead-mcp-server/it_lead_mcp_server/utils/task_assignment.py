@@ -9,6 +9,7 @@ It communicates with the central MCP Registry Server (port 3031) via HTTP POST t
 following proper MCP architecture - NOT direct database access.
 """
 import json
+import os
 import time
 import requests  # Use sync HTTP client to match existing server handler pattern
 import threading  # Added for background polling
@@ -213,17 +214,36 @@ class TaskAssignmentManager:
             return {"error": str(e)}
 
     def _patch_one(self, coder_endpoint, task_id, path, error_text):
+        sid = f"ses-fix-{task_id}"
+        import threading as _thr
+        stop = _thr.Event()
+        watcher = _thr.Thread(target=self._watch_session, args=(task_id, sid, stop),
+                              daemon=True)
+        watcher.start()
+        _thr.Event().wait(3)  # let the SSE stream connect before the session starts
         try:
             r = requests.post(coder_endpoint, json={
                 "jsonrpc": "2.0", "id": f"patch-{task_id}-{path}", "method": "tools/call",
                 "params": {"name": "patch_file", "arguments": {
                     "task_id": task_id, "path": path, "error": error_text}}}, timeout=3600)
-            out = r.json().get("result", {})
-            if isinstance(out, dict) and isinstance(out.get("result"), dict):
-                out = out["result"]
-            return out if isinstance(out, dict) else {}
         except Exception as e:
+            stop.set()
             return {"error": str(e)}
+        stop.set()
+        out = r.json().get("result", {})
+        if isinstance(out, dict) and isinstance(out.get("result"), dict):
+            out = out["result"]
+        if isinstance(out, dict) and str(out.get("via", "")).startswith("fixed via opencode"):
+            stats = self._session_stats(sid)
+            if stats:
+                prev = {}
+                try:
+                    t = self.task_storage.get_task(task_id) or {}
+                    prev = (t.get("metadata") or {}).get("opencode_usage", {})
+                except Exception:
+                    pass
+                self._merge_metadata(task_id, {"opencode_usage": {**prev, "fix": stats}})
+        return out if isinstance(out, dict) else {}
 
     def _repair_and_recheck(self, task_id, task_description, file_manifest,
                             coder_endpoint, git_url, manifest_str, qa_info):
@@ -397,6 +417,75 @@ class TaskAssignmentManager:
         except Exception as e:
             return {"error": str(e)}
 
+    def _serve_auth(self):
+        url = (os.environ.get("OPENCODE_SERVE_URL") or "").rstrip("/")
+        pw = os.environ.get("OPENCODE_SERVE_PASSWORD") or ""
+        return (url, ("opencode", pw)) if url and pw else (None, None)
+
+    def _watch_session(self, task_id, sid, stop, agent_label="implementation-engineer",
+                       max_events=50):
+        """Mirror an opencode session's tool steps into the task activity log (SSE)."""
+        url, auth = self._serve_auth()
+        if not url:
+            return
+        n = 0
+        names = {}
+        try:
+            r = requests.get(url + "/api/event", auth=auth, stream=True, timeout=3600)
+            for line in r.iter_lines():
+                if stop.is_set() or n >= max_events:
+                    break
+                if not line or not line.startswith(b"data:"):
+                    continue
+                try:
+                    ev = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                d = ev.get("data") or {}
+                if d.get("sessionID") != sid:
+                    continue
+                ty = ev.get("type", "")
+                if ty == "session.tool.input.started":
+                    names[d.get("id")] = d.get("name")
+                elif ty == "session.tool.input.ended":
+                    self._log_activity(task_id, "agent_step", agent=agent_label,
+                                       detail=f"{names.get(d.get('id'), d.get('name'))}: "
+                                              f"{str(d.get('text', ''))[:90]}")
+                    n += 1
+                elif ty in ("session.execution.succeeded", "session.execution.failed",
+                            "session.execution.interrupted"):
+                    break
+        except Exception:
+            pass
+
+    def _session_stats(self, sid):
+        """Cumulative tokens/cost of an opencode session ({} if unavailable)."""
+        url, auth = self._serve_auth()
+        if not url:
+            return {}
+        try:
+            s = requests.get(url + f"/api/session/{sid}", auth=auth,
+                             timeout=10).json().get("data", {}) or {}
+            t = s.get("tokens") or {}
+            return {"tokens_in": t.get("input", 0), "tokens_out": t.get("output", 0),
+                    "reasoning": t.get("reasoning", 0), "cost": s.get("cost", 0)}
+        except Exception:
+            return {}
+
+    def _merge_metadata(self, task_id, patch):
+        try:
+            if not self.task_storage:
+                return
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "UPDATE task_registry SET metadata = COALESCE(metadata::jsonb,'{}') "
+                "|| %s::jsonb WHERE task_id = %s",
+                (json.dumps(patch), task_id))
+            self.task_storage.connection.commit()
+            cursor.close()
+        except Exception:
+            pass
+
     def _build_via_opencode(self, task_id, task_description, file_manifest,
                             coder_endpoint, metadata):
         """Phase A: one opencode coder session for the whole manifest.
@@ -406,19 +495,32 @@ class TaskAssignmentManager:
                                      for f in file_manifest)
             self._log_activity(task_id, "build_project", agent="implementation-engineer",
                                detail=f"opencode coder session, {len(file_manifest)} files")
-            r = requests.post(coder_endpoint, json={
-                "jsonrpc": "2.0", "id": f"build-{task_id}", "method": "tools/call",
-                "params": {"name": "build_project", "arguments": {
-                    "task_id": task_id, "manifest": manifest_str,
-                    "project_description": task_description,
-                    "spec_context": (metadata or {}).get("spec_context", "")}}},
-                timeout=3600)
+            sid = f"ses-build-{task_id}"
+            import threading as _thr
+            stop = _thr.Event()
+            watcher = _thr.Thread(target=self._watch_session, args=(task_id, sid, stop),
+                                  daemon=True)
+            watcher.start()
+            _thr.Event().wait(3)  # let the SSE stream connect before the session starts
+            try:
+                r = requests.post(coder_endpoint, json={
+                    "jsonrpc": "2.0", "id": f"build-{task_id}", "method": "tools/call",
+                    "params": {"name": "build_project", "arguments": {
+                        "task_id": task_id, "manifest": manifest_str,
+                        "project_description": task_description,
+                        "spec_context": (metadata or {}).get("spec_context", "")}}},
+                    timeout=3600)
+            finally:
+                stop.set()
             out = r.json().get("result", {})
             if isinstance(out, dict) and isinstance(out.get("result"), dict):
                 out = out["result"]
             if isinstance(out, dict) and out.get("success") and out.get("git_url"):
+                stats = self._session_stats(sid)
+                if stats:
+                    self._merge_metadata(task_id, {"opencode_usage": {"build": stats}})
                 print(f"🧩 build_project {task_id}: ok via {out.get('session')} "
-                      f"({len(out.get('files', []))} files)", flush=True)
+                      f"({len(out.get('files', []))} files, {stats})", flush=True)
                 return out["git_url"]
             print(f"⚠️ build_project {task_id} fell back to fan-out: "
                   f"{str(out.get('error') if isinstance(out, dict) else out)[:200]}", flush=True)
