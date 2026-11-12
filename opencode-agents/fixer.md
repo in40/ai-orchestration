@@ -8,7 +8,16 @@ permissions:
     resource: "*"
     effect: deny
   - action: shell
-    resource: "rm -rf*"
+    resource: "rm -rf /*"
+    effect: ask
+  - action: shell
+    resource: "rm -rf ~*"
+    effect: ask
+  - action: shell
+    resource: "rm -rf ..*"
+    effect: ask
+  - action: shell
+    resource: "sudo *"
     effect: ask
   - action: shell
     resource: "git push*"

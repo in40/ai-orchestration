@@ -5,7 +5,16 @@ model: hallogen/qwen3.8-next
 steps: 40
 permissions:
   - action: shell
-    resource: "rm -rf*"
+    resource: "rm -rf /*"
+    effect: ask
+  - action: shell
+    resource: "rm -rf ~*"
+    effect: ask
+  - action: shell
+    resource: "rm -rf ..*"
+    effect: ask
+  - action: shell
+    resource: "sudo *"
     effect: ask
   - action: shell
     resource: "git push*"

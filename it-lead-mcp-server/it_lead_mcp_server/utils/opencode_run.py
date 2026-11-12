@@ -75,6 +75,7 @@ def _via_serve(agent, workdir, prompt, session, timeout, model):
         if r.status_code >= 400:
             return None, f"prompt rc={r.status_code}: {r.text[:150]}"
         deadline = time.time() + timeout
+        last_n, stalled = -1, 0
         while time.time() < deadline:
             time.sleep(5)
             try:
@@ -82,6 +83,20 @@ def _via_serve(agent, workdir, prompt, session, timeout, model):
                                     auth=auth, timeout=15).json().get("data", [])
             except Exception:
                 continue
+            # stall guard: session vanished from active list and no new messages
+            if len(msgs) == last_n:
+                stalled += 1
+                if stalled >= 24:  # ~2 min without progress
+                    try:
+                        act = requests.get(url + "/api/session/active", auth=auth,
+                                           timeout=10).json().get("data", {})
+                        if sid not in act:
+                            return None, "session died (not active, no new messages)"
+                    except Exception:
+                        pass
+            else:
+                stalled = 0
+            last_n = len(msgs)
             fresh = [m for m in msgs if (m.get("time") or {}).get("created", 0) >= prompt_ts]
             if len(msgs) <= pre_n and not fresh:
                 continue
