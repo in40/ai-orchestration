@@ -551,10 +551,7 @@ def _opencode_fix(work_dir, session_id, path, error_text, timeout=None):
     Returns (ok, detail). ok=True only if the target file actually changed and
     (for .py) parses. Any failure -> caller falls back to the legacy path.
     """
-    import shutil
-    binary = shutil.which("opencode") or "/root/.opencode/bin/opencode"
-    if not os.path.exists(binary):
-        return False, "opencode binary not found"
+    from .opencode_run import opencode_agent
     fp = work_dir / path
     if not fp.exists():
         return False, f"{path} missing"
@@ -565,22 +562,11 @@ def _opencode_fix(work_dir, session_id, path, error_text, timeout=None):
     py_hint = ".qa_venv/bin/python" if (work_dir / ".qa_venv").exists() else "python3"
     prompt = (f"Target file: {path}\nUse interpreter: {py_hint}\n\n"
               f"Reported error:\n{error_text}\n\nFix it now.")
-    cmd = [binary, "run", "--agent", "fixer",
-           "--model", "hallogen/qwen3.8-next",
-           "--session", f"ses-fix-{session_id}",
-           "--auto", "--title", f"fix-{session_id}", prompt]
-    try:
-        env = os.environ.copy()
-        env["PWD"] = str(work_dir)  # opencode CLI resolves project from $PWD, not getcwd
-        p = subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True,
-                           timeout=timeout or int(os.environ.get("OPENCODE_FIX_TIMEOUT", "900")),
-                           env=env)
-    except subprocess.TimeoutExpired:
-        return False, f"opencode fix timeout"
-    except Exception as e:
-        return False, f"opencode spawn failed: {e}"
-    if p.returncode != 0:
-        return False, f"opencode rc={p.returncode}: {(p.stderr or p.stdout or '')[-300:]}"
+    ok, text, err = opencode_agent(
+        "fixer", work_dir, prompt, session=f"ses-fix-{session_id}",
+        timeout=timeout or int(os.environ.get("OPENCODE_FIX_TIMEOUT", "900")))
+    if not ok:
+        return False, err
     try:
         if fp.read_bytes() == before:
             return False, "opencode made no change to " + path

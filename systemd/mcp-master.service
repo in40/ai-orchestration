@@ -14,6 +14,7 @@ Requires=mcp-devops-release-engineer.service
 Requires=mcp-web-ui-frontend.service
 Requires=mcp-qa-engineer.service
 Requires=mcp-security-reviewer.service
+Requires=mcp-opencode-serve.service
 
 [Service]
 Type=oneshot
