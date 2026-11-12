@@ -2,6 +2,9 @@
 
 Install: cp *.md ~/.config/opencode/agents/
 
+- coder.md — build_project: implements whole manifest in isolated
+  workspace, self-verifies (py_compile/pytest/server probe), IT-side push.
+  OPENCODE_BUILD=0 disables; per-file fan-out remains fallback.
 - contract-planner.md / sec-reviewer.md / code-reviewer.md — read-only
   analysis agents (QA contract, security audit, advisory review).
 - fixer.md — surgical bug-fixer used by coder's patch_file (opencode-first,

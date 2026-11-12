@@ -329,8 +329,17 @@ class QaEngineerServerHandlers(McpServerHandlers):
                 return {"passed": False, "kind": "static", "stage": "find",
                         "errors": ["no html file found"]}
             return self._smoke_html(open(html_file, errors="ignore").read())
-        # kind == service: http healthcheck regardless of what the contract said
-        port = hc.get("port") or (contract.get("env") or {}).get("PORT") or 5000
+        # kind == service: http healthcheck regardless of what the contract said.
+        # Always smoke on a FREE ephemeral port: stale servers on the default
+        # port must not cause false failures.
+        import socket as _sock
+        try:
+            _s = _sock.socket()
+            _s.bind(("127.0.0.1", 0))
+            port = _s.getsockname()[1]
+            _s.close()
+        except Exception:
+            port = hc.get("port") or (contract.get("env") or {}).get("PORT") or 5000
         url_path = hc.get("url") or "/mcp"
         env["PORT"] = str(port)
         proc = subprocess.Popen(run, shell=True, executable="/bin/bash", cwd=cwd, env=env,

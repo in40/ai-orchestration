@@ -596,6 +596,48 @@ def _opencode_fix(work_dir, session_id, path, error_text, timeout=None):
     return True, "fixed via opencode session " + str(session_id)
 
 
+def _push_tree(task_id: str, src_dir) -> dict:
+    """Copy a built workspace into results/<task_id>/ of the results repo and push."""
+    import shutil as _sh
+    repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
+        "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
+    _get_or_clone_git_repo(repo_url, local)
+    dest = local / "results" / task_id
+    if dest.exists():
+        _sh.rmtree(str(dest))
+    _sh.copytree(str(src_dir), str(dest))
+    for scaffold in ("MANIFEST.md", "AGENTS.md"):
+        f = dest / scaffold
+        if f.exists():
+            f.unlink()
+    for pat in (".qa_venv", "__pycache__", ".pytest_cache"):
+        for junk in dest.rglob(pat):
+            _sh.rmtree(str(junk), ignore_errors=True)
+    for junk in dest.rglob("*.pyc"):
+        try:
+            junk.unlink()
+        except OSError:
+            pass
+    _ensure_git_config(local)
+    env = os.environ.copy()
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "mcp-agent"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "mcp-agent@localhost"
+    subprocess.run(["git", "add", f"results/{task_id}"], cwd=str(local), env=env, capture_output=True)
+    subprocess.run(["git", "commit", "-m", f"[build_project] {task_id}"],
+                   cwd=str(local), env=env, capture_output=True)
+    subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                   cwd=str(local), env=env, capture_output=True)
+    push = subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=str(local),
+                          env=env, capture_output=True, text=True)
+    if push.returncode != 0:
+        return {"error": f"build_project push failed: {(push.stderr or '')[-200:]}"}
+    files = [str(p.relative_to(dest)) for p in sorted(dest.rglob("*")) if p.is_file()]
+    return {"success": True,
+            "git_url": f"{repo_url.rstrip('.git')}/tree/main/results/{task_id}",
+            "files": files}
+
+
 def _derive_requirements(task_id: str) -> str:
     """Deterministically build requirements.txt from sibling .py imports in the repo."""
     import ast as _ast
@@ -1168,6 +1210,23 @@ def register_vibe_coding_tool(server_handlers):
                 "required": ["task_id", "path", "error"],
             },
         })
+    if not any(t["name"] == "build_project" for t in server_handlers.tools):
+        server_handlers.tools.append({
+            "name": "build_project",
+            "description": "Implement an entire multi-file project in an isolated workspace via "
+                           "an opencode agent session (self-verifying: compiles, runs tests), "
+                           "then push the whole tree to the results repo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "manifest": {"type": "string", "description": "file list with per-file specs"},
+                    "project_description": {"type": "string"},
+                    "spec_context": {"type": "string", "description": "optional technical spec"},
+                },
+                "required": ["task_id", "manifest"],
+            },
+        })
 
     # Notify that tools have changed
     if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:
@@ -1230,6 +1289,53 @@ Overall project goal:
                           else "# Environment configuration\nPORT=5000\n")
                     return git_push_single_file(arguments.get("task_id", "unassigned"), path, fb)
                 return {"error": f"generate_file {path} failed: {type(e).__name__}: {e}"}
+
+        if tool["name"] == "build_project":
+            tid = arguments.get("task_id", "unassigned")
+            try:
+                import shutil as _sh
+                from .opencode_run import opencode_agent
+                ws = Path(tempfile.gettempdir()) / "oc-builds" / tid
+                _sh.rmtree(str(ws), ignore_errors=True)
+                ws.mkdir(parents=True)
+                (ws / "MANIFEST.md").write_text(
+                    "# File manifest (create every file exactly at these paths)\n"
+                    + str(arguments.get("manifest", ""))
+                    + "\n\n# Project goal\n" + str(arguments.get("project_description", ""))
+                    + ("\n\n# Technical specification (authoritative)\n"
+                       + str(arguments.get("spec_context", ""))
+                       if arguments.get("spec_context") else ""))
+                (ws / "AGENTS.md").write_text(
+                    "# Project conventions (authoritative)\n"
+                    "- Python: prefer the stdlib; third-party packages only in requirements.txt.\n"
+                    "- Network servers MUST bind 0.0.0.0 and read the port from env PORT (default 5000).\n"
+                    "- MCP services: plain JSON-RPC over HTTP at /mcp per the manifest; do NOT mimic\n"
+                    "  third-party SDK APIs on your own classes.\n"
+                    "- Prefer lazy imports inside functions for sibling modules.\n"
+                    "- Define exactly the exports the manifest spec promises.\n"
+                    "- README.md must document the ACTUAL run command and endpoints.\n")
+                ok, text, err = opencode_agent(
+                    "coder", ws,
+                    "Read MANIFEST.md and AGENTS.md, implement every file, then verify "
+                    "and fix until green.",
+                    session=f"ses-build-{tid}",
+                    timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
+                if not ok:
+                    return {"error": f"build_project agent failed: {err[:300]}"}
+                import ast as _ast
+                for py in ws.rglob("*.py"):
+                    try:
+                        _ast.parse(py.read_text(errors="ignore"))
+                    except SyntaxError as e:
+                        return {"error": f"build_project produced invalid python: "
+                                         f"{py.name} line {e.lineno}: {e.msg}"}
+                out = _push_tree(tid, ws)
+                if out.get("success"):
+                    out["session"] = f"ses-build-{tid}"
+                    out["agent_summary"] = text[-300:]
+                return out
+            except Exception as e:
+                return {"error": f"build_project failed: {type(e).__name__}: {e}"}
 
         if tool["name"] == "patch_file":
             path = arguments.get("path", "")

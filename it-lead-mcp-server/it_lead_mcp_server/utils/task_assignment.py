@@ -397,6 +397,35 @@ class TaskAssignmentManager:
         except Exception as e:
             return {"error": str(e)}
 
+    def _build_via_opencode(self, task_id, task_description, file_manifest,
+                            coder_endpoint, metadata):
+        """Phase A: one opencode coder session for the whole manifest.
+        Returns git_url on success, None to fall back to per-file fan-out."""
+        try:
+            manifest_str = "\n".join(f"- {f.get('path')}: {f.get('spec', '')}"
+                                     for f in file_manifest)
+            self._log_activity(task_id, "build_project", agent="implementation-engineer",
+                               detail=f"opencode coder session, {len(file_manifest)} files")
+            r = requests.post(coder_endpoint, json={
+                "jsonrpc": "2.0", "id": f"build-{task_id}", "method": "tools/call",
+                "params": {"name": "build_project", "arguments": {
+                    "task_id": task_id, "manifest": manifest_str,
+                    "project_description": task_description,
+                    "spec_context": (metadata or {}).get("spec_context", "")}}},
+                timeout=3600)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            if isinstance(out, dict) and out.get("success") and out.get("git_url"):
+                print(f"🧩 build_project {task_id}: ok via {out.get('session')} "
+                      f"({len(out.get('files', []))} files)", flush=True)
+                return out["git_url"]
+            print(f"⚠️ build_project {task_id} fell back to fan-out: "
+                  f"{str(out.get('error') if isinstance(out, dict) else out)[:200]}", flush=True)
+        except Exception as e:
+            print(f"⚠️ build_project {task_id} error, falling back: {str(e)[:200]}", flush=True)
+        return None
+
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list,
                                 llm_plan: dict = None, metadata: dict = None):
         """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree."""
@@ -433,36 +462,43 @@ class TaskAssignmentManager:
                     _t.sleep(10 * (attempt + 1))
             return path, last
 
-        results = {}
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            for path, out in ex.map(gen_one, main_files):
+        # Phase A: one self-verifying opencode coder session for the whole manifest;
+        # per-file fan-out remains the fallback.
+        git_url = None
+        if os.environ.get("OPENCODE_BUILD", "1") != "0":
+            git_url = self._build_via_opencode(task_id, task_description, file_manifest,
+                                               coder_endpoint, metadata)
+        if git_url is None:
+            results = {}
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                for path, out in ex.map(gen_one, main_files):
+                    results[path] = out
+                    self._log_activity(task_id, "file_generated", agent="implementation-engineer",
+                                       detail=f"{path}: {'ok' if out.get('success') else 'FAILED'}")
+                    print(f"🧩 fan-out {task_id} {path}: "
+                          f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+            for entry in deferred_files:  # deterministic, needs siblings on disk
+                path, out = gen_one(entry)
                 results[path] = out
                 self._log_activity(task_id, "file_generated", agent="implementation-engineer",
                                    detail=f"{path}: {'ok' if out.get('success') else 'FAILED'}")
-                print(f"🧩 fan-out {task_id} {path}: "
+                print(f"🧩 fan-out {task_id} {path} (deferred): "
                       f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
-        for entry in deferred_files:  # deterministic, needs siblings on disk
-            path, out = gen_one(entry)
-            results[path] = out
-            self._log_activity(task_id, "file_generated", agent="implementation-engineer",
-                               detail=f"{path}: {'ok' if out.get('success') else 'FAILED'}")
-            print(f"🧩 fan-out {task_id} {path} (deferred): "
-                  f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
-        failed = [p for p, o in results.items() if not o.get("success")]
-        for p in list(failed):  # sequential second pass after parallel burst
-            entry = next((f for f in file_manifest if f.get("path") == p), None)
-            if entry:
-                print(f"🧩 fan-out retry {task_id} {p}", flush=True)
-                _, out = gen_one(entry)
-                results[p] = out
-                print(f"🧩 fan-out {task_id} {p} (retry): "
-                      f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
-        failed = [p for p, o in results.items() if not o.get("success")]
-        if failed:
-            self._update_task_status(task_id, "failed", f"generate_file failed for: {failed}")
-            return
-        git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
-                        if o.get("git_url")), "")
+            failed = [p for p, o in results.items() if not o.get("success")]
+            for p in list(failed):  # sequential second pass after parallel burst
+                entry = next((f for f in file_manifest if f.get("path") == p), None)
+                if entry:
+                    print(f"🧩 fan-out retry {task_id} {p}", flush=True)
+                    _, out = gen_one(entry)
+                    results[p] = out
+                    print(f"🧩 fan-out {task_id} {p} (retry): "
+                          f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+            failed = [p for p, o in results.items() if not o.get("success")]
+            if failed:
+                self._update_task_status(task_id, "failed", f"generate_file failed for: {failed}")
+                return
+            git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
+                            if o.get("git_url")), "")
         qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id)
         self._log_activity(task_id, "qa_gate", agent="qa-engineer",
                            detail="PASS" if qa_ok else f"FAIL: {json.dumps(qa_info)[:200]}")
