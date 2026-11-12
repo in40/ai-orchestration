@@ -173,3 +173,8 @@ contract-planner (QA), sec-reviewer (advisory llm findings), code-reviewer
 (advisory review) via shared opencode_run helper. Key fix: PWD env for
 project resolution; fresh sessions per task (contaminated sessions keep
 their first project binding).
+
+## Phase A — coder with hands ✅
+build_project: one opencode session implements + self-verifies the whole
+manifest; fan-out = fallback. QA smoke uses free port. Live chain
+build->contract->smoke->fixer(same session)->green verified on buildtest-a.
