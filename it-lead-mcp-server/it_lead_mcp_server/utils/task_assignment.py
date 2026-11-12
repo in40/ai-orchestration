@@ -543,6 +543,34 @@ class TaskAssignmentManager:
         except Exception:
             pass
 
+    def _run_client_acceptance(self, task_id, base_url):
+        """If the artifact ships client.py, run it against the public URL.
+        Returns (None, '') when absent, (True/False, output) otherwise."""
+        import shutil
+        import subprocess
+        import tempfile
+        work = os.path.join(tempfile.gettempdir(), f"accept-{task_id}")
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+            subprocess.run(["git", "clone", "--depth", "1",
+                            os.environ.get("MCP_GIT_REPO_URL",
+                                           "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"),
+                            work], check=True, capture_output=True, timeout=90)
+            root = os.path.join(work, "results", task_id)
+            client = next((os.path.join(dp, f) for dp, _, fs in os.walk(root)
+                           for f in fs if f == "client.py"), None)
+            if not client:
+                return None, ""
+            p = subprocess.run(["python3", client, base_url.rstrip("/") + "/"],
+                               cwd=os.path.dirname(client),
+                               capture_output=True, text=True, timeout=120)
+            out = ((p.stdout or "") + (p.stderr or ""))[-600:]
+            return p.returncode == 0, out
+        except Exception as e:
+            return None, f"acceptance skipped: {str(e)[:150]}"
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     def _build_via_opencode(self, task_id, task_description, file_manifest,
                             coder_endpoint, metadata):
         """Phase A: one opencode coder session for the whole manifest.
@@ -598,6 +626,16 @@ class TaskAssignmentManager:
             self._update_task_status(task_id, "failed", "implementation-engineer unavailable for fan-out")
             return
         coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
+        # "Requires client": guarantee a verification client regardless of planner mood
+        if (metadata or {}).get("requires_client") and \
+                not any(str(f.get("path", "")).endswith("client.py") for f in file_manifest):
+            file_manifest = list(file_manifest) + [{
+                "path": "client.py",
+                "spec": "standalone stdlib verification client. Usage: python client.py "
+                        "<BASE_URL>. Exercises EVERY endpoint documented in README (for MCP: "
+                        "POST /mcp initialize, tools/list, and one tools/call). Prints "
+                        "'PASS <check>' or 'FAIL <check>' per check and exits 0 only if all pass.",
+            }]
         # Derived boilerplate (requirements.txt is built from sibling .py imports)
         # must run AFTER the parallel code wave, not inside it.
         def _is_deferred(f):
@@ -702,6 +740,14 @@ class TaskAssignmentManager:
                     dep = self._deploy_multifile(task_id, git_url)
                     url = dep.get("deployment_url")
             if url:
+                acc_ok, acc_out = self._run_client_acceptance(task_id, url)
+                self._log_activity(task_id, "client_acceptance", agent="qa-engineer",
+                                   detail=("PASS" if acc_ok else f"FAIL: {acc_out[:200]}")
+                                   if acc_ok is not None else "skipped (no client.py)")
+                if acc_ok is False:
+                    self._update_task_status(task_id, "needs_revision",
+                                             f"client acceptance failed against {url}: {acc_out[:300]}")
+                    return
                 self._update_task_status(task_id, "done",
                                          f"Multi-file deliverable: {len(results or file_manifest)} files, "
                                          f"QA passed, deployed at {url}")

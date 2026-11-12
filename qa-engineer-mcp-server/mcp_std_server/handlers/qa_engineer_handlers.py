@@ -379,6 +379,23 @@ class QaEngineerServerHandlers(McpServerHandlers):
                             except Exception as e:
                                 return {"passed": False, "kind": "service",
                                         "stage": "conformance", "errors": [str(e)]}
+                        # artifact-provided verification client (contract by example)
+                        cl = next((os.path.join(dp, f) for dp, _, fs in os.walk(result_dir)
+                                   for f in fs if f == "client.py"), None)
+                        if cl:
+                            try:
+                                import urllib.parse as _up
+                                _p = _up.urlparse(url)
+                                cp = subprocess.run(["python3", cl,
+                                                     f"{_p.scheme}://{_p.netloc}"],
+                                                    cwd=os.path.dirname(cl),
+                                                    capture_output=True, text=True, timeout=60)
+                                if cp.returncode != 0:
+                                    return {"passed": False, "kind": "service", "stage": "client",
+                                            "client_output": ((cp.stdout or "") + (cp.stderr or ""))[-500:]}
+                            except Exception as e:
+                                return {"passed": False, "kind": "service", "stage": "client",
+                                        "client_output": str(e)[:200]}
                         tests = self._run_generated_tests(result_dir, cwd, env)
                         if tests.get("ran") and not tests.get("passed"):
                             return {"passed": False, "kind": "service", "stage": "tests",

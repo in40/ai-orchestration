@@ -187,3 +187,10 @@ E2E e2e-d-1794473641: plan 5m -> build 19 files in 9m (self-tested) -> QA PASS
 -> security PASS -> review stored -> deploy correctly failed (stdio template,
 not deployable) -> needs_revision. Fixed: premature done, len(results) NameError,
 planner HTTP-transport rule for deployable tasks.
+
+## Requires client ✅
+UI checkbox -> context.requires_client -> IT Lead injects client.py into the
+manifest (deterministic); QA smoke runs client.py against the live service
+(stage=client); IT Lead runs it against the public URL post-deploy
+(client_acceptance activity; FAIL -> needs_revision). Pact-style "contract by
+example", stdlib-only client, no new infra.

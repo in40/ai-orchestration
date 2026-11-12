@@ -49,7 +49,8 @@ const AddTaskForm = ({
     attachments: [],
     context: {},
     dependencies: [],
-    deployAfterImplementation: false // Deployment option
+    deployAfterImplementation: false, // Deployment option
+    requiresClient: false // generate a verification client alongside the service
   });
 
   const [errors, setErrors] = useState({});
@@ -109,7 +110,8 @@ const AddTaskForm = ({
           name: a.name || 'unnamed',
           type: a.type || 'text/plain'
         })),
-        deploy_after_implementation: taskData.deployAfterImplementation
+        deploy_after_implementation: taskData.deployAfterImplementation,
+        requires_client: taskData.requiresClient
       }
     };
 
@@ -322,6 +324,38 @@ const AddTaskForm = ({
                       </Typography>
                     </Box>
                   )}
+                </Box>
+              </Box>
+            </Box>
+
+            {/* Client Verification Option */}
+            <Box sx={{
+              mt: 2,
+              p: 2,
+              border: '1px solid',
+              borderColor: taskData.requiresClient ? 'info.main' : 'divider',
+              borderRadius: 1,
+              bgcolor: taskData.requiresClient ? 'info.50' : 'transparent'
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+                <Checkbox
+                  checked={taskData.requiresClient}
+                  onChange={(e) => setTaskData(prev => ({
+                    ...prev,
+                    requiresClient: e.target.checked
+                  }))}
+                  color="info"
+                  size="medium"
+                />
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle2" fontWeight="bold" color={taskData.requiresClient ? 'info.main' : 'text.primary'}>
+                    Requires client
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    The team also generates client.py — a standalone verification client that
+                    exercises the service end-to-end (run as: python client.py &lt;BASE_URL&gt;).
+                    It is executed against the deployed URL as an acceptance test.
+                  </Typography>
                 </Box>
               </Box>
             </Box>
