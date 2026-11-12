@@ -177,6 +177,20 @@ class ExtendedItLeadServerHandlers:
                 }
             },
             {
+                "name": "resolve_permission",
+                "description": "Reply to a pending opencode permission ask that is blocking a "
+                               "task's agent session (approve once/always or reject).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "decision": {"type": "string", "enum": ["once", "always", "reject"],
+                                     "description": "How to answer the pending ask"}
+                    },
+                    "required": ["task_id", "decision"]
+                }
+            },
+            {
                 "name": "delete_task",
                 "description": "Delete a specific task from the system",
                 "inputSchema": {
@@ -1309,6 +1323,13 @@ class ExtendedItLeadServerHandlers:
                     return {"result": {"success": False, "error": str(e)}}
             else:
                 return {"result": {"success": False, "error": "Task storage not available"}}
+        elif tool_name == "resolve_permission":
+            mgr = getattr(self, "task_assignment_manager", None)
+            if not mgr:
+                return {"result": {"error": "task assignment manager unavailable"}}
+            return {"result": mgr.resolve_permission(
+                arguments.get("task_id"), arguments.get("decision", "reject"))}
+
         elif tool_name == "get_task_history":
             task_id = arguments.get("task_id")
             if not task_id:

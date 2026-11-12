@@ -445,7 +445,9 @@ class TaskAssignmentManager:
                 if d.get("sessionID") != sid:
                     continue
                 ty = ev.get("type", "")
-                if ty == "session.tool.input.started":
+                if ty == "permission.asked":
+                    self._on_permission_asked(task_id, d)
+                elif ty == "session.tool.input.started":
                     names[d.get("id")] = d.get("name")
                 elif ty == "session.tool.input.ended":
                     self._log_activity(task_id, "agent_step", agent=agent_label,
@@ -457,6 +459,61 @@ class TaskAssignmentManager:
                     break
         except Exception:
             pass
+
+    def _on_permission_asked(self, task_id, d):
+        """A session blocked on an 'ask' permission: record it, notify, arm auto-reject."""
+        rid, sid = d.get("id"), d.get("sessionID")
+        if not rid or not sid:
+            return
+        res = ",".join(str(x)[:60] for x in (d.get("resources") or []))[:180]
+        self._log_activity(task_id, "permission_asked", agent="implementation-engineer",
+                           detail=f"{d.get('action')}: {res}")
+        self._merge_metadata(task_id, {"pending_permission": {
+            "request_id": rid, "session_id": sid, "action": d.get("action"),
+            "resources": d.get("resources"), "asked_at": time.time()}})
+        import threading as _thr
+        _thr.Timer(int(os.environ.get("OPENCODE_PERM_TIMEOUT", "180")),
+                   self._auto_reject_permission, args=(task_id, sid, rid)).start()
+
+    def _auto_reject_permission(self, task_id, sid, rid):
+        """If a human hasn't resolved the ask in time, reject it (safe default)."""
+        try:
+            t = self.task_storage.get_task(task_id) if self.task_storage else None
+            pending = ((t or {}).get("metadata") or {}).get("pending_permission") or {}
+            if pending.get("request_id") != rid:
+                return  # already resolved by a human
+            url, auth = self._serve_auth()
+            if url:
+                requests.post(url + f"/api/session/{sid}/permission/{rid}/reply",
+                              auth=auth, timeout=10, json={"decision": "reject"})
+            self._merge_metadata(task_id, {"pending_permission": None})
+            self._log_activity(task_id, "permission_auto_rejected",
+                               agent="implementation-engineer", detail=f"request {rid}")
+        except Exception:
+            pass
+
+    def resolve_permission(self, task_id, decision="reject"):
+        """MCP-facing: reply to the task's pending opencode permission ask."""
+        if decision not in ("once", "always", "reject"):
+            return {"error": "decision must be once|always|reject"}
+        try:
+            t = self.task_storage.get_task(task_id) if self.task_storage else None
+            pending = ((t or {}).get("metadata") or {}).get("pending_permission") or {}
+            rid, sid = pending.get("request_id"), pending.get("session_id")
+            if not rid or not sid:
+                return {"error": "no pending permission for task"}
+            url, auth = self._serve_auth()
+            if not url:
+                return {"error": "opencode serve unavailable"}
+            r = requests.post(url + f"/api/session/{sid}/permission/{rid}/reply",
+                              auth=auth, timeout=10, json={"decision": decision})
+            self._merge_metadata(task_id, {"pending_permission": None})
+            self._log_activity(task_id, "permission_resolved",
+                               agent="implementation-engineer",
+                               detail=f"{decision} (request {rid})")
+            return {"success": r.status_code in (200, 204), "decision": decision}
+        except Exception as e:
+            return {"error": str(e)[:200]}
 
     def _session_stats(self, sid):
         """Cumulative tokens/cost of an opencode session ({} if unavailable)."""

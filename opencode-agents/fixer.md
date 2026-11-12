@@ -8,6 +8,9 @@ permissions:
     resource: "*"
     effect: deny
   - action: shell
+    resource: "rm -rf*"
+    effect: ask
+  - action: shell
     resource: "git push*"
     effect: deny
   - action: shell
