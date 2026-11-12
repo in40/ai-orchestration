@@ -62,7 +62,10 @@ Each spec MUST pin the contract: exact top-level names the file exports
 generated independently still fit together. Specs may rely only on the
 stdlib or packages explicitly listed in the deliverable - never assume a
 third-party SDK API.
-Omit file_manifest (or []) for single-file deliverables."""
+Omit file_manifest (or []) for single-file deliverables.
+If the task asks to deploy/publish/make accessible, the entry module spec MUST
+use HTTP transport (JSON-RPC over POST /mcp, bind 0.0.0.0, port from env PORT);
+a stdio-only MCP template is NOT deployable as a web service."""
         
         # Call LLM
         try:
@@ -332,6 +335,9 @@ file_manifest is REQUIRED when the deliverable spans multiple files (template,
 framework, SDK, library, multi-service project): list EVERY file to produce with a
 self-contained spec per file (imports, exported names, behavior). Keep each spec
 under 80 words. Omit file_manifest (or []) for single-file deliverables.
+IMPORTANT: if the task asks to deploy/publish/make accessible, the manifest MUST
+specify an HTTP-transport service (JSON-RPC over POST /mcp, bind 0.0.0.0, port from
+env PORT). A stdio-only MCP template is NOT deployable as a web service.
 """
 
     def _build_agents_section_from_discovery(self, agents_with_tools: List[Dict[str, Any]]) -> str:
