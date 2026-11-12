@@ -6,6 +6,7 @@ import time
 import json
 import os
 import re
+import subprocess
 import requests
 import logging
 from typing import Dict, Any, List, Optional
@@ -519,6 +520,55 @@ class DevOpsReleaseEngineerHandlers:
         except Exception as e:
             return {"error": f"Failed to execute tool: {str(e)}"}
 
+    def _contract_from_cache(self, task_id):
+        """QA run-contract cache is canonical (same host); used when the caller
+        (e.g. web-ui redeploy) did not pass a run_contract."""
+        try:
+            p = f"/tmp/qa-contracts/{task_id}.json"
+            if os.path.exists(p):
+                with open(p) as f:
+                    c = json.load(f)
+                if isinstance(c, dict) and c.get("kind"):
+                    return c
+        except Exception:
+            pass
+        return None
+
+    def _edge_route(self, task_id, host_port):
+        """Expose a deployment behind the nginx edge (:3080/<task>/) instead of
+        publishing its container port on all interfaces. Returns URL or None
+        (caller falls back to the direct URL)."""
+        try:
+            d = "/etc/nginx/mcp-deployments"
+            os.makedirs(d, exist_ok=True)
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "-", str(task_id))
+            path = os.path.join(d, safe + ".conf")
+            with open(path, "w") as f:
+                f.write(f"location /{safe}/ {{\n"
+                        f"    proxy_pass http://127.0.0.1:{host_port}/;\n"
+                        "    proxy_set_header Host $host;\n"
+                        "    proxy_read_timeout 300s;\n}\n")
+            t = subprocess.run(["/usr/sbin/nginx", "-t"], capture_output=True, timeout=20)
+            if t.returncode != 0:
+                os.remove(path)
+                return None
+            subprocess.run(["/usr/sbin/nginx", "-s", "reload"], capture_output=True, timeout=20)
+            return "http://%s:3080/%s/" % (os.environ.get("DEPLOYMENT_HOST", "127.0.0.1"), safe)
+        except Exception as e:
+            deployment_logger.warning(f"edge route failed: {type(e).__name__}: {e}")
+            return None
+
+    def _edge_remove(self, task_id):
+        try:
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "-", str(task_id))
+            path = f"/etc/nginx/mcp-deployments/{safe}.conf"
+            if os.path.exists(path):
+                os.remove(path)
+                subprocess.run(["/usr/sbin/nginx", "-t"], capture_output=True, timeout=20)
+                subprocess.run(["/usr/sbin/nginx", "-s", "reload"], capture_output=True, timeout=20)
+        except Exception:
+            pass
+
     def _deploy_web_application(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Deploy a Python web application using Docker"""
         import subprocess
@@ -598,7 +648,8 @@ class DevOpsReleaseEngineerHandlers:
                 return self._deploy_multi_file(task_id, result_root, deploy_dir, 5000,
                                                deployment_logger, git_url, git_workdir,
                                                memory_limit, cpu_limit,
-                                               run_contract=arguments.get("run_contract"))
+                                               run_contract=arguments.get("run_contract")
+                                               or self._contract_from_cache(task_id))
 
             # Copy result file to deploy directory (could be .py, .json, or .html)
             # Try result.py first, then result.json, then result.html
@@ -911,10 +962,11 @@ CMD ["python", "result.py"]
             ], check=True, capture_output=True, timeout=120)
 
             # Run container
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
             subprocess.run([
                 "docker", "run", "-d",
                 "--name", container_name,
-                "-p", f"{host_port}:{container_port}",
+                "-p", f"127.0.0.1:{host_port}:{container_port}",
                 "--memory", memory_limit,
                 "--cpus", cpu_limit,
                 "--restart", "unless-stopped",
@@ -922,7 +974,7 @@ CMD ["python", "result.py"]
             ], check=True, capture_output=True, timeout=30)
 
             # Store deployment in database
-            deployment_url = f"http://{deployment_host}:{host_port}/"
+            deployment_url = self._edge_route(task_id, host_port) or f"http://{deployment_host}:{host_port}/"
             self._store_deployment(task_id, container_name, container_port, host_port, 
                                    deployment_url, git_url, image_name, memory_limit, cpu_limit)
             deployment_logger.info(f"Docker image built and container started successfully")
@@ -1067,10 +1119,11 @@ CMD ["python", "{os.path.basename(entry)}"]
         container_name = f"deploy-{task_id}".lower()
         subprocess.run(["docker", "build", "-t", image_name, deploy_dir],
                        check=True, capture_output=True, timeout=300)
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
         subprocess.run([
             "docker", "run", "-d",
             "--name", container_name,
-            "-p", f"{host_port}:{container_port}",
+            "-p", f"127.0.0.1:{host_port}:{container_port}",
             "--memory", memory_limit,
             "--cpus", cpu_limit,
             "--restart", "unless-stopped",
@@ -1089,7 +1142,7 @@ CMD ["python", "{os.path.basename(entry)}"]
             tail = ((logs.stdout or "") + (logs.stderr or ""))[-1200:]
             subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
             return {"error": f"container unhealthy after start ({state}): {tail}"}
-        deployment_url = f"http://{deployment_host}:{host_port}/"
+        deployment_url = self._edge_route(task_id, host_port) or f"http://{deployment_host}:{host_port}/"
         self._store_deployment(task_id, container_name, container_port, host_port,
                                deployment_url, git_url, image_name, memory_limit, cpu_limit)
         subprocess.run(["rm", "-rf", git_workdir], check=True)
@@ -1122,16 +1175,17 @@ CMD ["python", "-m", "http.server", "{container_port}"]
         image_name = f"deploy-{task_id}".lower()
         container_name = f"deploy-{task_id}".lower()
         subprocess.run(["docker", "build", "-t", image_name, deploy_dir], check=True, capture_output=True, timeout=120)
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
         subprocess.run([
             "docker", "run", "-d",
             "--name", container_name,
-            "-p", f"{host_port}:{container_port}",
+            "-p", f"127.0.0.1:{host_port}:{container_port}",
             "--memory", memory_limit,
             "--cpus", cpu_limit,
             "--restart", "unless-stopped",
             image_name
         ], check=True, capture_output=True, timeout=30)
-        deployment_url = f"http://{deployment_host}:{host_port}/"
+        deployment_url = self._edge_route(task_id, host_port) or f"http://{deployment_host}:{host_port}/"
         self._store_deployment(task_id, container_name, container_port, host_port,
                                deployment_url, git_url, image_name, memory_limit, cpu_limit)
         subprocess.run(["rm", "-rf", git_workdir], check=True)
@@ -1176,6 +1230,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
 
             # Update database
             self._update_deployment_status(task_id, "stopped")
+            self._edge_remove(task_id)
 
             return {
                 "success": True,

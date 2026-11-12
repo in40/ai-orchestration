@@ -126,11 +126,15 @@ class SecurityReviewerHandlers(McpServerHandlers):
                              "pip-audit -r /r.txt --desc off"],
                 capture_output=True, text=True, timeout=420)
             out = (p.stdout or "") + (p.stderr or "")
-            if p.returncode == 0 and "vulnerabilities" not in out.lower():
+            # pip-audit exits non-zero only when vulns are found; its clean-run
+            # banner ("No known vulnerabilities found") also contains the word
+            # "vulnerabilities" - never match on the bare word.
+            if p.returncode == 0 or "no known vulnerabilities" in out.lower():
                 return {"status": "clean"}
-            vulns = [l.strip() for l in out.splitlines() if "vulnerabilities" in l.lower()]
-            return {"status": "vulnerable" if vulns else "clean",
-                    "vulnerabilities": vulns[:10]}
+            vulns = [l.strip() for l in out.splitlines()
+                     if "vulnerabilit" in l.lower() and "found" in l.lower()]
+            return {"status": "vulnerable",
+                    "vulnerabilities": (vulns or [out[-200:].strip()])[:10]}
         except Exception as e:
             return {"status": f"audit-error: {str(e)[:120]}"}  # non-fatal
 
