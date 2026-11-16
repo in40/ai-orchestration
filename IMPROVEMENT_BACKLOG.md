@@ -271,3 +271,11 @@ running server -> read _shot.png -> fix -> repeat; delete shot before finish.
 No API plumbing needed (shell allowed by default; external_directory deny
 covers read/edit tools, not binary execution). E2E: e2e-v3 watching agent
 steps for screenshot+read loop.
+
+## V3 eyes-for-coder ✅ (live proof)
+e2e-v3: build session ran chrome-headless-shell on its own server,
+READ _shot.png (vision), cleaned up - all visible in agent_step feed.
+Deploy screenshot + visual_gate PASS(advisory) in the same run: V1+V2+V3
+closed loop, 9 min. flux2 probes green too (byte-identical seeds, edits,
+seed+i batches); 256x256 unsupported -> default 512x512. V5 (image-tools
+MCP facade) designed, awaiting go.
