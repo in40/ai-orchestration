@@ -201,3 +201,9 @@ agent self-ran client at build -> QA -> security -> deploy behind nginx ->
 client_acceptance PASS vs public URL. 11 min end-to-end. Permission ask on
 workspace cleanup auto-rejected, agent recovered (allow-rule added for
 /tmp/oc-builds). Independent re-run of artifact client.py: 6/6 PASS.
+
+## Permission approve/deny in web UI ✅
+Task History modal shows pending_permission block (command + 180s countdown +
+Approve once / Always allow / Deny) -> POST /api/tasks/{id}/permission ->
+IT Lead resolve_permission -> opencode serve -> session resumes. Verified
+end-to-end with a live ask (succeeded outcome, metadata cleared).

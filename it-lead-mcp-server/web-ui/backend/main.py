@@ -1199,6 +1199,32 @@ def extract_mcp_communications(metadata: Dict[str, Any]) -> List[Dict]:
     return communications
 
 
+@app.post("/api/tasks/{task_id}/permission")
+async def resolve_task_permission(task_id: str, payload: dict):
+    """Answer a pending opencode permission ask that blocks the task's agent."""
+    decision = (payload or {}).get("decision")
+    if decision not in ("once", "always", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be once|always|reject")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={"jsonrpc": "2.0", "id": f"perm-{task_id}",
+                      "method": "tools/call",
+                      "params": {"name": "resolve_permission",
+                                 "arguments": {"task_id": task_id, "decision": decision}}}
+            )
+            data = r.json().get("result", {})
+            if isinstance(data, dict) and isinstance(data.get("result"), dict):
+                data = data["result"]
+            if isinstance(data, dict) and data.get("error"):
+                raise HTTPException(status_code=409, detail=str(data["error"])[:200])
+            logger.info(f"permission for {task_id}: {decision} -> {data}")
+            return {"ok": bool(isinstance(data, dict) and data.get("success")), "decision": decision}
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"IT Lead unreachable: {e}")
+
+
 @app.get("/api/tasks/{task_id}/history")
 async def get_task_history(task_id: str):
     """Get task history from IT Lead server"""
@@ -1240,7 +1266,8 @@ async def get_task_history(task_id: str):
                         "created_at": history_result.get("created_at"),
                         "updated_at": history_result.get("updated_at"),
                         "status_history": history_result.get("status_history", []),
-                        "activity": history_result.get("activity", [])
+                        "activity": history_result.get("activity", []),
+                        "pending_permission": history_result.get("pending_permission")
                     }
                     return formatted_history
                 else:

@@ -159,6 +159,25 @@ const TaskManagement = () => {
     setSelectedTaskHistory(null);
   };
 
+  const [permNow, setPermNow] = useState(Date.now() / 1000);
+  useEffect(() => {
+    const pending = selectedTaskHistory?.pending_permission;
+    if (!pending?.asked_at) return;
+    const t = setInterval(() => setPermNow(Date.now() / 1000), 1000);
+    return () => clearInterval(t);
+  }, [selectedTaskHistory?.pending_permission?.asked_at]);
+
+  const resolvePermission = async (decision) => {
+    const tid = selectedTaskHistory?.task_id;
+    try {
+      await axios.post(`/api/tasks/${tid}/permission`, { decision });
+      const r = await axios.get(`/api/tasks/${tid}/history`);
+      setSelectedTaskHistory(r.data);
+    } catch (err) {
+      alert(`Failed to ${decision} permission: ${err?.response?.detail || err.message}`);
+    }
+  };
+
   const handleOpenFilePreview = async (task) => {
     try {
       setPreviewLoading(true);
@@ -652,6 +671,32 @@ const TaskManagement = () => {
                   No status history available
                 </Typography>
               )}
+
+              {selectedTaskHistory.pending_permission && (() => {
+                const pp = selectedTaskHistory.pending_permission;
+                const left = Math.max(0, Math.round((pp.asked_at || 0) + 180 - permNow));
+                return (
+                  <Paper sx={{ p: 2, mb: 2, border: 2, borderColor: 'warning.main', bgcolor: 'warning.50' }}>
+                    <Typography variant="subtitle2" color="warning.dark" fontWeight="bold">
+                      🔒 Agent requests permission — auto-reject in {left}s
+                    </Typography>
+                    <Typography variant="body2" sx={{ mt: 0.5, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      {pp.action}: {(pp.resources || []).join(' ; ')}
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
+                      <Button size="small" variant="contained" color="success" onClick={() => resolvePermission('once')}>
+                        Approve once
+                      </Button>
+                      <Button size="small" variant="outlined" color="success" onClick={() => resolvePermission('always')}>
+                        Always allow
+                      </Button>
+                      <Button size="small" variant="contained" color="error" onClick={() => resolvePermission('reject')}>
+                        Deny
+                      </Button>
+                    </Box>
+                  </Paper>
+                );
+              })()}
 
               <Typography variant="subtitle1" gutterBottom sx={{ mt: 3 }}>
                 Team Activity ({selectedTaskHistory.activity?.length || 0} events)

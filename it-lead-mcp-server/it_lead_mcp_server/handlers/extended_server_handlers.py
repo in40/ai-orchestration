@@ -1367,6 +1367,12 @@ class ExtendedItLeadServerHandlers:
                         activity = self.task_storage.get_task_activity(task_id) or []
                     except Exception:
                         activity = []
+                    md = task.get("metadata") or {}
+                    if isinstance(md, str):
+                        try:
+                            md = json.loads(md)
+                        except Exception:
+                            md = {}
                     result = {
                         "task_id": task_id,
                         "title": task.get("title", ""),
@@ -1382,6 +1388,7 @@ class ExtendedItLeadServerHandlers:
                         "completed_at": task.get("completed_at"),
                         "status_history": history_entries,
                         "activity": activity,
+                        "pending_permission": md.get("pending_permission"),
                         "total_status_changes": len(history_entries)
                     }
                     
