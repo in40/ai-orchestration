@@ -2721,15 +2721,20 @@ Please implement this corrected code in {original_language} and prepare it for d
                 self._log_activity(task_id, "rework_rejected", agent="it-lead",
                                    detail=f"active pipeline status={task_obj.get('status')}")
                 return
+
+            # Get original task description and metadata
+            original_description = task_obj.get("description", "")
+            metadata = task_obj.get("metadata", {}) or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
             if not metadata.get("git_url"):
                 print(f"⛔ rework rejected: {task_id} has no artifact tree (git_url)", flush=True)
                 self._log_activity(task_id, "rework_rejected", agent="it-lead",
                                    detail="no git_url - nothing to fix in place")
                 return
-
-            # Get original task description and metadata
-            original_description = task_obj.get("description", "")
-            metadata = task_obj.get("metadata", {}) or {}
 
             # Check if code review is needed based on issue type
             # Issues related to code quality, architecture, or patterns suggest needing review
