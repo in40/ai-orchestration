@@ -279,3 +279,14 @@ Deploy screenshot + visual_gate PASS(advisory) in the same run: V1+V2+V3
 closed loop, 9 min. flux2 probes green too (byte-identical seeds, edits,
 seed+i batches); 256x256 unsupported -> default 512x512. V5 (image-tools
 MCP facade) designed, awaiting go.
+
+## V5 image-tools (generation inside builds) ✅
+image_tools_mcp.py: stdio MCP facade for flux2-klein-4b (halogen :8081,
+base via IMAGE_API_BASE). Tools generate_image/edit_image; PNGs written into
+the session workspace; deterministic default seed=crc32(prompt+filename)
+echoed back; path traversal blocked; agents never touch the network. Registered
+in opencode mcp.servers (codemode:false -> direct tools). NOTE: MCP stdio =
+newline-delimited JSON, NOT LSP Content-Length framing (first attempt timed
+out). Live proof: coder session called generate_image, produced robot.png,
+read it, answered "Robot". Build conventions: generated assets instead of
+hotlinks + README provenance section. E2E e2e-v5 (favicon+hero robot) running.

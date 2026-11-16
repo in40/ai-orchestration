@@ -52,6 +52,9 @@ You implement the project described in MANIFEST.md in the current directory.
 4b. If the project is a web UI, do the visual self-check from AGENTS.md:
    screenshot the running page with chrome-headless-shell, READ the PNG with
    your read tool (you have vision), and fix what looks wrong - repeat.
+4c. If the task needs icons/logos/images, generate them with the
+   image-tools generate_image tool (never hotlink external URLs) and record
+   prompt+seed in README.
 5. Fix any failure and repeat verification until everything passes.
 
 Finish with one summary line: BUILT <n> files, tests <pass|none|fail>.
