@@ -1030,6 +1030,24 @@ class TaskAssignmentManager:
         """
         print(f"🔥🔥🔥 assign_and_forward_task CALLED for {task_id} 🔥🔥🔥")
         print(f"   metadata received: {metadata}")
+
+        # Secondary guard (defense in depth): by this point a legitimate fresh
+        # assignment has stored itself as 'submitted'; active states still mean
+        # a concurrent pipeline owns this task.
+        try:
+            existing = self.task_storage.get_task(task_id) if self.task_storage else None
+            if existing and existing.get("status") in ("in_progress", "review",
+                                                       "rework_in_progress"):
+                msg = (f"task {task_id} already has an active pipeline "
+                       f"(status={existing.get('status')}); refusing concurrent run")
+                print(f"⛔ {msg}")
+                return {"task_id": task_id, "status": "rejected", "message": msg,
+                        "assigned_to": None, "forwarded_to_agent": False,
+                        "agent_response": None, "requires_llm_planning": False,
+                        "llm_plan": None}
+        except Exception as e:
+            print(f"⚠️ concurrency guard check failed: {e}")
+
         result = {
             "task_id": task_id,
             "status": "unknown",
@@ -2697,6 +2715,17 @@ Please implement this corrected code in {original_language} and prepare it for d
             if not task_obj:
                 print(f"❌ Task not found: {task_id}", flush=True)
                 return
+            if task_obj.get("status") in ("in_progress", "review", "rework_in_progress"):
+                print(f"⛔ rework rejected: {task_id} already active "
+                      f"(status={task_obj.get('status')})", flush=True)
+                self._log_activity(task_id, "rework_rejected", agent="it-lead",
+                                   detail=f"active pipeline status={task_obj.get('status')}")
+                return
+            if not metadata.get("git_url"):
+                print(f"⛔ rework rejected: {task_id} has no artifact tree (git_url)", flush=True)
+                self._log_activity(task_id, "rework_rejected", agent="it-lead",
+                                   detail="no git_url - nothing to fix in place")
+                return
 
             # Get original task description and metadata
             original_description = task_obj.get("description", "")
@@ -2756,76 +2785,30 @@ After you provide the corrected code, it will be deployed by the DevOps Engineer
 
 Please generate the complete, corrected code with proper {metadata.get('language', 'python')} syntax."""
 
-            # Create a new sub-task for Implementation Engineer
-            rework_task_id = f"{task_id}-rework"
-            sub_task_id = f"{task_id}-rework-sub"
-
-            # Store the rework task using store_received_task
-            # title: used for display; description: the detailed rework prompt
-            success = self.task_storage.store_received_task(
-                task_id=rework_task_id,
-                title=f"Rework for {task_id}",
-                description=rework_prompt,
-                submitter="human_operator",
-                submitter_type="human",
-                transport_channel="streamable-http",
-                assigned_to="implementation-engineer",
-                priority=priority,
-                source_server="it-lead-server",
-                target_server="implementation-engineer",
-                metadata={
-                    "parent_task_id": task_id,
-                    "rework_issue_description": issue_description,
-                    "rework_additional_comments": additional_comments,
-                    "needs_code_review": needs_code_review,
-                    "original_git_url": metadata.get("git_url"),
-                    "retry_attempt": 1,
-                    "is_rework_task": True
-                },
-                status="submitted",
-                status_reason=f"Rework requested: {issue_description[:100]}..."
-            )
-
-            if not success:
-                print(f"⚠️  Could not store rework task in database", flush=True)
-                return
-
-            print(f"✅ Created rework task: {rework_task_id}", flush=True)
-
-            # Update the original task status to reflect rework in progress
+            # Rework is an operation ON THE SAME TASK ROW (no second task):
+            # the parent flips to rework_in_progress and one thread runs the
+            # fix-build + full gate sequence under the parent's own id.
+            # (The old <task>-rework sub-task raced for the same deploy route
+            # and split git_url ownership - postmortem task-1794842620157.)
+            self._log_activity(task_id, "rework_requested", agent="it-lead",
+                               detail=issue_description[:150])
+            self._merge_metadata(task_id, {
+                "rework_issue_description": issue_description,
+                "rework_additional_comments": additional_comments,
+                "original_git_url": metadata.get("git_url")})
             try:
-                import json
-                task = self.task_storage.get_task(task_id)
-                if task:
-                    status_history = task.get("status_history", [])
-                    if isinstance(status_history, str):
-                        status_history = json.loads(status_history)
-
-                    status_history_entry = {
-                        "status": "rework_in_progress",
-                        "timestamp": time.time(),
-                        "reason": f"Rework requested: {issue_description[:100]}..."
-                    }
-                    status_history.append(status_history_entry)
-
-                    cursor = self.task_storage.connection.cursor()
-                    cursor.execute(
-                        "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
-                        ("rework_in_progress", json.dumps(status_history), task_id)
-                    )
-                    self.task_storage.connection.commit()
-                    cursor.close()
-                    print(f"✅ Updated task {task_id} status to rework_in_progress")
+                cursor = self.task_storage.connection.cursor()
+                cursor.execute("UPDATE task_registry SET status = %s WHERE task_id = %s",
+                               ("rework_in_progress", task_id))
+                self.task_storage.connection.commit()
+                cursor.close()
+                print(f"✅ Task {task_id} status -> rework_in_progress")
             except Exception as e:
                 print(f"⚠️  Could not update task status: {e}")
 
-            # Unified build flow: rework = fix the existing tree + the same gate
-            # sequence as a fresh build (QA/security/redeploy/health/visual).
-            # The legacy vibe_code_async forward + poller is retired.
             import threading
             threading.Thread(target=self._execute_rework_plan,
-                             args=(task_id, rework_task_id, rework_prompt,
-                                   metadata.get("git_url")),
+                             args=(task_id, rework_prompt, metadata.get("git_url")),
                              daemon=True).start()
 
         except Exception as e:
@@ -2833,75 +2816,55 @@ Please generate the complete, corrected code with proper {metadata.get('language
             import traceback
             traceback.print_exc()
 
-    def _execute_rework_plan(self, parent_id, rework_id, rework_prompt, base_git_url):
-        """Gated rework: fix the existing artifact tree (or rebuild from the task
-        text when no tree is recorded), run the standard gates, redeploy the
-        parent's edge route, then propagate the verdict to the parent."""
+    def _execute_rework_plan(self, task_id, rework_prompt, base_git_url):
+        """In-place rework: fix the existing artifact tree (or rebuild from the
+        task text when no tree is recorded), then run the standard gate
+        sequence (QA/security/redeploy/health/screenshot/visual) under the same
+        task id. The stale run contract is invalidated: the tree is about to
+        change and the old launch command must not be reused."""
         try:
             try:
                 coder_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
             except Exception:
                 coder_endpoint = None
             if not coder_endpoint:
-                self._update_task_status(rework_id, "failed", "coder unavailable for rework")
-                self._update_task_status(parent_id, "needs_revision",
+                self._update_task_status(task_id, "needs_revision",
                                          "rework failed: implementation-engineer unavailable")
                 return
             coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
-            self._update_task_status(
-                rework_id, "in_progress",
-                "rework build (fixing existing tree)" if base_git_url
-                else "rework build (rebuilding from task text)")
+            try:
+                os.remove(f"/tmp/qa-contracts/{task_id}.json")
+                self._log_activity(task_id, "contract_invalidated", agent="it-lead",
+                                   detail="stale run contract dropped before rework")
+            except OSError:
+                pass
             if base_git_url:
-                git_url = self._build_via_opencode(rework_id, rework_prompt, [],
+                git_url = self._build_via_opencode(task_id, rework_prompt, [],
                                                    coder_endpoint, {}, base_tree=base_git_url)
                 if not git_url:
-                    self._update_task_status(rework_id, "needs_revision",
-                                             "rework build (fix_tree) failed")
-                    self._update_task_status(parent_id, "needs_revision",
-                                             "rework failed: fix build error (see " + rework_id + ")")
+                    self._update_task_status(task_id, "needs_revision",
+                                             "rework failed: fix build error")
                     return
                 manifest = []
             else:
                 git_url, manifest = None, self._gated_manifest_synth()
             self._execute_multifile_plan(
-                rework_id, rework_prompt, manifest,
+                task_id, rework_prompt, manifest,
                 llm_plan={"workflow_sequence": ["implementation-engineer", "qa-engineer",
                                                 "devops-engineer"]},
                 metadata={"deploy_after_implementation": True},
-                route="gated", prebuilt_git_url=git_url, deploy_task_id=parent_id)
+                route="gated", prebuilt_git_url=git_url)
+            sub = self.task_storage.get_task(task_id) or {}
+            self._log_activity(task_id,
+                               "rework_done" if sub.get("status") == "done" else "rework_failed",
+                               agent="it-lead", detail=f"status={sub.get('status')}")
         except Exception as e:
             print(f"❌ rework plan error: {e}", flush=True)
             try:
-                self._update_task_status(rework_id, "needs_revision",
+                self._update_task_status(task_id, "needs_revision",
                                          f"rework error: {str(e)[:200]}")
             except Exception:
                 pass
-        # propagate verdict to the parent task
-        try:
-            sub = self.task_storage.get_task(rework_id) or {}
-            md = sub.get("metadata") or {}
-            if isinstance(md, str):
-                try:
-                    md = json.loads(md)
-                except Exception:
-                    md = {}
-            if sub.get("status") == "done":
-                new_url = md.get("git_url")
-                if new_url:
-                    self._merge_metadata(parent_id, {"git_url": new_url, "path": new_url})
-                self._log_activity(parent_id, "rework_done", agent="it-lead",
-                                   detail=f"reworked tree: {new_url or rework_id}")
-                self._update_task_status(parent_id, "done",
-                                         f"Rework completed and redeployed ({rework_id})")
-            else:
-                self._log_activity(parent_id, "rework_failed", agent="it-lead",
-                                   detail=str(sub.get("status") or "?"))
-                self._update_task_status(
-                    parent_id, "needs_revision",
-                    f"rework gates failed on {rework_id}: {(sub.get('status_reason') or '')[:200]}")
-        except Exception as e:
-            print(f"⚠️ rework propagation failed: {e}", flush=True)
 
     def _forward_to_code_reviewer(self, parent_task_id: str, code_git_url: str, original_prompt: str):
         """Forward code to Code Reviewer for review before deployment.

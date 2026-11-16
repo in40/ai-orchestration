@@ -1454,6 +1454,22 @@ class ExtendedItLeadServerHandlers:
         print(f"   Assignee: {assignee}")
         print(f"   Arguments metadata: {arguments.get('metadata', {})}")
 
+        # Concurrency guard: a second pipeline on the same task id would race
+        # for the same build workspace and deploy route (postmortem
+        # task-1794842620157: reassign during an active rework). Checked here,
+        # BEFORE the row is re-stored as 'submitted'.
+        try:
+            existing = self.task_storage.get_task(task_id) if self.task_storage else None
+            if existing and existing.get("status") in ("in_progress", "review",
+                                                       "rework_in_progress"):
+                msg = (f"task {task_id} already has an active pipeline "
+                       f"(status={existing.get('status')}); wait for it to finish, "
+                       f"or request rework once it is done")
+                print(f"⛔ {msg}")
+                return {"error": msg, "success": False, "rejected": True}
+        except Exception as e:
+            print(f"⚠️ concurrency guard check failed: {e}")
+
         # Store the task in the database with 'submitted' status first
         if self.task_storage:
             print(f"💾 Storing task {task_id} with 'submitted' status (async mode)")

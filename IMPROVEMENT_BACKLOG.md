@@ -312,3 +312,15 @@ reverse proxy (server.py, multipart passthrough) + login/token handling +
 new tests (mock langflow, proxy tests, node js-checks) - targeted edits,
 no rewrite. Full gates, redeploy to the SAME parent URL, visual PASS,
 parent done, git_url -> ...-rework tree. 28 min total.
+
+## Rework is now IN-PLACE (one task, one owner) ✅
+User call: the -rework sub-task WAS the bug - two rows, two owners
+of one deploy route (yesterday race). Now rework operates on the same
+task row: parent -> rework_in_progress -> fix-build under its own tid
+(push to results/<task>, git history keeps versions) -> full gates ->
+done/needs_revision. Contract cache for the task is deleted before gates
+(stale run command was bug A). Guards: assign_task rejects while
+in_progress/review/rework_in_progress (before the row is re-stored);
+rework rejects when active or when no git_url exists to fix.
+E2E: in-place rework on task-1794842620157 (rename send button) +
+reassign-during-rework must be rejected.
