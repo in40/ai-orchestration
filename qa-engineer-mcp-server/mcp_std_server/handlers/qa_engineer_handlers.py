@@ -123,13 +123,24 @@ class QaEngineerServerHandlers(McpServerHandlers):
                 if raw.lstrip().startswith("{"):
                     return None, None, f"truncated envelope: {raw[:60]}... ({e.msg} line {e.lineno})", None
             return raw, lang, None, None
-        # Tree of files (fan-out flow): primary = first code file, recursive
+        # Tree of files (fan-out flow): primary = the LARGEST code file, ignoring
+        # package markers and test helpers. Alphabetical order picked an empty
+        # app/__init__.py once (e2e-u1: false "code too short" on a 10-file tree).
         code_files = []
-        for root, _, files in os.walk(result_dir):
+        for root, dirs, files in os.walk(result_dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
             code_files += [os.path.relpath(os.path.join(root, f), result_dir)
                            for f in files if f.endswith((".py", ".js", ".html", ".htm"))]
         if code_files:
-            primary = sorted(code_files)[0]
+            def _size(p):
+                try:
+                    return os.path.getsize(os.path.join(result_dir, p))
+                except OSError:
+                    return 0
+            candidates = [p for p in code_files
+                          if not p.endswith("__init__.py")
+                          and not p.replace("\\", "/").startswith("tests/")]
+            primary = max(candidates or code_files, key=_size)
             lang = {"py": "python", "js": "javascript"}.get(primary.rsplit(".", 1)[-1], "html")
             return open(os.path.join(result_dir, primary)).read(), lang, None, primary.replace("\\", "/")
         return None, None, "no result.py/result.js/result.html found", None
