@@ -1084,7 +1084,7 @@ def register_vibe_coding_tool(server_handlers):
     # Define the asynchronous vibe_code tool
     vibe_code_async_tool = {
         "name": "vibe_code_async",
-        "description": "Submit a natural language coding task to be processed asynchronously. Returns a task ID for tracking progress. Use tasks/get to check status and tasks/result to retrieve the generated code.",
+        "description": "[DEPRECATED - kept for legacy tasks and redeploys only; IT Lead now routes all coding through build_project] Submit a natural language coding task to be processed asynchronously. Returns a task ID for tracking progress. Use tasks/get to check status and tasks/result to retrieve the generated code.",
         "inputSchema": {
             "type": "object",
             "properties": {

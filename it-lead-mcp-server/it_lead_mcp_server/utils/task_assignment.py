@@ -583,8 +583,9 @@ class TaskAssignmentManager:
         'gated'  = multi-file flow: build_project (or fan-out fallback) + QA
                    + security + deploy + client acceptance. Everything that
                    runs on a network or spans files belongs here.
-        'simple' = legacy single-shot flow: plain scripts/utilities without
-                   deploy/client requirements.
+        'simple' = build flow without deploy/security gates: plain scripts and
+                   utilities; a single-file manifest is synthesized when the
+                   planner omits one.
         First matching rule wins; the decision is logged to the activity feed.
         """
         md = metadata or {}
@@ -599,7 +600,46 @@ class TaskAssignmentManager:
             return "gated", "task describes a network service - must pass QA/security gates"
         if any(k in desc for k in ("template", "sdk", "library", "package")):
             return "gated", "multi-file deliverable keywords"
-        return "simple", "plain script/utility - single-shot flow"
+        return "simple", "plain script/utility - build flow, no deploy gates"
+
+    def _gated_manifest_synth(self):
+        """Minimal manifest for deployable/client tasks the planner gave no manifest for."""
+        return [
+            {"path": "main.py",
+             "spec": "HTTP service entry point implementing exactly what the task "
+                     "describes; bind 0.0.0.0, port from env PORT (default 5000); "
+                     "stdlib only unless requirements.txt lists packages"},
+            {"path": "requirements.txt",
+             "spec": "third-party packages actually imported, or "
+                     "'# dependencies (stdlib only)'"},
+            {"path": "README.md",
+             "spec": "run command (python main.py) and every endpoint: method, path, "
+                     "request and response example"},
+        ]
+
+    def _single_manifest_synth(self, llm_plan):
+        """One-file manifest for plain script/utility tasks (unified build flow)."""
+        fname = str((llm_plan or {}).get("single_file_path") or "main.py").strip("/") or "main.py"
+        return [{"path": fname,
+                 "spec": "Implement exactly what the task describes in this single "
+                         "file. Stdlib only unless the task explicitly names "
+                         "third-party packages; add a __main__ guard for CLIs."}]
+
+    def _deployment_healthy(self, url, timeout_s=60):
+        """Poll the edge URL: any HTTP answer (even 4xx) means the app is up;
+        502/504/connection errors mean crash-loop or dead container."""
+        deadline = time.time() + timeout_s
+        last = "no attempt"
+        while time.time() < deadline:
+            try:
+                r = requests.get(url, timeout=5)
+                if r.status_code not in (502, 504):
+                    return True, f"HTTP {r.status_code}"
+                last = f"HTTP {r.status_code}"
+            except Exception as e:
+                last = str(e)[:100]
+            time.sleep(5)
+        return False, last
 
     def _build_via_opencode(self, task_id, task_description, file_manifest,
                             coder_endpoint, metadata):
@@ -644,8 +684,9 @@ class TaskAssignmentManager:
         return None
 
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list,
-                                llm_plan: dict = None, metadata: dict = None):
-        """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree."""
+                                llm_plan: dict = None, metadata: dict = None, route: str = "gated"):
+        """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree.
+        route='simple' skips the security gate (plain scripts have no network surface)."""
         try:
             from concurrent.futures import ThreadPoolExecutor
             coder_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
@@ -743,14 +784,18 @@ class TaskAssignmentManager:
             self._merge_metadata(task_id, {"git_url": git_url, "path": git_url,
                                                    "storage_type": "git"})
             self._update_task_status(task_id, "review", "QA passed, gates in progress")
-        sec_ok, sec_info = self._security_gate(task_id, git_url)
-        self._log_activity(task_id, "security_gate", agent="security-reviewer",
-                           detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_info)[:200]}")
-        if not sec_ok:
-            self._update_task_status(task_id, "needs_revision",
-                                     f"security scan failed: {json.dumps(sec_info)[:400]}")
-            return
-        self._advisory_review(task_id)  # non-blocking; verdict in metadata
+        if route == "gated":
+            sec_ok, sec_info = self._security_gate(task_id, git_url)
+            self._log_activity(task_id, "security_gate", agent="security-reviewer",
+                               detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_info)[:200]}")
+            if not sec_ok:
+                self._update_task_status(task_id, "needs_revision",
+                                         f"security scan failed: {json.dumps(sec_info)[:400]}")
+                return
+            self._advisory_review(task_id)  # non-blocking; verdict in metadata
+        else:
+            self._log_activity(task_id, "security_gate", agent="security-reviewer",
+                               detail="skipped (simple route)")
         wf_join = " ".join((llm_plan or {}).get("workflow_sequence", []) if isinstance(llm_plan, dict) else [])
         want_deploy = "devops" in wf_join or \
             "deploy_after_implementation\": true" in json.dumps(metadata or {}).lower()
@@ -770,6 +815,13 @@ class TaskAssignmentManager:
                     dep = self._deploy_multifile(task_id, git_url)
                     url = dep.get("deployment_url")
             if url:
+                healthy, why = self._deployment_healthy(url)
+                self._log_activity(task_id, "deploy_health", agent="it-lead",
+                                   detail=why if healthy else f"unhealthy: {why}")
+                if not healthy:
+                    self._update_task_status(task_id, "needs_revision",
+                                             f"deployed container unhealthy at {url}: {why}")
+                    return
                 acc_ok, acc_out = self._run_client_acceptance(task_id, url)
                 self._log_activity(task_id, "client_acceptance", agent="qa-engineer",
                                    detail=("PASS" if acc_ok else f"FAIL: {acc_out[:200]}")
@@ -920,17 +972,20 @@ class TaskAssignmentManager:
         primary_agent = routing_decision.assign_to
         print(f"DEBUG: effective_assignee={effective_assignee}, primary_agent={primary_agent}")
 
-        # Step 2: Handle LLM planning if needed
-        if routing_decision.requires_llm_planning:
-            print(f"🔍 LLM planning REQUIRED for task {task_id}")
-            print(f"   Reason: {routing_decision.llm_reason}")
-            print(f"   Confidence: {routing_decision.confidence}")
+        # Step 2: LLM planning is MANDATORY. Rule matches are advisory hints
+        # only (logged + passed to the planner); they never select a tool.
+        # The old rule->vibe_code_async short-circuit produced single-file
+        # junk for complex web deliverables (task-1794818260746 postmortem).
+        if True:
+            print(f"🔍 LLM planning for task {task_id} "
+                  f"(rule hint: {routing_decision.matched_rule_id}, "
+                  f"reason: {routing_decision.llm_reason})")
 
             try:
                 llm_plan = self.llm_planner.plan_task_assignment(
                     task_description,
                     {
-                        "llm_reason": routing_decision.llm_reason,
+                        "llm_reason": routing_decision.llm_reason or "MANDATORY_PLANNING",
                         "failure_reasons": routing_decision.metadata.get("failure_reasons", []),
                         "matched_rule": routing_decision.metadata.get("matched_rule"),
                         "confidence": routing_decision.confidence,
@@ -944,7 +999,9 @@ class TaskAssignmentManager:
                 import traceback
                 traceback.print_exc()
                 # Fallback plan - check deployment flag FIRST
-                llm_plan = {"workflow_sequence": ["requirements-engineer", "implementation-engineer"], "tools": {"primary_agent": "vibe_code_async"}}
+                llm_plan = {"primary_agent": "implementation-engineer",
+                            "workflow_sequence": ["requirements-engineer", "implementation-engineer"],
+                            "tools": {"implementation-engineer": "build_project"}}
 
                 # Check if deployment is required even in fallback
                 deploy_flag = False
@@ -993,20 +1050,15 @@ class TaskAssignmentManager:
             if route == "gated" and not file_manifest:
                 # deploy/client/service tasks need the gated flow even when the
                 # planner classified them as single-file
-                file_manifest = [
-                    {"path": "main.py",
-                     "spec": "HTTP service entry point implementing exactly what the task "
-                             "describes; bind 0.0.0.0, port from env PORT (default 5000); "
-                             "stdlib only unless requirements.txt lists packages"},
-                    {"path": "requirements.txt",
-                     "spec": "third-party packages actually imported, or "
-                             "'# dependencies (stdlib only)'"},
-                    {"path": "README.md",
-                     "spec": "run command (python main.py) and every endpoint: method, path, "
-                             "request and response example"},
-                ]
+                file_manifest = self._gated_manifest_synth()
                 print("🧩 deployable/client task without planner manifest -> "
                       "synthesized minimal manifest (gated flow)")
+            if not file_manifest and primary_agent == "implementation-engineer":
+                # Unified build flow: single-file deliverables go through
+                # build_project too - the legacy vibe_code_async path is retired.
+                file_manifest = self._single_manifest_synth(llm_plan)
+                print(f"🧩 single-file deliverable -> synthesized manifest "
+                      f"[{file_manifest[0]['path']}] (build flow, simple)")
             if file_manifest:
                 print(f"🧩 Multi-file deliverable: {len(file_manifest)} files planned -> fan-out")
                 if self.task_storage:
@@ -1014,7 +1066,7 @@ class TaskAssignmentManager:
                                              f"Multi-file plan: {len(file_manifest)} files")
                 threading.Thread(target=self._execute_multifile_plan,
                                  args=(task_id, task_description, file_manifest,
-                                       llm_plan, metadata),
+                                       llm_plan, metadata, route),
                                  daemon=True).start()
                 result["status"] = "in_progress"
                 result["message"] = f"Multi-file plan: {len(file_manifest)} files generated in parallel"
@@ -1030,8 +1082,8 @@ class TaskAssignmentManager:
                     metadata = {}
                 metadata["language"] = detected_language
 
-            # CHECK FOR DEPLOYMENT FLAG: If deploy_after_implementation is set, force add devops-engineer
-            # This MUST run BEFORE tool extraction to ensure vibe_code_async is used
+            # CHECK FOR DEPLOYMENT FLAG (legacy path for non-implementation
+            # primary agents, e.g. requirements-engineer workflows)
             # Check in multiple locations - the flag can be deeply nested!
             print(f"🔍 DEBUG: About to check for deployment flag...")
             print(f"   metadata type: {type(metadata)}, metadata is None: {metadata is None}")
@@ -1099,127 +1151,21 @@ class TaskAssignmentManager:
                 else:
                     print(f"✅ DevOps already in workflow")
 
-                # ALSO: Ensure implementation-engineer uses vibe_code_async for git storage
-                # This MUST change recommended_tool BEFORE tool extraction below
-                if "tools" not in llm_plan:
-                    llm_plan["tools"] = {}
-                if llm_plan.get("recommended_tool") == "vibe_code":
-                    llm_plan["recommended_tool"] = "vibe_code_async"
-                    print(f"🔧 Changed recommended_tool to vibe_code_async for git storage")
-                llm_plan["tools"]["implementation-engineer"] = "vibe_code_async"
-
             # Get tool from LLM plan - try multiple formats
             # Format 1: Direct recommended_tool field
             # Format 2: tools dict keyed by agent name
-            # Fallback: vibe_code_async
+            # NOTE: implementation-engineer never reaches this point - the
+            # unified build flow returns via fan-out above. The legacy
+            # vibe_code_async forcing blocks were removed with it.
             tool = llm_plan.get("recommended_tool") or \
-                   llm_plan.get("tools", {}).get(primary_agent, "vibe_code_async")
-            
-            # CRITICAL FIX: If deploy_flag is set, FORCE use vibe_code_async for implementation-engineer
-            # This ensures code is stored in git for DevOps deployment
-            if deploy_flag and primary_agent == "implementation-engineer":
-                tool = "vibe_code_async"
-                print(f"🔧 FORCED tool to vibe_code_async for deployment workflow")
-            
-            # CRITICAL FIX: Handle sync tasks with deployment workflow
-            if deploy_flag and primary_agent == "implementation-engineer":
-                self._handle_sync_implementation_with_deployment_workflow(task_id)
+                   llm_plan.get("tools", {}).get(primary_agent, "analyze_requirements")
             
             print(f"   tool: {tool}")
             priority = llm_plan.get("priority", priority) if llm_plan else priority
             print(f"   priority: {priority}")
-        else:
-            # No deployment flag - standard sync path
-            print(f"✅ LLM planning NOT required for task {task_id}")
-            primary_agent = routing_decision.assign_to
-            tool = routing_decision.tool
-            priority = routing_decision.priority or priority
-            print(f"DEBUG: routing_decision: assign_to={primary_agent}, tool={tool}, priority={priority}")
-            
-            # OPTION 3: Post-processing check for deployment keywords even in rule-based routing
-            # This ensures devops-engineer is added to workflow even when LLM planning is skipped
-            print(f"🔍 POST-PROCESSING: Checking for deployment keywords in rule-based routing...")
-            deployment_keywords = [
-                "deploy", "deployment", "publish", "make accessible", "run as website",
-                "host online", "make it live", "container", "docker", "production"
-            ]
-            
-            needs_deployment = any(keyword in task_description.lower() for keyword in deployment_keywords)
-            
-            # Also check for deploy_after_implementation flag in metadata
-            deploy_flag = False
-            print(f"🔍 Checking deploy_after_implementation flag...")
-            print(f"   metadata keys: {list(metadata.keys()) if metadata else 'None'}")
-            print(f"   metadata.deploy_after_implementation: {metadata.get('deploy_after_implementation') if metadata else 'N/A'}")
-            
-            if metadata and metadata.get("deploy_after_implementation", False):
-                deploy_flag = True
-                print(f"   ✅ Found deploy_after_implementation in metadata directly")
-            elif metadata and metadata.get("original_arguments"):
-                orig_args = metadata.get("original_arguments", {})
-                print(f"   original_arguments keys: {list(orig_args.keys())}")
-                print(f"   original_arguments.metadata.deploy_after_implementation: {orig_args.get('metadata', {}).get('deploy_after_implementation')}")
-                print(f"   original_arguments.original_arguments: {orig_args.get('original_arguments')}")
-                if orig_args.get("metadata", {}).get("deploy_after_implementation", False):
-                    deploy_flag = True
-                    print(f"   ✅ Found deploy_after_implementation in original_arguments.metadata")
-                elif orig_args.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
-                    deploy_flag = True
-                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.metadata")
-                elif orig_args.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
-                    deploy_flag = True
-                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.original_arguments.metadata")
-                elif orig_args.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
-                    deploy_flag = True
-                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.metadata.original_arguments.metadata")
-                else:
-                    # Debug: show full structure
-                    inner = orig_args.get("original_arguments", {})
-                    print(f"   DEBUG: inner keys: {list(inner.keys()) if inner else 'None'}")
-                    if inner:
-                        inner_meta = inner.get("metadata", {})
-                        print(f"   DEBUG: inner.metadata: {inner_meta}")
-                        print(f"   DEBUG: inner.metadata.deploy_after_implementation: {inner_meta.get('deploy_after_implementation')}")
-                        # Check deeper nesting
-                        deeper = inner_meta.get("original_arguments", {})
-                        if deeper:
-                            deeper_meta = deeper.get("original_arguments", {})
-                            if deeper_meta:
-                                deepest_meta = deeper_meta.get("metadata", {})
-                                print(f"   DEBUG: deepest metadata: {deepest_meta}")
-                                print(f"   DEBUG: deepest metadata.deploy_after_implementation: {deepest_meta.get('deploy_after_implementation')}")
-                                if deepest_meta.get("deploy_after_implementation", False):
-                                    deploy_flag = True
-                                    print(f"   ✅ Found deploy_after_implementation at deepest level")
-            
-            if needs_deployment or deploy_flag:
-                print(f"🚀 DEPLOYMENT DETECTED in rule-based routing!")
-                print(f"   needs_deployment={needs_deployment}, deploy_flag={deploy_flag}")
-                print(f"   Task will include devops-engineer in workflow")
-                
-                # Create a minimal llm_plan structure to support workflow sequence
-                llm_plan = {
-                    "workflow_sequence": [primary_agent, "devops-engineer"],
-                    "tools": {
-                        primary_agent: tool,
-                        "devops-engineer": "deploy_web_application"
-                    },
-                    "primary_agent": primary_agent,
-                    "reasoning": "Rule-based routing with auto-detected deployment requirement"
-                }
-                
-                # Change tool to async version for git storage
-                if tool == "vibe_code":
-                    tool = "vibe_code_async"
-                    print(f"🔧 Changed tool to vibe_code_async for git storage")
-                
-                print(f"📋 Updated workflow_sequence: {llm_plan['workflow_sequence']}")
-            else:
-                print(f"ℹ️  No deployment keywords detected, using simple routing")
-                llm_plan = None
-
-            # Debug: Print execution flow marker
-            print(f"DEBUG: After deployment detection, before Step 3 task storage")
+        # (The legacy rule-based else-branch that routed straight to
+        # vibe_code_async/deploy_web_application was removed: the planner is
+        # now the single decision point, rules are hints only.)
 
         # Step 3: Store task in database with initial status
         if self.task_storage:
@@ -1959,9 +1905,26 @@ class TaskAssignmentManager:
             print(f"   Available endpoints: {self.routing_engine.agent_endpoints}")
             return
         
+        if next_agent == "implementation-engineer":
+            # vibe_code_async retired: an implementation step inside a workflow
+            # (e.g. after requirements analysis) also goes through the build flow.
+            wf = " ".join(llm_plan.get("workflow_sequence", []) if isinstance(llm_plan, dict) else [])
+            r2 = "gated" if "devops" in wf else "simple"
+            manifest = (self._gated_manifest_synth() if r2 == "gated"
+                        else self._single_manifest_synth(llm_plan))
+            self._log_activity(task_id, "route", agent="it-lead",
+                               detail=f"{r2}: workflow continuation via build flow")
+            self._update_task_status(task_id, "in_progress",
+                                     f"Build flow continuation: {len(manifest)} files")
+            threading.Thread(target=self._execute_multifile_plan,
+                             args=(task_id, task_description, manifest,
+                                   llm_plan, {}, r2),
+                             daemon=True).start()
+            return
+
         # Get tool for next agent from LLM plan
         tools = llm_plan.get("tools", {})
-        next_tool = tools.get(next_agent, "vibe_code_async")
+        next_tool = tools.get(next_agent, "analyze_requirements")
 
         # Forward task to next agent
         print(f"   Forwarding to {next_agent} at {next_agent_endpoint} with tool {next_tool}")

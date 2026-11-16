@@ -19,8 +19,8 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // WebSocket hook for real-time updates (host-aware: works from remote browsers)
-  const { sendMessage, lastMessage } = useWebSocket(`ws://${window.location.hostname}:8000/ws`);
+  // WebSocket hook for real-time updates
+  const { sendMessage, lastMessage } = useWebSocket('ws://localhost:8000/ws');
 
   useEffect(() => {
     // Load initial data - use dynamic planner endpoint for all agents from registry

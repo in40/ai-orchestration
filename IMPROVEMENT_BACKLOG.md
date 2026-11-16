@@ -218,3 +218,17 @@ Convention added: deployable REST artifacts must serve GET /openapi.json
 (planner prompt + coder AGENTS.md). Verified live: e2e-c5 -> openapi mode,
 proxied POST /echo 200; MCP mode against a real streamable-HTTP server
 (4 tools listed, tools/call 200); both SSRF guards fire.
+
+## Legacy 1-file path retired ✅
+task-1794818260746 postmortem: rule-1.0b (one "html" mention, threshold 0.5)
+short-circuited to vibe_code_async: single-file client lib instead of web UI,
+flask-only image crash-loop, done despite unhealthy. Fixes:
+- planner is now MANDATORY for every task; rule matches are advisory hints
+- simple route = synthesized single-file manifest through build_project
+  (planner may name it via single_file_path); security gate skipped for simple
+- vibe_code_async deprecated (kept for legacy tasks/redeploys only)
+- workflow continuation (requirements->implementation) also uses build flow
+- health gate: poll edge URL after deploy; 502/504/conn-refused for 60s
+  -> deploy_health event + needs_revision instead of done
+- legacy deploy deps: ast import derivation (alias map, fastapi->uvicorn)
+  instead of hardcoded flask; empty deps no longer emit a pip RUN line

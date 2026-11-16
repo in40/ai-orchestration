@@ -735,7 +735,10 @@ class DevOpsReleaseEngineerHandlers:
             with open(os.path.join(deploy_dir, "result.py"), 'r') as f:
                 content = f.read()
 
-            dependencies = ["flask"]  # Default
+            # Derive dependencies from actual imports instead of assuming flask:
+            # a flask-only image crashes at startup when the artifact imports
+            # requests/fastapi/etc (task-1794818260746: Restarting loop, 502).
+            dependencies = self._detect_dependencies(content)
 
             # Check if code uses render_template() (external templates)
             # This requires either creating a templates directory or converting to render_template_string()
@@ -799,11 +802,7 @@ class DevOpsReleaseEngineerHandlers:
                     deployment_logger.info(f"Created minimal template: {template_name}")
                 uses_render_template = False  # Templates are now available
 
-            if "fastapi" in content:
-                dependencies.append("fastapi")
-                dependencies.append("uvicorn")
-            if "django" in content:
-                dependencies.append("django")
+            # (fastapi/django substring detection replaced by _detect_dependencies)
 
             # Detect PORT from generated code
             # Look for patterns like: PORT = 8080, PORT=3000, port = 5000, etc.
@@ -927,21 +926,21 @@ class DevOpsReleaseEngineerHandlers:
             templates_exist = os.path.isdir(os.path.join(deploy_dir, "templates"))
 
             # Create Dockerfile with detected port
+            install_line = (f"RUN pip install {' '.join(dependencies)}\n"
+                            if dependencies else "")
             if templates_exist:
                 dockerfile_content = f"""FROM python:3.11-slim
 WORKDIR /app
 COPY result.py .
 COPY templates/ ./templates/
-RUN pip install {' '.join(dependencies)}
-EXPOSE {container_port}
+{install_line}EXPOSE {container_port}
 CMD ["python", "result.py"]
 """
             else:
                 dockerfile_content = f"""FROM python:3.11-slim
 WORKDIR /app
 COPY result.py .
-RUN pip install {' '.join(dependencies)}
-EXPOSE {container_port}
+{install_line}EXPOSE {container_port}
 CMD ["python", "result.py"]
 """
             with open(os.path.join(deploy_dir, "Dockerfile"), 'w') as f:
@@ -1016,6 +1015,32 @@ CMD ["python", "result.py"]
             deployment_logger.error(f"Unexpected deployment error: {error_msg}")
             self._update_task_status_on_deployment_failure(task_id, error_msg)
             return {"error": error_msg}
+
+    @staticmethod
+    def _detect_dependencies(content):
+        """Third-party packages for a single-file artifact, from its imports."""
+        import ast
+        import sys as _sys
+        alias = {"PIL": "pillow", "yaml": "pyyaml", "bs4": "beautifulsoup4",
+                 "sklearn": "scikit-learn", "cv2": "opencv-python-headless",
+                 "dotenv": "python-dotenv", "jwt": "pyjwt",
+                 "dateutil": "python-dateutil", "Crypto": "pycryptodome",
+                 "serial": "pyserial", "fitz": "pymupdf", "docx": "python-docx"}
+        try:
+            mods = set()
+            for node in ast.walk(ast.parse(content)):
+                if isinstance(node, ast.Import):
+                    mods.update(a.name.split(".")[0] for a in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    mods.add(node.module.split(".")[0])
+            std = getattr(_sys, "stdlib_module_names", set())
+            third = sorted(m for m in mods if m not in std and m != "result")
+            pkgs = sorted({alias.get(m, m) for m in third})
+            if "fastapi" in pkgs and "uvicorn" not in pkgs:
+                pkgs.append("uvicorn")
+            return pkgs
+        except SyntaxError:
+            return ["flask"]
 
     @staticmethod
     def _dockerfile_from_contract(rc, container_port):
