@@ -32,15 +32,18 @@ import {
   Warning as WarningIcon,
   PlayArrow as PlayIcon,
   Stop as StopIcon,
-  Delete as DeleteIcon
+  Delete as DeleteIcon,
+  Science as TestIcon
 } from '@mui/icons-material';
 import axios from 'axios';
+import DeploymentTester from './DeploymentTester';
 
 const Deployments = () => {
   const [deployments, setDeployments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [testerFor, setTesterFor] = useState(null);
 
   const fetchDeployments = async (filter = 'all') => {
     try {
@@ -299,6 +302,15 @@ const Deployments = () => {
                       >
                         <LaunchIcon />
                       </IconButton>
+                      <IconButton
+                        size="small"
+                        color="secondary"
+                        onClick={() => setTesterFor(deployment)}
+                        disabled={!deployment.deployment_url}
+                        title="Test deployment (MCP/OpenAPI/raw)"
+                      >
+                        <TestIcon />
+                      </IconButton>
                       {deployment.status === 'stopped' && (
                         <IconButton
                           size="small"
@@ -335,6 +347,8 @@ const Deployments = () => {
           </Table>
         </TableContainer>
       )}
+
+      <DeploymentTester open={!!testerFor} onClose={() => setTesterFor(null)} deployment={testerFor} />
     </Box>
   );
 };

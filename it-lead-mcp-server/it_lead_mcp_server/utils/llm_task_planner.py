@@ -65,7 +65,11 @@ third-party SDK API.
 Omit file_manifest (or []) for single-file deliverables.
 If the task asks to deploy/publish/make accessible, the entry module spec MUST
 use HTTP transport (JSON-RPC over POST /mcp, bind 0.0.0.0, port from env PORT);
-a stdio-only MCP template is NOT deployable as a web service."""
+a stdio-only MCP template is NOT deployable as a web service.
+Deployable REST/HTTP services must be self-describing for the generic tester:
+FastAPI serves GET /openapi.json automatically; for Flask or plain http.server
+the spec must include a static GET /openapi.json (OpenAPI 3.0: paths, methods,
+request/response shapes) describing every endpoint."""
         
         # Call LLM
         try:

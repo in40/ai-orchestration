@@ -1008,6 +1008,168 @@ async def get_deployments(status_filter: str = "running"):
     return deployments
 
 
+# ---------------------------------------------------------------------------
+# Generic deployment tester: probe any deployed artifact (MCP / OpenAPI / raw)
+# and proxy calls through the backend (CORS-free). SSRF guard: targets must be
+# a registered task_deployments URL; request paths join relative to it only.
+# ---------------------------------------------------------------------------
+import time as _time
+from urllib.parse import urljoin
+
+_TESTER_MAX_BODY = 200_000
+_mcp_sessions: Dict[str, Any] = {}  # task_id -> {"sid": str, "ts": float}
+
+
+async def _tester_base_url(task_id: str) -> str:
+    """Whitelist lookup: the deployment_url registered for this task."""
+    deps = await fetch_deployments_from_it_lead(status_filter="all")
+    for d in deps or []:
+        if d.get("task_id") == task_id and d.get("deployment_url"):
+            url = d["deployment_url"]
+            return url if url.endswith("/") else url + "/"
+    raise HTTPException(status_code=404,
+                        detail=f"no deployment registered for task {task_id}")
+
+
+def _tester_target(base: str, path: str) -> str:
+    p = (path or "").strip()
+    if "://" in p or p.startswith("//") or "@" in p:
+        raise HTTPException(status_code=400, detail="absolute target not allowed")
+    return urljoin(base, p.lstrip("/"))
+
+
+def _parse_jsonrpc(text: str):
+    """Accept plain JSON or SSE ('data: {...}') JSON-RPC bodies."""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except Exception:
+                continue
+    return None
+
+
+async def _mcp_rpc(client, base, method, params, session_id=None, rpc_id=1):
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    if session_id:
+        headers["mcp-session-id"] = session_id
+    r = await client.post(
+        base + "mcp", headers=headers,
+        json={"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params or {}})
+    sid = r.headers.get("mcp-session-id") or session_id
+    try:
+        data = r.json()
+    except Exception:
+        data = _parse_jsonrpc(r.text)
+    return r.status_code, data, sid
+
+
+async def _mcp_initialize(client, base):
+    return await _mcp_rpc(client, base, "initialize", {
+        "protocolVersion": "2024-11-05", "capabilities": {},
+        "clientInfo": {"name": "web-tester", "version": "1"}})
+
+
+@app.post("/api/tester/probe")
+async def tester_probe(payload: dict):
+    """Detect what the deployed artifact speaks: MCP > OpenAPI > raw HTTP."""
+    task_id = (payload or {}).get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+    base = await _tester_base_url(task_id)
+    out = {"task_id": task_id, "base_url": base, "mode": "raw"}
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # 1) MCP handshake + tools/list
+        try:
+            st, data, sid = await _mcp_initialize(client, base)
+            if st == 200 and isinstance(data, dict) and data.get("result", {}).get("serverInfo") is not None:
+                st2, tl, _ = await _mcp_rpc(client, base, "tools/list", {}, sid, 2)
+                tools = (tl or {}).get("result", {}).get("tools", []) if st2 == 200 else []
+                out.update({"mode": "mcp",
+                            "server_info": data["result"].get("serverInfo"),
+                            "tools": tools})
+                return out
+        except Exception as e:
+            out["mcp_probe_error"] = str(e)[:150]
+        # 2) OpenAPI self-description
+        try:
+            r = await client.get(base + "openapi.json")
+            if r.status_code == 200:
+                try:
+                    spec = r.json()
+                except Exception:
+                    spec = None
+                if isinstance(spec, dict) and "openapi" in spec:
+                    out.update({"mode": "openapi", "openapi": spec})
+                    return out
+        except Exception as e:
+            out["openapi_probe_error"] = str(e)[:150]
+        # 3) raw fallback: quick GET root for context
+        try:
+            r = await client.get(base)
+            out["root_status"] = r.status_code
+        except Exception as e:
+            out["root_error"] = str(e)[:150]
+    return out
+
+
+@app.post("/api/tester/mcp")
+async def tester_mcp(payload: dict):
+    """Run one MCP method against a deployed server; session lifecycle is ours."""
+    task_id = (payload or {}).get("task_id")
+    method = (payload or {}).get("method")
+    if not task_id or not method:
+        raise HTTPException(status_code=400, detail="task_id and method required")
+    base = await _tester_base_url(task_id)
+    sid = (_mcp_sessions.get(task_id) or {}).get("sid")
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        st, data, sid = await _mcp_rpc(client, base, method, payload.get("params"), sid)
+        if st != 200 or not isinstance(data, dict) or "error" in data:
+            # stale/absent session: re-handshake once and retry
+            st, data, sid = await _mcp_initialize(client, base)
+            st, data, sid = await _mcp_rpc(client, base, method, payload.get("params"), sid, 2)
+        _mcp_sessions[task_id] = {"sid": sid, "ts": _time.time()}
+    if isinstance(data, dict) and "error" in data:
+        raise HTTPException(status_code=502, detail=json.dumps(data["error"])[:300])
+    return {"result": data.get("result") if isinstance(data, dict) else data}
+
+
+@app.post("/api/tester/request")
+async def tester_request(payload: dict):
+    """Proxy an arbitrary HTTP call to a whitelisted deployment."""
+    task_id = (payload or {}).get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+    base = await _tester_base_url(task_id)
+    method = str((payload or {}).get("method") or "GET").upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        raise HTTPException(status_code=400, detail="bad method")
+    url = _tester_target(base, (payload or {}).get("path", ""))
+    body = (payload or {}).get("body")
+    kwargs: Dict[str, Any] = {}
+    headers: Dict[str, str] = {}
+    if isinstance(body, (dict, list)):
+        kwargs["json"] = body
+    elif isinstance(body, str) and body.strip():
+        kwargs["content"] = body
+        headers["Content-Type"] = (payload or {}).get("content_type") or "application/json"
+    t0 = _time.perf_counter()
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+        try:
+            r = await client.request(method, url, headers=headers, **kwargs)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"request failed: {e}")
+    elapsed = round((_time.perf_counter() - t0) * 1000)
+    return {"status": r.status_code,
+            "elapsed_ms": elapsed,
+            "headers": dict(r.headers),
+            "body": r.text[:_TESTER_MAX_BODY]}
+
+
 @app.get("/api/tasks/{task_id}/progress")
 async def get_task_progress(task_id: str):
     """Get detailed task progress with MCP-based communication tracking

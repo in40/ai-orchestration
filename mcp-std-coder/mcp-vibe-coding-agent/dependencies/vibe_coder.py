@@ -1299,6 +1299,9 @@ Overall project goal:
                     "  third-party SDK APIs on your own classes.\n"
                     "- Prefer lazy imports inside functions for sibling modules.\n"
                     "- Define exactly the exports the manifest spec promises.\n"
+                    "- REST/HTTP services must be self-describing: expose GET /openapi.json\n"
+                    "  (FastAPI does it automatically; for Flask/plain http.server serve a static\n"
+                    "  OpenAPI 3.0 JSON describing every endpoint) so the generic tester works.\n"
                     "- README.md must document the ACTUAL run command and endpoints.\n")
                 ok, text, err = opencode_agent(
                     "coder", ws,

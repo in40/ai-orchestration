@@ -207,3 +207,14 @@ Task History modal shows pending_permission block (command + 180s countdown +
 Approve once / Always allow / Deny) -> POST /api/tasks/{id}/permission ->
 IT Lead resolve_permission -> opencode serve -> session resumes. Verified
 end-to-end with a live ask (succeeded outcome, metadata cleared).
+
+## Generic deployment tester ✅
+Deployments page: [Test] per row -> modal auto-detects artifact kind via backend
+probe (all traffic proxied through web-ui -> no CORS): MCP (initialize+tools/list
+-> schema-driven forms -> tools/call, session handled server-side) > OpenAPI
+(GET /openapi.json -> operations -> execute) > raw HTTP mini-Postman.
+SSRF guard: only task_deployments-registered URLs; relative paths only (404/400).
+Convention added: deployable REST artifacts must serve GET /openapi.json
+(planner prompt + coder AGENTS.md). Verified live: e2e-c5 -> openapi mode,
+proxied POST /echo 200; MCP mode against a real streamable-HTTP server
+(4 tools listed, tools/call 200); both SSRF guards fire.
