@@ -1467,6 +1467,19 @@ class ExtendedItLeadServerHandlers:
                        f"or request rework once it is done")
                 print(f"⛔ {msg}")
                 return {"error": msg, "success": False, "rejected": True}
+            if existing and existing.get("status") == "submitted":
+                # fresh 'submitted' = a pipeline is in flight; a stale one is a
+                # crashed run and may legitimately be re-assigned
+                from datetime import datetime as _dt
+                try:
+                    age_min = (_dt.now() - _dt.fromisoformat(
+                        str(existing.get("updated_at"))[:19])).total_seconds() / 60
+                except Exception:
+                    age_min = 999
+                if age_min < 15:
+                    msg = f"task {task_id} was submitted {age_min:.0f} min ago and is still processing"
+                    print(f"⛔ {msg}")
+                    return {"error": msg, "success": False, "rejected": True}
         except Exception as e:
             print(f"⚠️ concurrency guard check failed: {e}")
 

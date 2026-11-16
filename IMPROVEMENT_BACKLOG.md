@@ -324,3 +324,13 @@ in_progress/review/rework_in_progress (before the row is re-stored);
 rework rejects when active or when no git_url exists to fix.
 E2E: in-place rework on task-1794842620157 (rename send button) +
 reassign-during-rework must be rejected.
+
+## Rework in-place: acceptance green + deploy_env persistence ✅
+In-place rework E2E (rename send button): 1 row, rework_requested ->
+contract_invalidated -> fix-tree build (grep+1 edit+screenshot by coder) ->
+gates -> redeploy -> rework_done, parent done. Runtime env now survives
+re-planning: task metadata.deploy_env merged into the run contract by
+devops at every deploy (proved: contract without LANGFLOW_BASE_URL ->
+container got it, proxy 403 = langflow answering). Guards: assign_task
+rejects active pipeline (in_progress/review/rework_in_progress + fresh
+submitted <15min); web-ui surfaces rejection as HTTP 409 (verified).

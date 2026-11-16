@@ -1087,7 +1087,26 @@ CMD ["/bin/sh", "-c", "{run}"]
         for root, _, files in os.walk(deploy_dir):
             all_files += [os.path.relpath(os.path.join(root, f), deploy_dir) for f in files]
 
-        rc = run_contract or {}
+        rc = dict(run_contract or {})
+        # Operator-set runtime env survives contract re-planning and redeploys:
+        # task metadata.deploy_env overrides the planned env (e.g. a backend URL
+        # the planner cannot know). Lost LANGFLOW_BASE_URL postmortem, 2026-11-16.
+        try:
+            import json as _json
+            import psycopg2 as _pg
+            _c = _pg.connect(host="127.0.0.1", database="mcp_registry",
+                             user="postgres", password="postgres")
+            _cur = _c.cursor()
+            _cur.execute("SELECT metadata::jsonb->>'deploy_env' FROM task_registry "
+                         "WHERE task_id = %s", (task_id,))
+            _row = _cur.fetchone()
+            _c.close()
+            extra = _json.loads(_row[0]) if _row and _row[0] else None
+            if isinstance(extra, dict) and extra:
+                rc["env"] = {**(rc.get("env") or {}), **extra}
+                deployment_logger.info(f"deploy_env merged from task metadata: {sorted(extra)}")
+        except Exception as _e:
+            deployment_logger.warning(f"deploy_env merge skipped: {_e}")
         if rc.get("kind") in ("service", "cli", "static"):
             hc = rc.get("healthcheck") or {}
             if hc.get("port"):

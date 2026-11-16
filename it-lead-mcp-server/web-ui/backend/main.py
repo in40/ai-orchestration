@@ -729,7 +729,13 @@ async def assign_task_endpoint(task: TaskAssignment):
     task_dict["status"] = "assigned"
     
     # Send the task assignment to IT Lead server
-    await handle_task_assignment_via_it_lead(task_dict)
+    outcome = await handle_task_assignment_via_it_lead(task_dict)
+    # Surface IT Lead's concurrency-guard rejection instead of claiming success
+    inner = ((outcome or {}).get("result") or {})
+    inner = inner.get("result", inner) if isinstance(inner, dict) else {}
+    if isinstance(inner, dict) and (inner.get("rejected") or inner.get("error")):
+        raise HTTPException(status_code=409,
+                            detail=str(inner.get("error") or "assignment rejected"))
     
     # Broadcast the task assignment to all connected clients
     await broadcast_message({
