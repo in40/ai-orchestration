@@ -830,6 +830,11 @@ class TaskAssignmentManager:
                     self._update_task_status(task_id, "needs_revision",
                                              f"deployed container unhealthy at {url}: {why}")
                     return
+                shot = self._capture_screenshot(task_id, url)
+                if shot:
+                    self._merge_metadata(task_id, {"screenshots": [
+                        {"stage": "deploy", "url": shot, "ts": time.time()}]})
+                    self._log_activity(task_id, "screenshot", agent="it-lead", detail=shot)
                 acc_ok, acc_out = self._run_client_acceptance(task_id, url)
                 self._log_activity(task_id, "client_acceptance", agent="qa-engineer",
                                    detail=("PASS" if acc_ok else f"FAIL: {acc_out[:200]}")
@@ -847,6 +852,32 @@ class TaskAssignmentManager:
             return
         self._update_task_status(task_id, "done",
                                  f"Multi-file deliverable: {len(results or file_manifest)} files, QA passed")
+
+    def _capture_screenshot(self, task_id, url, stage="deploy"):
+        """V1 visual evidence: headless screenshot of a live URL. PNGs live
+        outside git (/var/www/shots, served by web-ui at /shots/)."""
+        import subprocess
+        binp = os.environ.get("HEADLESS_SHELL",
+                              "/root/.cache/ms-playwright/chromium_headless_shell-1255"
+                              "/chrome-headless-shell-linux64/chrome-headless-shell")
+        if not os.path.exists(binp):
+            self._log_activity(task_id, "screenshot", agent="it-lead",
+                               detail="skipped (headless shell not found)")
+            return None
+        try:
+            d = f"/var/www/shots/{task_id}"
+            os.makedirs(d, exist_ok=True)
+            out = os.path.join(d, f"{stage}.png")
+            subprocess.run([binp, "--headless", "--no-sandbox", "--disable-gpu",
+                            f"--screenshot={out}", "--window-size=1280,900",
+                            "--virtual-time-budget=5000", url],
+                           capture_output=True, timeout=90)
+            if os.path.exists(out) and os.path.getsize(out) > 1000:
+                return f"/shots/{task_id}/{stage}.png"
+        except Exception as e:
+            print(f"⚠️ screenshot failed: {e}")
+        self._log_activity(task_id, "screenshot", agent="it-lead", detail="failed")
+        return None
 
     def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 7200) -> Optional[Dict[str, Any]]:
         """

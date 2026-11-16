@@ -11,11 +11,13 @@ Dynamic Planning Architecture:
 import asyncio
 import json
 import logging
+import os
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import httpx
 from datetime import datetime
@@ -62,6 +64,7 @@ _planner: Optional[DynamicPlanner] = None
 # IT Lead server configuration (from settings)
 IT_LEAD_HOST = settings.IT_LEAD_HOST
 IT_LEAD_PORT = settings.IT_LEAD_PORT
+SHOTS_DIR = os.environ.get("SHOTS_DIR", "/var/www/shots")
 DEVOPS_HOST = settings.REGISTRY_HOST
 DEVOPS_PORT = settings.DEVOPS_PORT
 
@@ -93,6 +96,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="MCP Agent Web UI Backend", version="1.0.0", lifespan=lifespan)
+
+# Visual evidence from the QA/deploy pipeline (V1): PNGs live outside the git
+# results repo and are served read-only. Directory is created at startup so the
+# mount never fails on a fresh host.
+os.makedirs(SHOTS_DIR, exist_ok=True)
+app.mount("/shots", StaticFiles(directory=SHOTS_DIR), name="shots")
 
 class AgentInfo(BaseModel):
     name: str
@@ -1429,7 +1438,8 @@ async def get_task_history(task_id: str):
                         "updated_at": history_result.get("updated_at"),
                         "status_history": history_result.get("status_history", []),
                         "activity": history_result.get("activity", []),
-                        "pending_permission": history_result.get("pending_permission")
+                        "pending_permission": history_result.get("pending_permission"),
+                        "screenshots": history_result.get("screenshots")
                     }
                     return formatted_history
                 else:

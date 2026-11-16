@@ -243,3 +243,12 @@ Round fixed 3 false gates en route: QA primary-file (alphabetical -> largest,
 c4697bf), JS validation (brace count -> node --check), secret regex
 (config-key names/placeholders excluded); + subpath convention (AGENTS.md +
 planner), + health-gate 404 grace.
+
+## V1 visual evidence (screenshots) ✅
+After deploy_health passes, IT Lead captures a headless-chromium screenshot
+(playwright-bundled chrome-headless-shell CLI) of the public URL ->
+/var/www/shots/<task>/deploy.png (outside git), served by web-ui at /shots/
+(StaticFiles + vite proxy), stored in metadata.screenshots[], shown as a
+"Render" preview in the Task History modal. Verified live: helper -> history
+API -> static serving on :8000 and :5173. Next: V2 visual_gate (vision
+rubric over this PNG), V3 eyes-for-coder.

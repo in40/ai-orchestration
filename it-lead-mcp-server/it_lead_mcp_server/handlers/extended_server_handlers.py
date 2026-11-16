@@ -1389,6 +1389,7 @@ class ExtendedItLeadServerHandlers:
                         "status_history": history_entries,
                         "activity": activity,
                         "pending_permission": md.get("pending_permission"),
+                        "screenshots": md.get("screenshots"),
                         "total_status_changes": len(history_entries)
                     }
                     

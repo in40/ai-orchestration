@@ -698,6 +698,18 @@ const TaskManagement = () => {
                 );
               })()}
 
+              {selectedTaskHistory.screenshots?.length > 0 && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="subtitle1" gutterBottom>Render</Typography>
+                  {selectedTaskHistory.screenshots.map((s, i) => (
+                    <Link key={i} href={s.url} target="_blank" rel="noopener">
+                      <Box component="img" src={s.url} alt={s.stage}
+                        sx={{ maxWidth: '100%', border: '1px solid', borderColor: 'grey.400', borderRadius: 1 }} />
+                    </Link>
+                  ))}
+                </Box>
+              )}
+
               <Typography variant="subtitle1" gutterBottom sx={{ mt: 3 }}>
                 Team Activity ({selectedTaskHistory.activity?.length || 0} events)
               </Typography>
