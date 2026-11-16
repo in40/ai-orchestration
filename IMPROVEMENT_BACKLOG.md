@@ -232,3 +232,14 @@ flask-only image crash-loop, done despite unhealthy. Fixes:
   -> deploy_health event + needs_revision instead of done
 - legacy deploy deps: ast import derivation (alias map, fastapi->uvicorn)
   instead of hardcoded flask; empty deps no longer emit a pip RUN line
+
+## Subpath-safe web UI E2E ✅ (e2e-u6)
+Langflow web-UI contract (the task that exposed the legacy path) now runs
+green end-to-end on the unified flow: planner -> 17-file gated build (UI +
+same-origin proxy, stdlib) -> QA -> security -> deploy -> deploy_health 200
+-> done, 33 min. Browser check: all HTML refs and ES-module imports are
+relative and resolve under /<task>/ prefix; generic tester detects openapi.
+Round fixed 3 false gates en route: QA primary-file (alphabetical -> largest,
+c4697bf), JS validation (brace count -> node --check), secret regex
+(config-key names/placeholders excluded); + subpath convention (AGENTS.md +
+planner), + health-gate 404 grace.
