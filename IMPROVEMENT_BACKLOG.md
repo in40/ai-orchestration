@@ -262,3 +262,12 @@ blocking = separate measured decision). Acceptance 3/3: e2e-u5 bare UI
 -> FAIL (concrete evidence: white bg, serif heading, no pastel), retro
 webui -> PASS (evidence per requirement), raw-JSON endpoint -> PASS
 (page_kind=raw_json). 5-12 s per review.
+
+## V3 eyes for the coder ✅ (mechanics)
+Verified opencode read-tool passes PNGs to the vision model (probe: coder
+named the color of an unseen PNG). Build convention now instructs web-UI
+coders to self-verify visually: chrome-headless-shell screenshot of their
+running server -> read _shot.png -> fix -> repeat; delete shot before finish.
+No API plumbing needed (shell allowed by default; external_directory deny
+covers read/edit tools, not binary execution). E2E: e2e-v3 watching agent
+steps for screenshot+read loop.

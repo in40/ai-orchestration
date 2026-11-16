@@ -49,6 +49,9 @@ You implement the project described in MANIFEST.md in the current directory.
    exist, run pytest (create a venv and pip install requirements.txt + pytest
    if needed). If the project is a server, start it with a short timeout and
    check the health endpoint with python urllib (not curl), then stop it.
+4b. If the project is a web UI, do the visual self-check from AGENTS.md:
+   screenshot the running page with chrome-headless-shell, READ the PNG with
+   your read tool (you have vision), and fix what looks wrong - repeat.
 5. Fix any failure and repeat verification until everything passes.
 
 Finish with one summary line: BUILT <n> files, tests <pass|none|fail>.
