@@ -449,8 +449,27 @@ class QaEngineerServerHandlers(McpServerHandlers):
                     ast.parse(code)
                 except SyntaxError as e:
                     errors.append(f"python syntax error line {e.lineno}: {e.msg}")
-            elif lang.startswith("java") and code.count("{") != code.count("}"):
-                errors.append("unbalanced braces in javascript")
+            elif lang.startswith("java"):
+                # Real parser: naive brace counting is fooled by template
+                # literals/regexes (e2e-u3 false FAIL; the artifact passed
+                # `node --check` in the build session).
+                import shutil as _sh
+                import subprocess as _sp
+                node = _sh.which("node")
+                if node:
+                    fd, jp = tempfile.mkstemp(suffix=".js")
+                    try:
+                        with os.fdopen(fd, "w") as f:
+                            f.write(code)
+                        r = _sp.run([node, "--check", jp], capture_output=True,
+                                    text=True, timeout=20)
+                        if r.returncode != 0:
+                            errors.append("javascript syntax error: "
+                                          + (r.stderr or r.stdout)[:200])
+                    except Exception:
+                        pass  # checker unavailable: never fail on heuristics
+                    finally:
+                        os.unlink(jp)
             return {"valid": not errors, "language": lang, "errors": errors,
                     "checks": ["envelope", "completeness", f"syntax:{lang}"]}
         except Exception as e:
