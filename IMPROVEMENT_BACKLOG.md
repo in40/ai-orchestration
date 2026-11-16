@@ -295,3 +295,12 @@ hotlinks + README provenance section. E2E e2e-v5 (favicon+hero robot) running.
 e2e-v5: coder called image-tools_generate_image as its FIRST action
 (favicon+hero), visual self-check, all gates, deploy, visual_gate PASS -
 9 min. README Generated
+## Rework migrated to the unified gated flow ✅
+_trigger_rework_workflow no longer forwards to vibe_code_async
+(the last legacy consumer): rework = build_project(base_tree,
+fix_instructions) - workspace seeded with a clone of the original tree,
+coder fixes in place (minimal edits + self-checks) - then the standard
+gate sequence (QA/security/redeploy parent edge/health/screenshot/visual)
+runs via _execute_multifile_plan(prebuilt_git_url, deploy_task_id=parent).
+Parent gets done+new git_url only after green gates; else needs_revision.
+E2E: task-1794842620157 rework (xls upload network error) re-triggered.

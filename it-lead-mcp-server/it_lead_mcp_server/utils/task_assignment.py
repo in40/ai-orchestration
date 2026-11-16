@@ -650,14 +650,17 @@ class TaskAssignmentManager:
         return False, last
 
     def _build_via_opencode(self, task_id, task_description, file_manifest,
-                            coder_endpoint, metadata):
+                            coder_endpoint, metadata, base_tree=None):
         """Phase A: one opencode coder session for the whole manifest.
-        Returns git_url on success, None to fall back to per-file fan-out."""
+        Returns git_url on success, None to fall back to per-file fan-out.
+        base_tree: rework mode - coder fixes the seeded existing tree instead
+        of creating files from the manifest."""
         try:
             manifest_str = "\n".join(f"- {f.get('path')}: {f.get('spec', '')}"
                                      for f in file_manifest)
             self._log_activity(task_id, "build_project", agent="implementation-engineer",
-                               detail=f"opencode coder session, {len(file_manifest)} files")
+                               detail=f"opencode coder session, {len(file_manifest)} files"
+                                      + (" (rework of existing tree)" if base_tree else ""))
             sid = f"ses-build-{task_id}"
             import threading as _thr
             stop = _thr.Event()
@@ -671,7 +674,9 @@ class TaskAssignmentManager:
                     "params": {"name": "build_project", "arguments": {
                         "task_id": task_id, "manifest": manifest_str,
                         "project_description": task_description,
-                        "spec_context": (metadata or {}).get("spec_context", "")}}},
+                        "spec_context": (metadata or {}).get("spec_context", ""),
+                        **({"base_tree": base_tree,
+                            "fix_instructions": task_description} if base_tree else {})}}},
                     timeout=3600)
             finally:
                 stop.set()
@@ -692,9 +697,12 @@ class TaskAssignmentManager:
         return None
 
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list,
-                                llm_plan: dict = None, metadata: dict = None, route: str = "gated"):
+                                llm_plan: dict = None, metadata: dict = None, route: str = "gated",
+                                prebuilt_git_url: str = None, deploy_task_id: str = None):
         """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree.
-        route='simple' skips the security gate (plain scripts have no network surface)."""
+        route='simple' skips the security gate (plain scripts have no network surface).
+        prebuilt_git_url: skip the build phase entirely (rework: tree already built);
+        deploy_task_id: deploy under a different task's edge route (rework -> parent)."""
         try:
             from concurrent.futures import ThreadPoolExecutor
             coder_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
@@ -706,7 +714,7 @@ class TaskAssignmentManager:
             return
         coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
         # "Requires client": guarantee a verification client regardless of planner mood
-        if self._md_flag(metadata, "requires_client") and \
+        if not prebuilt_git_url and self._md_flag(metadata, "requires_client") and \
                 not any(str(f.get("path", "")).endswith("client.py") for f in file_manifest):
             file_manifest = list(file_manifest) + [{
                 "path": "client.py",
@@ -739,10 +747,10 @@ class TaskAssignmentManager:
             return path, last
 
         # Phase A: one self-verifying opencode coder session for the whole manifest;
-        # per-file fan-out remains the fallback.
-        git_url = None
+        # per-file fan-out remains the fallback. prebuilt_git_url skips building (rework).
+        git_url = prebuilt_git_url
         results = None
-        if os.environ.get("OPENCODE_BUILD", "1") != "0":
+        if not git_url and os.environ.get("OPENCODE_BUILD", "1") != "0":
             git_url = self._build_via_opencode(task_id, task_description, file_manifest,
                                                coder_endpoint, metadata)
         if git_url is None:
@@ -808,8 +816,9 @@ class TaskAssignmentManager:
         want_deploy = "devops" in wf_join or \
             "deploy_after_implementation\": true" in json.dumps(metadata or {}).lower()
         if want_deploy and git_url:
+            dep_tid = deploy_task_id or task_id
             self._log_activity(task_id, "deploy", agent="devops-release-engineer", detail="started")
-            dep = self._deploy_multifile(task_id, git_url)
+            dep = self._deploy_multifile(dep_tid, git_url)
             url = dep.get("deployment_url")
             self._log_activity(task_id, "deploy_done", agent="devops-release-engineer",
                                detail=url or f"error: {str(dep.get('error'))[:200]}")
@@ -820,7 +829,7 @@ class TaskAssignmentManager:
                     task_id, task_description, file_manifest, coder_endpoint,
                     git_url, manifest_str, fake_qa)
                 if fixed:
-                    dep = self._deploy_multifile(task_id, git_url)
+                    dep = self._deploy_multifile(dep_tid, git_url)
                     url = dep.get("deployment_url")
             if url:
                 healthy, why = self._deployment_healthy(url)
@@ -845,8 +854,10 @@ class TaskAssignmentManager:
                                              f"client acceptance failed against {url}: {acc_out[:300]}")
                     return
                 self._update_task_status(task_id, "done",
-                                         f"Multi-file deliverable: {len(results or file_manifest)} files, "
-                                         f"QA passed, deployed at {url}")
+                                         ("Rework deliverable: gates passed, redeployed at " + url
+                                          if prebuilt_git_url else
+                                          f"Multi-file deliverable: {len(results or file_manifest)} files, "
+                                          f"QA passed, deployed at {url}"))
                 return
             self._update_task_status(task_id, "needs_revision",
                                      f"deploy failed: {str(dep)[:200]}")
@@ -2808,68 +2819,89 @@ Please generate the complete, corrected code with proper {metadata.get('language
             except Exception as e:
                 print(f"⚠️  Could not update task status: {e}")
 
-            # Forward the rework task to Implementation Engineer
-            implementation_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
-            if implementation_endpoint:
-                print(f"📤 Forwarding rework task to Implementation Engineer at {implementation_endpoint}", flush=True)
-
-                forward_result = self._forward_task_to_agent(
-                    rework_task_id,
-                    rework_prompt,
-                    "implementation-engineer",
-                    "vibe_code_async",
-                    priority,
-                    None,
-                    {"rework_context": True, "parent_task_id": task_id}
-                )
-
-                if forward_result.get("success"):
-                    print(f"✅ Rework task forwarded to Implementation Engineer", flush=True)
-
-                    # Handle async result polling
-                    async_task_id = forward_result.get("response", {}).get("result", {}).get("taskId")
-                    if async_task_id:
-                        print(f"⏳ Starting polling for rework task result: {async_task_id}", flush=True)
-
-                        def rework_poller():
-                            """Background thread to poll for rework result"""
-                            try:
-                                rework_result = self._poll_async_task_result(
-                                    implementation_endpoint,
-                                    async_task_id,
-                                    max_retries=360
-                                )
-
-                                if rework_result and rework_result.get("git_url"):
-                                    print(f"✅ Reworked code available at: {rework_result['git_url']}", flush=True)
-
-                                    # Update parent task with new git_url
-                                    self.task_storage.update_task_with_git_url(
-                                        task_id,
-                                        rework_result["git_url"],
-                                        None
-                                    )
-
-                                    # If code review is needed, forward to Code Reviewer
-                                    if needs_code_review:
-                                        self._forward_to_code_reviewer(task_id, rework_result["git_url"], rework_prompt)
-                                else:
-                                    print(f"⚠️  Rework task completed but no code generated", flush=True)
-
-                            except Exception as e:
-                                print(f"❌ Error in rework poller: {e}", flush=True)
-
-                        import threading
-                        threading.Thread(target=rework_poller, daemon=True).start()
-                else:
-                    print(f"❌ Failed to forward rework task: {forward_result.get('error')}", flush=True)
-            else:
-                print(f"❌ Could not find Implementation Engineer endpoint", flush=True)
+            # Unified build flow: rework = fix the existing tree + the same gate
+            # sequence as a fresh build (QA/security/redeploy/health/visual).
+            # The legacy vibe_code_async forward + poller is retired.
+            import threading
+            threading.Thread(target=self._execute_rework_plan,
+                             args=(task_id, rework_task_id, rework_prompt,
+                                   metadata.get("git_url")),
+                             daemon=True).start()
 
         except Exception as e:
             print(f"❌ Error triggering rework workflow: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
+    def _execute_rework_plan(self, parent_id, rework_id, rework_prompt, base_git_url):
+        """Gated rework: fix the existing artifact tree (or rebuild from the task
+        text when no tree is recorded), run the standard gates, redeploy the
+        parent's edge route, then propagate the verdict to the parent."""
+        try:
+            try:
+                coder_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
+            except Exception:
+                coder_endpoint = None
+            if not coder_endpoint:
+                self._update_task_status(rework_id, "failed", "coder unavailable for rework")
+                self._update_task_status(parent_id, "needs_revision",
+                                         "rework failed: implementation-engineer unavailable")
+                return
+            coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
+            self._update_task_status(
+                rework_id, "in_progress",
+                "rework build (fixing existing tree)" if base_git_url
+                else "rework build (rebuilding from task text)")
+            if base_git_url:
+                git_url = self._build_via_opencode(rework_id, rework_prompt, [],
+                                                   coder_endpoint, {}, base_tree=base_git_url)
+                if not git_url:
+                    self._update_task_status(rework_id, "needs_revision",
+                                             "rework build (fix_tree) failed")
+                    self._update_task_status(parent_id, "needs_revision",
+                                             "rework failed: fix build error (see " + rework_id + ")")
+                    return
+                manifest = []
+            else:
+                git_url, manifest = None, self._gated_manifest_synth()
+            self._execute_multifile_plan(
+                rework_id, rework_prompt, manifest,
+                llm_plan={"workflow_sequence": ["implementation-engineer", "qa-engineer",
+                                                "devops-engineer"]},
+                metadata={"deploy_after_implementation": True},
+                route="gated", prebuilt_git_url=git_url, deploy_task_id=parent_id)
+        except Exception as e:
+            print(f"❌ rework plan error: {e}", flush=True)
+            try:
+                self._update_task_status(rework_id, "needs_revision",
+                                         f"rework error: {str(e)[:200]}")
+            except Exception:
+                pass
+        # propagate verdict to the parent task
+        try:
+            sub = self.task_storage.get_task(rework_id) or {}
+            md = sub.get("metadata") or {}
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except Exception:
+                    md = {}
+            if sub.get("status") == "done":
+                new_url = md.get("git_url")
+                if new_url:
+                    self._merge_metadata(parent_id, {"git_url": new_url, "path": new_url})
+                self._log_activity(parent_id, "rework_done", agent="it-lead",
+                                   detail=f"reworked tree: {new_url or rework_id}")
+                self._update_task_status(parent_id, "done",
+                                         f"Rework completed and redeployed ({rework_id})")
+            else:
+                self._log_activity(parent_id, "rework_failed", agent="it-lead",
+                                   detail=str(sub.get("status") or "?"))
+                self._update_task_status(
+                    parent_id, "needs_revision",
+                    f"rework gates failed on {rework_id}: {(sub.get('status_reason') or '')[:200]}")
+        except Exception as e:
+            print(f"⚠️ rework propagation failed: {e}", flush=True)
 
     def _forward_to_code_reviewer(self, parent_task_id: str, code_git_url: str, original_prompt: str):
         """Forward code to Code Reviewer for review before deployment.

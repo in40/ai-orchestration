@@ -1209,6 +1209,11 @@ def register_vibe_coding_tool(server_handlers):
                     "manifest": {"type": "string", "description": "file list with per-file specs"},
                     "project_description": {"type": "string"},
                     "spec_context": {"type": "string", "description": "optional technical spec"},
+                    "base_tree": {"type": "string",
+                                  "description": "optional: results-tree URL to seed the "
+                                                 "workspace with (rework mode: fix, not rewrite)"},
+                    "fix_instructions": {"type": "string",
+                                         "description": "rework mode: issues to fix in the seeded tree"},
                 },
                 "required": ["task_id", "manifest"],
             },
@@ -1284,13 +1289,45 @@ Overall project goal:
                 ws = Path(tempfile.gettempdir()) / "oc-builds" / tid
                 _sh.rmtree(str(ws), ignore_errors=True)
                 ws.mkdir(parents=True)
-                (ws / "MANIFEST.md").write_text(
-                    "# File manifest (create every file exactly at these paths)\n"
-                    + str(arguments.get("manifest", ""))
-                    + "\n\n# Project goal\n" + str(arguments.get("project_description", ""))
-                    + ("\n\n# Technical specification (authoritative)\n"
-                       + str(arguments.get("spec_context", ""))
-                       if arguments.get("spec_context") else ""))
+                base_tree = str(arguments.get("base_tree") or "").strip()
+                if base_tree:
+                    # rework mode: seed the workspace with the existing artifact tree
+                    m = re.search(r"(?P<repo>.+?)(?:\.git)?/tree/main/(?P<sub>.+)", base_tree)
+                    repo = (m.group("repo") + ".git") if m else os.environ.get(
+                        "MCP_GIT_REPO_URL",
+                        "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                    sub = m.group("sub") if m else ""
+                    tmp = Path(tempfile.gettempdir()) / f"rework-clone-{tid}"
+                    _sh.rmtree(str(tmp), ignore_errors=True)
+                    subprocess.run(["git", "clone", "--depth", "1", repo, str(tmp)],
+                                   check=True, capture_output=True, timeout=180)
+                    src = (tmp / sub) if sub else tmp
+                    if not src.is_dir():
+                        raise FileNotFoundError(f"base_tree path missing: {sub}")
+                    for item in src.iterdir():
+                        if item.name in (".git", "MANIFEST.md", "AGENTS.md"):
+                            continue
+                        dst = ws / item.name
+                        _sh.copytree(item, dst, dirs_exist_ok=True) if item.is_dir() \
+                            else _sh.copy(item, dst)
+                    _sh.rmtree(str(tmp), ignore_errors=True)
+                if base_tree:
+                    (ws / "MANIFEST.md").write_text(
+                        "# REWORK of an existing tree (already present in this directory)\n"
+                        "# Fix ONLY the issues below. Keep every other file and its behavior\n"
+                        "# intact; prefer minimal targeted edits over rewrites; do not delete\n"
+                        "# unrelated files.\n\n# Issues to fix\n"
+                        + str(arguments.get("fix_instructions", ""))
+                        + "\n\n# Original task (context)\n"
+                        + str(arguments.get("project_description", "")))
+                else:
+                    (ws / "MANIFEST.md").write_text(
+                        "# File manifest (create every file exactly at these paths)\n"
+                        + str(arguments.get("manifest", ""))
+                        + "\n\n# Project goal\n" + str(arguments.get("project_description", ""))
+                        + ("\n\n# Technical specification (authoritative)\n"
+                           + str(arguments.get("spec_context", ""))
+                           if arguments.get("spec_context") else ""))
                 (ws / "AGENTS.md").write_text(
                     "# Project conventions (authoritative)\n"
                     "- Python: prefer the stdlib; third-party packages only in requirements.txt.\n"
@@ -1318,10 +1355,15 @@ Overall project goal:
                     "  HTML must reference assets relatively (static/... NOT /static/...), and\n"
                     "  client-side fetch paths must be relative or derived from location.pathname.\n"
                     "- README.md must document the ACTUAL run command and endpoints.\n")
+                instruction = ("Read MANIFEST.md and AGENTS.md. The tree already exists: fix "
+                               "the listed issues with minimal targeted edits, keep everything "
+                               "else intact and working, then verify as usual (compile, tests, "
+                               "run, screenshot self-check)."
+                               if base_tree else
+                               "Read MANIFEST.md and AGENTS.md, implement every file, then "
+                               "verify and fix until green.")
                 ok, text, err = opencode_agent(
-                    "coder", ws,
-                    "Read MANIFEST.md and AGENTS.md, implement every file, then verify "
-                    "and fix until green.",
+                    "coder", ws, instruction,
                     session=f"ses-build-{tid}",
                     timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
                 if not ok:
