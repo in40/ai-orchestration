@@ -72,6 +72,23 @@ class QaEngineerServerHandlers(McpServerHandlers):
             },
         })
 
+        self.tools.append({
+            "name": "visual_review",
+            "description": "Vision QA gate: review a screenshot of the deployed page against "
+                           "the task requirements. Returns a structured rubric verdict "
+                           "(page_kind, renders, styled, matches[], issues[], verdict).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "image_path": {"type": "string", "description": "Host path to the PNG screenshot"},
+                    "task_description": {"type": "string",
+                                         "description": "Original task text (source of visual requirements)"},
+                },
+                "required": ["task_id", "image_path"],
+            },
+        })
+
     def _execute_tool(self, tool: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[str, Any]:
         name = tool.get("name")
         if name == "validate_artifact":
@@ -80,6 +97,8 @@ class QaEngineerServerHandlers(McpServerHandlers):
             return self._smoke_run(arguments)
         if name == "plan_run_contract":
             return self._plan_run_contract(arguments)
+        if name == "visual_review":
+            return self._visual_review(arguments)
         return super()._execute_tool(tool, arguments)
 
     # ---- helpers ----
@@ -166,6 +185,67 @@ class QaEngineerServerHandlers(McpServerHandlers):
         except Exception as e:
             print(f"⚠️ QA LLM call failed: {e}")
             return None
+
+    VISUAL_RUBRIC = """You are a visual QA gate. Examine the screenshot of a DEPLOYED web \
+artifact and judge it against the task requirements.
+
+TASK REQUIREMENTS (may contain visual requirements):
+{desc}
+
+Answer ONLY with a JSON object:
+{{"page_kind": "ui" | "raw_json" | "error_page" | "blank",
+ "renders": true/false,
+ "styled": true/false,
+ "issues": ["concrete visible problems"],
+ "matches": [{{"requirement": "<visual requirement from the task>",
+               "met": true/false, "evidence": "<what exactly you see>"}}],
+ "verdict": "pass" | "fail"}}
+
+Rules:
+- page_kind raw_json (an API endpoint rendered by the browser) is a PASS \
+if it shows valid content.
+- styled=false ONLY if the page looks like unstyled HTML: default serif/sans \
+fonts, black on white, no colors or layout structure.
+- every matches[].evidence MUST cite something concrete visible in the image \
+(colors, fonts, layout, text). Never write "looks good" without evidence.
+- verdict=fail only for clear problems: blank page, browser error page, \
+unstyled page, or an explicitly required visual feature missing. \
+When unsure, verdict=pass and put the doubt into issues.
+- matches: list only requirements that are visually checkable; if none, []."""
+
+    def _visual_review(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Vision rubric over a deploy screenshot (V2, advisory)."""
+        import base64
+        import requests as _rq
+        path = arguments.get("image_path", "")
+        if not os.path.isfile(path):
+            return {"verdict": "skipped", "errors": ["screenshot not found"]}
+        url = os.environ.get("LLM_PROVIDER_URL", "")
+        model = os.environ.get("LLM_MODEL", "")
+        if not url or not model:
+            return {"verdict": "skipped", "errors": ["no LLM provider"]}
+        try:
+            b64 = base64.b64encode(open(path, "rb").read()).decode()
+            prompt = self.VISUAL_RUBRIC.replace("{desc}",
+                                                 (arguments.get("task_description") or "")[:3000])
+            r = _rq.post(url, json={
+                "model": model, "temperature": 0.1, "max_tokens": 2048,
+                "reasoning_effort": "low",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/png;base64,{b64}"}}]}]},
+                timeout=240)
+            txt = r.json()["choices"][0]["message"]["content"]
+            s, t = txt.find("{"), txt.rfind("}")
+            if s == -1 or t <= s:
+                return {"verdict": "skipped", "errors": ["no JSON in response"],
+                        "raw": txt[:200]}
+            out = json.loads(txt[s:t + 1])
+            out["verdict"] = str(out.get("verdict", "pass")).lower()
+            return out
+        except Exception as e:
+            return {"verdict": "skipped", "errors": [str(e)[:200]]}
 
     def _heuristic_contract(self, files):
         """Fallback contract when no LLM available: mirror legacy deployer heuristics."""

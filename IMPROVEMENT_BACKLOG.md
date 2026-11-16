@@ -252,3 +252,13 @@ After deploy_health passes, IT Lead captures a headless-chromium screenshot
 "Render" preview in the Task History modal. Verified live: helper -> history
 API -> static serving on :8000 and :5173. Next: V2 visual_gate (vision
 rubric over this PNG), V3 eyes-for-coder.
+
+## V2 visual_gate (advisory) ✅
+qa-engineer tool visual_review: deploy screenshot + task text -> vision
+rubric {page_kind, renders, styled, matches[{req,met,evidence}], issues,
+verdict}; IT Lead runs it after the V1 screenshot, verdict -> metadata
+.visual_review + visual_gate activity event, NEVER blocks (promotion to
+blocking = separate measured decision). Acceptance 3/3: e2e-u5 bare UI
+-> FAIL (concrete evidence: white bg, serif heading, no pastel), retro
+webui -> PASS (evidence per requirement), raw-JSON endpoint -> PASS
+(page_kind=raw_json). 5-12 s per review.

@@ -835,6 +835,7 @@ class TaskAssignmentManager:
                     self._merge_metadata(task_id, {"screenshots": [
                         {"stage": "deploy", "url": shot, "ts": time.time()}]})
                     self._log_activity(task_id, "screenshot", agent="it-lead", detail=shot)
+                    self._visual_gate(task_id, task_description)
                 acc_ok, acc_out = self._run_client_acceptance(task_id, url)
                 self._log_activity(task_id, "client_acceptance", agent="qa-engineer",
                                    detail=("PASS" if acc_ok else f"FAIL: {acc_out[:200]}")
@@ -878,6 +879,45 @@ class TaskAssignmentManager:
             print(f"⚠️ screenshot failed: {e}")
         self._log_activity(task_id, "screenshot", agent="it-lead", detail="failed")
         return None
+
+    def _visual_gate(self, task_id, task_description):
+        """V2 advisory visual QA over the deploy screenshot. Never blocks:
+        the rubric verdict lands in metadata.visual_review + activity feed.
+        Promotion to a blocking gate is a separate, measured decision."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception:
+            return
+        ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                   for s in services if isinstance(s, dict)
+                   and "qa engineer" in (s.get("name") or "").lower()
+                   and s.get("endpoint")), None)
+        if not ep:
+            self._log_activity(task_id, "visual_gate", agent="qa-engineer",
+                               detail="skipped (qa not registered)")
+            return
+        try:
+            r = requests.post(ep, json={
+                "jsonrpc": "2.0", "id": f"vis-{task_id}", "method": "tools/call",
+                "params": {"name": "visual_review", "arguments": {
+                    "task_id": task_id,
+                    "image_path": f"/var/www/shots/{task_id}/deploy.png",
+                    "task_description": (task_description or "")[:4000]}}},
+                timeout=300)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            if not isinstance(out, dict):
+                out = {}
+            verdict = str(out.get("verdict", "skipped")).lower()
+            detail = f"{verdict.upper()} (advisory)"
+            if verdict == "fail":
+                detail += ": " + "; ".join(str(x) for x in (out.get("issues") or []))[:200]
+            self._merge_metadata(task_id, {"visual_review": out})
+            self._log_activity(task_id, "visual_gate", agent="qa-engineer", detail=detail)
+        except Exception as e:
+            self._log_activity(task_id, "visual_gate", agent="qa-engineer",
+                               detail=f"error (advisory): {str(e)[:120]}")
 
     def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 7200) -> Optional[Dict[str, Any]]:
         """
