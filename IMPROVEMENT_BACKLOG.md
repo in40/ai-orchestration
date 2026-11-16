@@ -290,3 +290,8 @@ newline-delimited JSON, NOT LSP Content-Length framing (first attempt timed
 out). Live proof: coder session called generate_image, produced robot.png,
 read it, answered "Robot". Build conventions: generated assets instead of
 hotlinks + README provenance section. E2E e2e-v5 (favicon+hero robot) running.
+
+## V5 E2E green + provenance verified ✅
+e2e-v5: coder called image-tools_generate_image as its FIRST action
+(favicon+hero), visual self-check, all gates, deploy, visual_gate PASS -
+9 min. README Generated
