@@ -304,3 +304,11 @@ gate sequence (QA/security/redeploy parent edge/health/screenshot/visual)
 runs via _execute_multifile_plan(prebuilt_git_url, deploy_task_id=parent).
 Parent gets done+new git_url only after green gates; else needs_revision.
 E2E: task-1794842620157 rework (xls upload network error) re-triggered.
+
+## Rework E2E green (task-1794842620157) ✅
+Real rework on a live 10-file UI: coder read the seeded tree, diagnosed
+the xls-upload "network error" as CORS/mixed-content, added a same-origin
+reverse proxy (server.py, multipart passthrough) + login/token handling +
+new tests (mock langflow, proxy tests, node js-checks) - targeted edits,
+no rewrite. Full gates, redeploy to the SAME parent URL, visual PASS,
+parent done, git_url -> ...-rework tree. 28 min total.
