@@ -1302,6 +1302,9 @@ Overall project goal:
                     "- REST/HTTP services must be self-describing: expose GET /openapi.json\n"
                     "  (FastAPI does it automatically; for Flask/plain http.server serve a static\n"
                     "  OpenAPI 3.0 JSON describing every endpoint) so the generic tester works.\n"
+                    "- The service is served under an ARBITRARY URL prefix (e.g. /task-id/):\n"
+                    "  HTML must reference assets relatively (static/... NOT /static/...), and\n"
+                    "  client-side fetch paths must be relative or derived from location.pathname.\n"
                     "- README.md must document the ACTUAL run command and endpoints.\n")
                 ok, text, err = opencode_agent(
                     "coder", ws,

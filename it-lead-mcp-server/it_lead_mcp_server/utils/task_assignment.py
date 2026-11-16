@@ -627,13 +627,21 @@ class TaskAssignmentManager:
 
     def _deployment_healthy(self, url, timeout_s=60):
         """Poll the edge URL: any HTTP answer (even 4xx) means the app is up;
-        502/504/connection errors mean crash-loop or dead container."""
+        502/504/connection errors mean crash-loop or dead container.
+        A bare 404 right after deploy is usually the nginx reload race (e2e-u5:
+        404 at gate time, 200 a minute later) - re-poll a few times before
+        accepting it."""
         deadline = time.time() + timeout_s
-        last = "no attempt"
+        last, grace = "no attempt", 3
         while time.time() < deadline:
             try:
                 r = requests.get(url, timeout=5)
                 if r.status_code not in (502, 504):
+                    if r.status_code == 404 and grace > 0:
+                        grace -= 1
+                        last = "HTTP 404"
+                        time.sleep(5)
+                        continue
                     return True, f"HTTP {r.status_code}"
                 last = f"HTTP {r.status_code}"
             except Exception as e:

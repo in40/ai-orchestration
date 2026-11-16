@@ -70,7 +70,9 @@ a stdio-only MCP template is NOT deployable as a web service.
 Deployable REST/HTTP services must be self-describing for the generic tester:
 FastAPI serves GET /openapi.json automatically; for Flask or plain http.server
 the spec must include a static GET /openapi.json (OpenAPI 3.0: paths, methods,
-request/response shapes) describing every endpoint."""
+request/response shapes) describing every endpoint. The service is deployed
+under an arbitrary URL prefix (/<task-id>/): every manifest spec for HTML or
+browser JS must require RELATIVE asset and fetch paths (no leading slash)."""
         
         # Call LLM
         try:
