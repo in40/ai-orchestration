@@ -22,8 +22,14 @@ PATTERNS = [
     ("high", "pickle-loads", re.compile(r"pickle\.loads?\s*\(")),
     ("high", "yaml-unsafe-load", re.compile(r"yaml\.load\s*\((?![^)]*Loader)")),
     ("high", "aws-key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    # hardcoded-password: value-shape filter - dotted config/localStorage key
+    # names ('langflow.ui.apiKey') and placeholders ('your-key-here') are not
+    # secrets; e2e-u4 false FAIL. Real secrets (hex/base64/AKIA...) still match.
     ("high", "hardcoded-password", re.compile(
-        r"(?i)(password|passwd|secret|api_?key|token)\s*=\s*['\"][^'\"]{6,}['\"]")),
+        r"(?i)(password|passwd|secret|api_?key|token)\s*=\s*"
+        r"(?!['\"](?:[a-z][\w]*(?:\.[\w]+)+"
+        r"|[^'\"]*(?:your[_-]?|example|changeme|placeholder|sample|dummy|xxx+|<[^>]+>)[^'\"]*)"
+        r")['\"][^'\"]{6,}['\"]")),
     ("medium", "dynamic-import", re.compile(r"__import__\s*\(")),
     ("medium", "subprocess-raw", re.compile(r"subprocess\.call\s*\(.*shell", re.S)),
     ("medium", "broad-except-pass", re.compile(r"except\s*:\s*\n\s*pass")),
