@@ -58,6 +58,12 @@ class HumanInterfaceHandlers:
                         "task_id": {"type": "string", "description": "Task the questions belong to"},
                         "answers": {"type": "object",
                                     "description": "map of FIELD (as asked) -> answer text"},
+                        "env_fields": {"type": "array", "items": {"type": "string"},
+                                       "description": "answered FIELDS to inject into the "
+                                                      "container env at deploy (metadata.deploy_env)"},
+                        "secret_fields": {"type": "array", "items": {"type": "string"},
+                                          "description": "answered FIELDS that are secrets: "
+                                                         "masked in prompts, env-only"},
                         "answered_by": {"type": "string", "description": "Who answered",
                                         "default": "human_operator"}
                     },
@@ -358,6 +364,10 @@ class HumanInterfaceHandlers:
         cl = md.get("clarifications") or []
         norm = {str(k).strip().upper().replace(" ", "_"): str(v)
                 for k, v in answers.items()}
+        env_set = {str(f).strip().upper().replace(" ", "_")
+                   for f in (arguments.get("env_fields") or [])}
+        secret_set = {str(f).strip().upper().replace(" ", "_")
+                      for f in (arguments.get("secret_fields") or [])}
         updated = 0
         for c in cl:
             if c.get("status") == "pending" and c.get("field") in norm:
@@ -365,7 +375,18 @@ class HumanInterfaceHandlers:
                 c["answer"] = norm[c["field"]]
                 c["answered_at"] = time.time()
                 c["answered_by"] = arguments.get("answered_by", "human_operator")
+                c["in_env"] = c["field"] in env_set
+                c["is_secret"] = c["field"] in secret_set
                 updated += 1
+        # V3: requestor-marked runtime values flow into deploy_env, which devops
+        # merges into the container environment at every deploy (survives
+        # contract re-planning). Secrets stay OUT of prompts and git artifacts.
+        deploy_env = dict(md.get("deploy_env") or {})
+        for c in cl:
+            if c.get("status") == "answered" and c.get("in_env"):
+                deploy_env[c["field"]] = c["answer"]
+        if deploy_env:
+            md["deploy_env"] = deploy_env
         md["clarifications"] = cl
         self.task_storage.update_task_status_only(
             task_id=task_id,

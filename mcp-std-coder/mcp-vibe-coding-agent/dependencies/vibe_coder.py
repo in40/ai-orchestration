@@ -582,6 +582,26 @@ def _opencode_fix(work_dir, session_id, path, error_text, timeout=None):
     return True, "fixed via opencode session " + str(session_id)
 
 
+def _read_need_info(ws):
+    """Coder-side clarification protocol (V2): a build session that is blocked
+    on values it cannot guess writes .need_info.json ([{field,question,why}])
+    and stops. Consumed once - the file is removed on read."""
+    f = Path(ws) / ".need_info.json"
+    if not f.exists():
+        return None
+    try:
+        data = json.loads(f.read_text())
+        items = data if isinstance(data, list) else data.get("need_info", [])
+        items = [i for i in items if isinstance(i, dict) and i.get("field")][:5]
+    except Exception:
+        items = []
+    try:
+        f.unlink()
+    except OSError:
+        pass
+    return items or None
+
+
 def _push_tree(task_id: str, src_dir) -> dict:
     """Copy a built workspace into results/<task_id>/ of the results repo and push."""
     import shutil as _sh
@@ -593,7 +613,7 @@ def _push_tree(task_id: str, src_dir) -> dict:
     if dest.exists():
         _sh.rmtree(str(dest))
     _sh.copytree(str(src_dir), str(dest))
-    for scaffold in ("MANIFEST.md", "AGENTS.md"):
+    for scaffold in ("MANIFEST.md", "AGENTS.md", ".need_info.json"):
         f = dest / scaffold
         if f.exists():
             f.unlink()
@@ -1218,6 +1238,22 @@ def register_vibe_coding_tool(server_handlers):
                 "required": ["task_id", "manifest"],
             },
         })
+    if not any(t["name"] == "resume_build" for t in server_handlers.tools):
+        server_handlers.tools.append({
+            "name": "resume_build",
+            "description": "Resume a paused build_project session (same opencode session and "
+                           "workspace) with a follow-up message, e.g. the requestor's answers "
+                           "to a mid-build clarification. Pushes the tree when the session "
+                           "finishes clean.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "message": {"type": "string", "description": "follow-up instruction for the session"},
+                },
+                "required": ["task_id", "message"],
+            },
+        })
 
     # Notify that tools have changed
     if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:
@@ -1336,6 +1372,11 @@ Overall project goal:
                     "  third-party SDK APIs on your own classes.\n"
                     "- Prefer lazy imports inside functions for sibling modules.\n"
                     "- Define exactly the exports the manifest spec promises.\n"
+                    "- Blocked on an unguessable value (private credential, deployment-specific\n"
+                    "  ID, ambiguous external contract) that search cannot answer? Write\n"
+                    "  .need_info.json in the project root: [{\"field\": \"UPPER_SNAKE\", \"question\":\n"
+                    "  \"...\", \"why\": \"...\"}] (max 3) and STOP. The requestor will answer and your\n"
+                    "  session resumes with the values. Never fabricate such values.\n"
                     "- Research before guessing: unsure about a library API, endpoint contract,\n"
                     "  parameter names or versions? Use the native search tools:\n"
                     "  secure-search_secure_search({query}) (verified working; internet-search_internet_search\n"
@@ -1376,6 +1417,12 @@ Overall project goal:
                     timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
                 if not ok:
                     return {"error": f"build_project agent failed: {err[:300]}"}
+                need = _read_need_info(ws)
+                if need:
+                    # blocked mid-build: don't push a half tree, don't fan-out -
+                    # IT Lead asks the requestor and calls resume_build
+                    return {"success": False, "need_info": need, "partial": True,
+                            "session": f"ses-build-{tid}"}
                 import ast as _ast
                 for py in ws.rglob("*.py"):
                     try:
@@ -1390,6 +1437,41 @@ Overall project goal:
                 return out
             except Exception as e:
                 return {"error": f"build_project failed: {type(e).__name__}: {e}"}
+
+        if tool["name"] == "resume_build":
+            # V2: continue the SAME build session after the requestor answered
+            # a mid-build clarification; the workspace on disk is untouched.
+            tid = arguments.get("task_id", "unassigned")
+            ws = Path(tempfile.gettempdir()) / "oc-builds" / tid
+            if not ws.exists():
+                return {"error": "resume_build: workspace is gone (host restart?) - "
+                                 "rebuild from scratch required"}
+            try:
+                from .opencode_run import opencode_agent
+                ok, text, err = opencode_agent(
+                    "coder", ws, str(arguments.get("message", "Continue.")),
+                    session=f"ses-build-{tid}",
+                    timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
+                if not ok:
+                    return {"error": f"resume_build agent failed: {err[:300]}"}
+                need = _read_need_info(ws)
+                if need:
+                    return {"success": False, "need_info": need, "partial": True,
+                            "session": f"ses-build-{tid}"}
+                import ast as _ast
+                for py in ws.rglob("*.py"):
+                    try:
+                        _ast.parse(py.read_text(errors="ignore"))
+                    except SyntaxError as e:
+                        return {"error": f"resume_build produced invalid python: "
+                                         f"{py.name} line {e.lineno}: {e.msg}"}
+                out = _push_tree(tid, ws)
+                if out.get("success"):
+                    out["session"] = f"ses-build-{tid}"
+                    out["agent_summary"] = text[-300:]
+                return out
+            except Exception as e:
+                return {"error": f"resume_build failed: {type(e).__name__}: {e}"}
 
         if tool["name"] == "patch_file":
             path = arguments.get("path", "")

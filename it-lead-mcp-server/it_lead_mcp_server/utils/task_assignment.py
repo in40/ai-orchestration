@@ -687,6 +687,45 @@ class TaskAssignmentManager:
             out = r.json().get("result", {})
             if isinstance(out, dict) and isinstance(out.get("result"), dict):
                 out = out["result"]
+            # V2: coder paused mid-build on unguessable values. Ask the
+            # requestor, then resume the SAME session - its context (files
+            # already written, reasoning) survives the pause.
+            for _round in range(3):
+                need = out.get("need_info") if isinstance(out, dict) else None
+                if not (isinstance(need, list) and need):
+                    break
+                added = self._create_clarifications(
+                    task_id, need, asked_by="implementation-engineer")
+                fields = [a["field"] for a in added] or \
+                         [str(n.get("field")) for n in need if isinstance(n, dict)]
+                self._update_task_status(task_id, "awaiting_input",
+                                         "coder needs details: " + ", ".join(fields))
+                self._log_activity(task_id, "clarification_requested",
+                                   agent="implementation-engineer",
+                                   detail="; ".join(str(n.get("question", n.get("field")))[:80]
+                                                    for n in need if isinstance(n, dict)))
+                if not self._wait_for_clarifications(task_id):
+                    self._update_task_status(task_id, "needs_revision",
+                                             "clarification timeout during build")
+                    self._log_activity(task_id, "clarification_timeout", agent="it-lead")
+                    return None
+                self._log_activity(task_id, "clarification_resumed", agent="it-lead",
+                                   detail="coder session resumed with requestor answers")
+                self._update_task_status(task_id, "in_progress",
+                                         "build resumed after clarification")
+                resume_msg = ("CLARIFICATIONS FROM THE REQUESTOR (authoritative, use them, "
+                              "do not ask again):\n" + self._answers_text(task_id) +
+                              "\nContinue the build from where you stopped: implement the "
+                              "remaining manifest files, verify, and finish. Delete "
+                              ".need_info.json if it still exists.")
+                r = requests.post(coder_endpoint, json={
+                    "jsonrpc": "2.0", "id": f"resume-{task_id}", "method": "tools/call",
+                    "params": {"name": "resume_build",
+                               "arguments": {"task_id": task_id, "message": resume_msg}}},
+                    timeout=3600)
+                out = r.json().get("result", {})
+                if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                    out = out["result"]
             if isinstance(out, dict) and out.get("success") and out.get("git_url"):
                 stats = self._session_stats(sid)
                 if stats:
@@ -749,9 +788,19 @@ class TaskAssignmentManager:
 
     def _answers_text(self, task_id):
         _, md = self._md_of(task_id)
-        return "\n".join(
-            f"- {c.get('field')}: {c.get('answer')}"
-            for c in (md.get("clarifications") or []) if c.get("status") == "answered")
+        lines = []
+        for c in (md.get("clarifications") or []):
+            if c.get("status") != "answered":
+                continue
+            if c.get("is_secret"):
+                # V3: secrets never travel through prompts/code - the value
+                # lives only in the container env (deploy_env, merged by devops)
+                lines.append(f"- {c.get('field')}: <SECRET: provided at runtime via env "
+                             f"variable {c.get('field')}; read it with os.environ, "
+                             f"never hardcode or print it>")
+            else:
+                lines.append(f"- {c.get('field')}: {c.get('answer')}")
+        return "\n".join(lines)
 
     def _wait_for_clarifications(self, task_id, deadline_hours=24):
         """Block until every pending question is answered (poll the registry).

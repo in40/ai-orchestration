@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   AppBar, Toolbar, Typography, Button, Box, Container,
   IconButton, Badge, Menu, MenuItem,
-  Dialog, DialogTitle, DialogContent, DialogActions, TextField
+  Dialog, DialogTitle, DialogContent, DialogActions, TextField,
+  Checkbox, FormControlLabel
 } from '@mui/material';
 import { NotificationsNone as BellIcon } from '@mui/icons-material';
 import { Link, useLocation } from 'react-router-dom';
@@ -15,6 +16,7 @@ const ClarificationBell = () => {
   const [anchor, setAnchor] = useState(null);
   const [answering, setAnswering] = useState(null);
   const [draft, setDraft] = useState({});
+  const [flags, setFlags] = useState({});
   const [busy, setBusy] = useState(false);
   const seenIds = useRef(new Set());
   const primed = useRef(false);
@@ -73,12 +75,22 @@ const ClarificationBell = () => {
     setAnchor(null);
     setAnswering({ task_id: tid, questions: qs });
     setDraft(Object.fromEntries(qs.map(q => [q.field, ''])));
+    // V3 auto-detect: runtime-looking fields go to container env;
+    // key/token-looking fields are additionally masked from prompts (env-only)
+    const ENV_RE = /(URL|ENDPOINT|KEY|TOKEN|SECRET|PORT|HOST|MODEL|PASS)/i;
+    const SECRET_RE = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
+    setFlags(Object.fromEntries(qs.map(q => [
+      q.field, { env: ENV_RE.test(q.field), secret: SECRET_RE.test(q.field) }])));
   };
 
   const submit = async () => {
     setBusy(true);
     try {
-      await axios.post(`/api/tasks/${answering.task_id}/clarify`, { answers: draft });
+      await axios.post(`/api/tasks/${answering.task_id}/clarify`, {
+        answers: draft,
+        env_fields: Object.entries(flags).filter(([, f]) => f.env).map(([k]) => k),
+        secret_fields: Object.entries(flags).filter(([, f]) => f.secret).map(([k]) => k),
+      });
       setAnswering(null);
       refresh();
     } catch (e) {
@@ -144,6 +156,16 @@ const ClarificationBell = () => {
               <TextField fullWidth size="small" sx={{ mt: 1 }}
                 value={draft[q.field] || ''}
                 onChange={e => setDraft(d => ({ ...d, [q.field]: e.target.value }))} />
+              <Box sx={{ display: 'flex', gap: 2 }}>
+                <FormControlLabel control={
+                  <Checkbox size="small" checked={!!flags[q.field]?.env}
+                    onChange={e => setFlags(f => ({ ...f, [q.field]: { ...f[q.field], env: e.target.checked } }))} />
+                } label={<Typography variant="caption">в env контейнера (deploy)</Typography>} />
+                <FormControlLabel control={
+                  <Checkbox size="small" checked={!!flags[q.field]?.secret}
+                    onChange={e => setFlags(f => ({ ...f, [q.field]: { ...f[q.field], secret: e.target.checked } }))} />
+                } label={<Typography variant="caption">секрет (не светить в коде)</Typography>} />
+              </Box>
             </Box>
           ))}
         </DialogContent>

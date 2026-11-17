@@ -356,3 +356,15 @@ requestor_answers forwarded to QA. UI: bell in Navigation (15s poll of
 answer dialog per task; awaiting_input chip. Guards extended with
 awaiting_input. E2E: llm_client task with zero access details -> 3
 questions (BASE_URL/KEY/MODEL) -> answered -> re-plan -> build.
+
+## Clarifications V2+V3: mid-build questions + env/secrets ✅
+V2: coder may stop mid-build with .need_info.json (protocol in coder.md
++ AGENTS.md); build_project returns need_info without pushing a half tree;
+IT Lead asks the requestor and calls the new resume_build tool - the SAME
+opencode session continues with the answers (context preserved), max 3
+rounds; workspace-gone falls back to fan-out.
+V3: answer dialog has per-field checkboxes (auto-detected): "in env" ->
+metadata.deploy_env (devops injects at deploy), "secret" -> masked in
+_answers_text (prompts see only an env-var placeholder, value lives only
+in container env, never in git artifacts). Verified: resume_build pushed
+a tree; env/secret flags + deploy_env populated via API.

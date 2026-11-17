@@ -843,6 +843,8 @@ async def request_rework_endpoint(task_id: str, rework_request: ReworkRequest):
 class ClarificationAnswer(BaseModel):
     answers: dict  # {FIELD: answer text}
     answered_by: str = "human_operator"
+    env_fields: list = []     # answered fields to inject into container env
+    secret_fields: list = []  # answered fields that are secrets (env-only)
 
 
 async def _it_lead_tool(name: str, arguments: dict):
@@ -868,7 +870,8 @@ async def get_pending_clarifications():
 async def answer_clarification_endpoint(task_id: str, body: ClarificationAnswer):
     """Deliver the requestor's answers; the paused pipeline resumes planning."""
     result = await _it_lead_tool("answer_clarification", {
-        "task_id": task_id, "answers": body.answers, "answered_by": body.answered_by})
+        "task_id": task_id, "answers": body.answers, "answered_by": body.answered_by,
+        "env_fields": body.env_fields, "secret_fields": body.secret_fields})
     if isinstance(result, dict) and not result.get("success", True):
         raise HTTPException(status_code=400, detail=str(result.get("error", "rejected")))
     return result

@@ -50,6 +50,13 @@ You implement the project described in MANIFEST.md in the current directory.
    secure-search_secure_search (query) then secure-search_secure_fetch (url)
    - internet-search_internet_search is a backup. Never invent third-party
    API parameters. The built-in websearch/webfetch are broken here (403).
+3c. If you are blocked on a value that cannot be researched or guessed
+   (a private credential, a deployment-specific ID, an ambiguous external
+   contract) and it is not in the task text or CLARIFICATIONS section: write
+   .need_info.json in the project root -
+   [{"field": "UPPER_SNAKE_NAME", "question": "...", "why": "..."}] (max 3)
+   - and STOP working. The pipeline asks the requestor and resumes your
+   session with the answers. Never invent such values just to keep going.
 4. Verify your work: run python -m py_compile on every .py file; if tests
    exist, run pytest (create a venv and pip install requirements.txt + pytest
    if needed). If the project is a server, start it with a short timeout and
