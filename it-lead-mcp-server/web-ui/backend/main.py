@@ -839,6 +839,40 @@ async def request_rework_endpoint(task_id: str, rework_request: ReworkRequest):
         logger.error(f"Error submitting rework request to IT Lead: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error connecting to IT Lead: {str(e)}")
 
+
+class ClarificationAnswer(BaseModel):
+    answers: dict  # {FIELD: answer text}
+    answered_by: str = "human_operator"
+
+
+async def _it_lead_tool(name: str, arguments: dict):
+    """Call an IT Lead MCP tool and unwrap the jsonrpc envelope."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+            json={"jsonrpc": "2.0", "id": f"clar-{name}", "method": "tools/call",
+                  "params": {"name": name, "arguments": arguments}})
+    if response.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"IT Lead error {response.status_code}: {response.text[:200]}")
+    return response.json().get("result", {}) or {}
+
+
+@app.get("/api/clarifications/pending")
+async def get_pending_clarifications():
+    """Questions the pipeline is waiting answers for (requestor bell)."""
+    return await _it_lead_tool("get_pending_clarifications", {})
+
+
+@app.post("/api/tasks/{task_id}/clarify")
+async def answer_clarification_endpoint(task_id: str, body: ClarificationAnswer):
+    """Deliver the requestor's answers; the paused pipeline resumes planning."""
+    result = await _it_lead_tool("answer_clarification", {
+        "task_id": task_id, "answers": body.answers, "answered_by": body.answered_by})
+    if isinstance(result, dict) and not result.get("success", True):
+        raise HTTPException(status_code=400, detail=str(result.get("error", "rejected")))
+    return result
+
 @app.post("/api/tasks/update")
 async def update_task_status_endpoint(update: TaskStatusUpdate):
     """Update the status of a task"""

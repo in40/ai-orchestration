@@ -440,8 +440,9 @@ const TaskManagement = () => {
                           label={task.status} 
                           size="small" 
                           color={
-                            task.status === 'completed' ? 'success' : 
-                            task.status === 'in-progress' ? 'info' : 
+                            task.status === 'completed' || task.status === 'done' ? 'success' : 
+                            task.status === 'in-progress' || task.status === 'in_progress' ? 'info' : 
+                            task.status === 'awaiting_input' ? 'warning' : 
                             task.status === 'pending' ? 'warning' : 'default'
                           } 
                         />

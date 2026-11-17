@@ -270,11 +270,16 @@ When unsure, verdict=pass and put the doubt into issues.
     def _plan_run_contract(self, arguments: Dict[str, Any], result_dir: str = None) -> Dict[str, Any]:
         try:
             cache_dir = os.path.join(tempfile.gettempdir(), "qa-contracts")
+            ra = (arguments.get("requestor_answers") or "").strip()
             cache = os.path.join(cache_dir, f"{arguments['task_id']}.json")
             if os.path.exists(cache):  # deterministic: one contract per task, reused by smoke+deploy
                 try:
                     with open(cache) as f:
-                        return {"valid": True, "contract": json.load(f)}
+                        cached = json.load(f)
+                    # a contract that asked the requestor is only valid once the
+                    # answers are in the room; re-plan when they arrive
+                    if not (cached.get("need_info") and not (arguments.get("requestor_answers") or "").strip()):
+                        return {"valid": True, "contract": cached}
                 except Exception:
                     pass
             if result_dir is None:
@@ -287,9 +292,18 @@ When unsure, verdict=pass and put the doubt into issues.
             if os.environ.get("OPENCODE_QA", "1") != "0":
                 try:
                     from .opencode_run import opencode_agent, extract_json
+                    instruction = ("Determine the run contract for this artifact.")
+                    if ra:
+                        instruction += ("\nRequestor-provided values (authoritative, use them "
+                                        "in env/run command as needed):\n" + ra)
+                    instruction += (
+                        '\nIf the artifact cannot be run or tested without details absent from '
+                        'the code (external backend URL, API key, model name, test dataset), '
+                        'add "need_info": [{"field": "UPPER_SNAKE", "question": "...", '
+                        '"why": "..."}] (max 3) to your JSON. Never guess secrets.')
                     ok, text, err = opencode_agent(
                         "contract-planner", result_dir,
-                        "Determine the run contract for this artifact.",
+                        instruction,
                         session=f"ses-contract-{arguments['task_id']}", timeout=300)
                     contract = extract_json(text) if ok else None
                     if contract and not contract.get("kind"):
@@ -313,7 +327,9 @@ When unsure, verdict=pass and put the doubt into issues.
                 contract = self._llm_json(
                     "You are a release engineer. Decide how to install, run and health-check this "
                     "generated artifact on Linux.\n"
-                    f"Files: {files}\nREADME excerpt:\n{readme}\nEntry candidates:\n{cands}\n\n"
+                    f"Files: {files}\nREADME excerpt:\n{readme}\nEntry candidates:\n{cands}\n"
+                    + (f"Requestor-provided values (authoritative):\n{ra}\n" if ra else "")
+                    + "\n"
                     'Respond ONLY JSON: {"install": "shell cmd or empty", '
                     '"run": "shell cmd starting the service/CLI, or empty for static", '
                     '"cwd": "dir relative to artifact root", "env": {"K":"V"}, '
@@ -323,7 +339,10 @@ When unsure, verdict=pass and put the doubt into issues.
                     "kind=service: run starts a server, healthcheck.type MUST be http with url/port, "
                     "polling http://127.0.0.1:PORT+url. "
                     "kind=cli: run must exit 0 quickly. kind=static: run empty, healthcheck static. "
-                    "The server binds the port from env PORT.")
+                    "The server binds the port from env PORT. "
+                    "If essential run/test details are absent from the code (backend URL, API key, "
+                    "model name), optionally add \"need_info\": [{\"field\": \"UPPER_SNAKE\", "
+                    "\"question\": \"...\"}] (max 3); never guess secrets.")
                 if not contract or not contract.get("kind"):
                     contract = self._heuristic_contract(files)
                     contract["source"] = "heuristic"

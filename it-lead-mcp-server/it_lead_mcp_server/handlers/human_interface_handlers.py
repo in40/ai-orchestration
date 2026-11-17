@@ -47,6 +47,28 @@ class HumanInterfaceHandlers:
                     },
                     "required": ["task_id", "issue_description"]
                 }
+            },
+            {
+                "name": "answer_clarification",
+                "description": "Answer clarification question(s) the pipeline asked the requestor "
+                               "(task in awaiting_input). Answers are injected into re-planning.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task the questions belong to"},
+                        "answers": {"type": "object",
+                                    "description": "map of FIELD (as asked) -> answer text"},
+                        "answered_by": {"type": "string", "description": "Who answered",
+                                        "default": "human_operator"}
+                    },
+                    "required": ["task_id", "answers"]
+                }
+            },
+            {
+                "name": "get_pending_clarifications",
+                "description": "List unanswered clarification questions across tasks "
+                               "(for the requestor's notification bell).",
+                "inputSchema": {"type": "object", "properties": {}}
             }
         ]
 
@@ -93,6 +115,10 @@ class HumanInterfaceHandlers:
             return self._escalate_to_human(arguments)
         elif tool_name == "request_task_rework":
             return self._request_task_rework(arguments)
+        elif tool_name == "answer_clarification":
+            return self._answer_clarification(arguments)
+        elif tool_name == "get_pending_clarifications":
+            return self._get_pending_clarifications(arguments)
 
         # For any other tools, return None to indicate this module doesn't handle them
         return None
@@ -312,3 +338,74 @@ class HumanInterfaceHandlers:
             "message": f"Rework requested for task {task_id}",
             "rework_request": rework_request
         }
+
+    def _answer_clarification(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Record the requestor's answers; the paused pipeline watcher picks
+        them up and resumes planning."""
+        task_id = arguments.get("task_id", "")
+        answers = arguments.get("answers", {}) or {}
+        if not self.task_storage:
+            return {"success": False, "error": "task storage unavailable"}
+        task = self.task_storage.get_task(task_id)
+        if not task:
+            return {"success": False, "error": f"Task not found: {task_id}"}
+        md = task.get("metadata", {}) or {}
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except Exception:
+                md = {}
+        cl = md.get("clarifications") or []
+        norm = {str(k).strip().upper().replace(" ", "_"): str(v)
+                for k, v in answers.items()}
+        updated = 0
+        for c in cl:
+            if c.get("status") == "pending" and c.get("field") in norm:
+                c["status"] = "answered"
+                c["answer"] = norm[c["field"]]
+                c["answered_at"] = time.time()
+                c["answered_by"] = arguments.get("answered_by", "human_operator")
+                updated += 1
+        md["clarifications"] = cl
+        self.task_storage.update_task_status_only(
+            task_id=task_id,
+            status=task.get("status") or "awaiting_input",
+            status_reason=f"{updated} clarification answer(s) recorded",
+            metadata=md)
+        if self.task_assignment_manager and updated:
+            try:
+                self.task_assignment_manager._log_activity(
+                    task_id, "clarification_answered", agent="human_operator",
+                    detail=", ".join(sorted(norm)))
+            except Exception:
+                pass
+        pending = [c["field"] for c in cl if c.get("status") == "pending"]
+        return {"success": True, "answered": updated, "still_pending": pending}
+
+    def _get_pending_clarifications(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Flatten pending questions across tasks for the UI bell."""
+        out = []
+        try:
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "SELECT task_id, title, metadata::jsonb FROM task_registry "
+                "WHERE metadata::jsonb->'clarifications' IS NOT NULL "
+                "ORDER BY updated_at DESC LIMIT 200")
+            rows = cursor.fetchall()
+            cursor.close()
+        except Exception as e:
+            return {"success": False, "error": str(e), "clarifications": []}
+        for tid, title, md in rows:
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except Exception:
+                    continue
+            for c in (md or {}).get("clarifications") or []:
+                if c.get("status") == "pending":
+                    out.append({"task_id": tid, "title": title,
+                                "id": c.get("id"), "field": c.get("field"),
+                                "question": c.get("question"), "why": c.get("why"),
+                                "asked_by": c.get("asked_by"),
+                                "asked_at": c.get("asked_at")})
+        return {"success": True, "clarifications": out}

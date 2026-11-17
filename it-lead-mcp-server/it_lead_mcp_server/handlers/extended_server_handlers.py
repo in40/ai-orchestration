@@ -1461,7 +1461,8 @@ class ExtendedItLeadServerHandlers:
         try:
             existing = self.task_storage.get_task(task_id) if self.task_storage else None
             if existing and existing.get("status") in ("in_progress", "review",
-                                                       "rework_in_progress"):
+                                                       "rework_in_progress",
+                                                       "awaiting_input"):
                 msg = (f"task {task_id} already has an active pipeline "
                        f"(status={existing.get('status')}); wait for it to finish, "
                        f"or request rework once it is done")

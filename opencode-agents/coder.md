@@ -45,6 +45,11 @@ You implement the project described in MANIFEST.md in the current directory.
 2. Create EVERY file listed in the manifest, exactly at the given paths.
 3. requirements.txt: list every third-party package you actually import
    (write "# dependencies (stdlib only)" if none).
+3b. Research before guessing: if you are unsure about a library API, endpoint
+   contract, parameter names or versions, call the native search tools FIRST:
+   secure-search_secure_search (query) then secure-search_secure_fetch (url)
+   - internet-search_internet_search is a backup. Never invent third-party
+   API parameters. The built-in websearch/webfetch are broken here (403).
 4. Verify your work: run python -m py_compile on every .py file; if tests
    exist, run pytest (create a venv and pip install requirements.txt + pytest
    if needed). If the project is a server, start it with a short timeout and

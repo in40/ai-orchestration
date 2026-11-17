@@ -72,7 +72,19 @@ FastAPI serves GET /openapi.json automatically; for Flask or plain http.server
 the spec must include a static GET /openapi.json (OpenAPI 3.0: paths, methods,
 request/response shapes) describing every endpoint. The service is deployed
 under an arbitrary URL prefix (/<task-id>/): every manifest spec for HTML or
-browser JS must require RELATIVE asset and fetch paths (no leading slash)."""
+browser JS must require RELATIVE asset and fetch paths (no leading slash).
+
+## Missing critical details (clarifications)
+If the task depends on integration values that are NOT in the task text and
+CANNOT be safely guessed (external endpoint URL, model name, API key or where
+to get it, target environment, test dataset/credentials, tenant ids), do NOT
+invent them. Still emit your best-effort plan, and additionally emit:
+"need_info": [{"field": "UPPER_SNAKE_NAME", "question": "one sentence asking the requestor", "why": "what breaks without it"}]
+at most 5 items, most critical first. Only for values that genuinely cannot
+be defaulted - do not ask for things a competent engineer would just choose.
+If the task text already contains a "CLARIFICATIONS FROM THE REQUESTOR"
+section, those values are authoritative: use them and emit no need_info for
+those fields."""
         
         # Call LLM
         try:

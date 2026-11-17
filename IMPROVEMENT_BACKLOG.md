@@ -341,3 +341,18 @@ tree. Now opens a dialog listing all files in results/<task> (recursive,
 via /api/git/browse) with a content viewer + Copy + Raw. Backend: browse
 is recursive, files endpoint got a traversal guard, and the results clone
 is git-pulled on demand so the tree is never stale.
+
+## Clarifications V1: pipeline asks the requestor for missing details ✅
+Any stage may emit need_info instead of guessing critical config.
+Planner hook: llm_task_planner prompt section -> llm_plan.need_info ->
+metadata.clarifications (dedup by field, answered never re-asked) ->
+status awaiting_input + watcher thread; answer_clarification tool records
+answers, watcher re-enters assign_and_forward_task with a "CLARIFICATIONS
+FROM THE REQUESTOR" block injected into the task text. QA hook: contract
+planner may emit need_info in the run contract; gated thread blocks at
+the QA gate, contract cache invalidated, gate re-runs with
+requestor_answers forwarded to QA. UI: bell in Navigation (15s poll of
+/api/clarifications/pending -> IT Lead get_pending_clarifications),
+answer dialog per task; awaiting_input chip. Guards extended with
+awaiting_input. E2E: llm_client task with zero access details -> 3
+questions (BASE_URL/KEY/MODEL) -> answered -> re-plan -> build.

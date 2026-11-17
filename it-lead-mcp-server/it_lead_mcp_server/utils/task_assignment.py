@@ -90,11 +90,14 @@ class TaskAssignmentManager:
         except Exception as e:
             print(f"⚠️ Error initializing result router: {e}")
 
-    def _run_qa_gate(self, task_id: str, git_url: str, async_task_id: str):
+    def _run_qa_gate(self, task_id: str, git_url: str, async_task_id: str,
+                     answers_text: str = ""):
         """Run QA validate_artifact + smoke_run on a coder artifact.
 
         Returns (passed, info). Fails open (passed=True) when QA is
         unreachable so a missing QA server never blocks delivery.
+        answers_text: requestor's clarification answers, forwarded to the
+        contract planner so it stops asking for known config.
         """
         try:
             services = self.mcp_registry_client.list_services(use_cache=False)
@@ -118,7 +121,8 @@ class TaskAssignmentManager:
                     "jsonrpc": "2.0", "id": f"qa-{tool}-{task_id}",
                     "method": "tools/call",
                     "params": {"name": tool,
-                               "arguments": {"task_id": async_task_id, "git_url": git_url}}
+                               "arguments": {"task_id": async_task_id, "git_url": git_url,
+                                             "requestor_answers": answers_text}}
                 }, timeout=120)
                 out = resp.json().get("result", {})
                 if isinstance(out, dict) and isinstance(out.get("result"), dict):
@@ -696,6 +700,98 @@ class TaskAssignmentManager:
             print(f"⚠️ build_project {task_id} error, falling back: {str(e)[:200]}", flush=True)
         return None
 
+    # ------------------------------------------------------------------
+    # Clarifications: pipeline -> requestor Q&A (pause / answer / resume).
+    # Any stage (planner, QA contract planner, later coder) may emit
+    # need_info items instead of guessing critical config. The pipeline
+    # pauses with status awaiting_input; the requestor answers via the UI
+    # (answer_clarification tool); answers are injected into re-planning.
+    # ------------------------------------------------------------------
+    def _md_of(self, task_id):
+        task = self.task_storage.get_task(task_id) if self.task_storage else {}
+        task = task or {}
+        md = task.get("metadata") or {}
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except Exception:
+                md = {}
+        return task, md
+
+    def _create_clarifications(self, task_id, items, asked_by):
+        """Normalize need_info items into metadata.clarifications. Fields that
+        are already pending or answered are skipped: never re-ask the requestor
+        the same question."""
+        _, md = self._md_of(task_id)
+        cl = md.get("clarifications") or []
+        known = {c.get("field") for c in cl}
+        added = []
+        for i, it in enumerate(items[:5]):
+            if not isinstance(it, dict):
+                continue
+            field = str(it.get("field") or "").strip().upper().replace(" ", "_")[:60]
+            if not field or field in known:
+                continue
+            entry = {"id": f"clr-{int(time.time())}-{i}", "field": field,
+                     "question": str(it.get("question") or field)[:500],
+                     "why": str(it.get("why") or "")[:300],
+                     "asked_by": asked_by, "status": "pending",
+                     "asked_at": time.time()}
+            cl.append(entry)
+            added.append(entry)
+        if added:
+            self._merge_metadata(task_id, {"clarifications": cl})
+        return added
+
+    def _pending_clarifications(self, task_id):
+        _, md = self._md_of(task_id)
+        return [c for c in (md.get("clarifications") or []) if c.get("status") == "pending"]
+
+    def _answers_text(self, task_id):
+        _, md = self._md_of(task_id)
+        return "\n".join(
+            f"- {c.get('field')}: {c.get('answer')}"
+            for c in (md.get("clarifications") or []) if c.get("status") == "answered")
+
+    def _wait_for_clarifications(self, task_id, deadline_hours=24):
+        """Block until every pending question is answered (poll the registry).
+        Returns True on resume, False on timeout."""
+        deadline = time.time() + deadline_hours * 3600
+        while time.time() < deadline:
+            if not self._pending_clarifications(task_id):
+                return True
+            time.sleep(5)
+        return False
+
+    def _await_clarifications(self, task_id):
+        """Watcher for a pipeline paused BEFORE the build (planner-side):
+        once answered, re-enter assign_and_forward_task with the answers
+        injected into the task text; the planner re-plans with real values."""
+        if not self._wait_for_clarifications(task_id):
+            self._update_task_status(task_id, "needs_revision",
+                                     "clarification timeout: no answer from the requestor")
+            self._log_activity(task_id, "clarification_timeout", agent="it-lead")
+            return
+        task, md = self._md_of(task_id)
+        ctx = md.get("clarification_context") or {}
+        desc = ctx.get("task_description") or task.get("description") or ""
+        answers = self._answers_text(task_id)
+        self._log_activity(task_id, "clarification_resumed", agent="it-lead",
+                           detail=f"{len(answers.splitlines())} answer(s) injected, re-planning")
+        # 'submitted' passes the secondary guard: this IS the same pipeline resuming
+        self._update_task_status(task_id, "submitted", "clarification answered, re-planning")
+        try:
+            self.assign_and_forward_task(
+                task_id,
+                desc + "\n\nCLARIFICATIONS FROM THE REQUESTOR (authoritative values, "
+                       "use them, do not ask again):\n" + answers,
+                assignee=ctx.get("assignee"), priority=ctx.get("priority", "medium"),
+                metadata=ctx.get("metadata"))
+        except Exception as e:
+            print(f"❌ clarification resume failed for {task_id}: {e}", flush=True)
+            self._update_task_status(task_id, "needs_revision",
+                                     f"clarification resume error: {str(e)[:150]}")
+
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list,
                                 llm_plan: dict = None, metadata: dict = None, route: str = "gated",
                                 prebuilt_git_url: str = None, deploy_task_id: str = None):
@@ -785,6 +881,33 @@ class TaskAssignmentManager:
             git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
                             if o.get("git_url")), "")
         qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id)
+        # QA-side clarification: the contract planner could not decide how to
+        # run/test this artifact without requestor input (backend URL, creds,
+        # test target). Pause THIS thread, wait for answers, re-plan the
+        # contract from scratch (the cached one was made without the answers).
+        need = ((qa_info.get("smoke_run") or {}).get("contract") or {}).get("need_info") \
+            if isinstance(qa_info, dict) else None
+        if isinstance(need, list) and need:
+            added = self._create_clarifications(task_id, need, asked_by="qa-engineer")
+            if added:
+                self._update_task_status(
+                    task_id, "awaiting_input",
+                    "QA needs details: " + ", ".join(a["field"] for a in added))
+                self._log_activity(task_id, "clarification_requested", agent="qa-engineer",
+                                   detail="; ".join(a["question"][:80] for a in added))
+                if not self._wait_for_clarifications(task_id):
+                    self._update_task_status(task_id, "needs_revision",
+                                             "clarification timeout at QA gate")
+                    self._log_activity(task_id, "clarification_timeout", agent="it-lead")
+                    return
+                self._log_activity(task_id, "clarification_resumed", agent="it-lead",
+                                   detail="QA contract re-planned with requestor answers")
+                try:
+                    os.remove(f"/tmp/qa-contracts/{task_id}.json")
+                except OSError:
+                    pass
+                qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id,
+                                                   answers_text=self._answers_text(task_id))
         self._log_activity(task_id, "qa_gate", agent="qa-engineer",
                            detail="PASS" if qa_ok else f"FAIL: {json.dumps(qa_info)[:200]}")
         if not qa_ok:
@@ -1037,7 +1160,8 @@ class TaskAssignmentManager:
         try:
             existing = self.task_storage.get_task(task_id) if self.task_storage else None
             if existing and existing.get("status") in ("in_progress", "review",
-                                                       "rework_in_progress"):
+                                                       "rework_in_progress",
+                                                       "awaiting_input"):
                 msg = (f"task {task_id} already has an active pipeline "
                        f"(status={existing.get('status')}); refusing concurrent run")
                 print(f"⛔ {msg}")
@@ -1127,6 +1251,29 @@ class TaskAssignmentManager:
 
             result["requires_llm_planning"] = True
             result["llm_plan"] = llm_plan
+
+            # Clarification gate (planner side): critical unknowns (endpoint,
+            # model name, API key, test target...) pause the pipeline and ask
+            # the requestor instead of building a stub around guessed config.
+            need = llm_plan.get("need_info") if isinstance(llm_plan, dict) else None
+            if isinstance(need, list) and need:
+                added = self._create_clarifications(task_id, need, asked_by="planner")
+                if added:  # dedup: all fields already known -> continue silently
+                    self._merge_metadata(task_id, {"clarification_context": {
+                        "task_description": task_description, "assignee": assignee,
+                        "priority": priority, "metadata": metadata}})
+                    self._update_task_status(
+                        task_id, "awaiting_input",
+                        "need details from the requestor: "
+                        + ", ".join(a["field"] for a in added))
+                    self._log_activity(task_id, "clarification_requested", agent="planner",
+                                       detail="; ".join(a["question"][:80] for a in added))
+                    threading.Thread(target=self._await_clarifications,
+                                     args=(task_id,), daemon=True).start()
+                    result["status"] = "awaiting_input"
+                    result["message"] = (f"Pipeline paused: {len(added)} question(s) for the "
+                                         f"requestor ({', '.join(a['field'] for a in added)})")
+                    return result
 
             print(f"✅ LLM planning completed for task {task_id}")
             print(f"   LLM plan keys: {list(llm_plan.keys())}")
@@ -2715,7 +2862,8 @@ Please implement this corrected code in {original_language} and prepare it for d
             if not task_obj:
                 print(f"❌ Task not found: {task_id}", flush=True)
                 return
-            if task_obj.get("status") in ("in_progress", "review", "rework_in_progress"):
+            if task_obj.get("status") in ("in_progress", "review", "rework_in_progress",
+                                           "awaiting_input"):
                 print(f"⛔ rework rejected: {task_id} already active "
                       f"(status={task_obj.get('status')})", flush=True)
                 self._log_activity(task_id, "rework_rejected", agent="it-lead",
