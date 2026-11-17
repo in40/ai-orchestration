@@ -1035,7 +1035,9 @@ class TaskAssignmentManager:
                                      f"deploy failed: {str(dep)[:200]}")
             return
         self._update_task_status(task_id, "done",
-                                 f"Multi-file deliverable: {len(results or file_manifest)} files, QA passed")
+                                 ("Rework deliverable: gates passed (no deploy expected)"
+                                  if prebuilt_git_url else
+                                  f"Multi-file deliverable: {len(results or file_manifest)} files, QA passed"))
 
     def _capture_screenshot(self, task_id, url, stage="deploy"):
         """V1 visual evidence: headless screenshot of a live URL. PNGs live
@@ -3009,8 +3011,12 @@ Please generate the complete, corrected code with proper {metadata.get('language
                 print(f"⚠️  Could not update task status: {e}")
 
             import threading
+            # rework must not invent a deploy for tasks that never had one
+            want_deploy = bool(metadata.get("deployment_url")) or \
+                self._md_flag(metadata, "deploy_after_implementation")
             threading.Thread(target=self._execute_rework_plan,
-                             args=(task_id, rework_prompt, metadata.get("git_url")),
+                             args=(task_id, rework_prompt, metadata.get("git_url"),
+                                   want_deploy),
                              daemon=True).start()
 
         except Exception as e:
@@ -3018,11 +3024,14 @@ Please generate the complete, corrected code with proper {metadata.get('language
             import traceback
             traceback.print_exc()
 
-    def _execute_rework_plan(self, task_id, rework_prompt, base_git_url):
+    def _execute_rework_plan(self, task_id, rework_prompt, base_git_url, want_deploy=True):
         """In-place rework: fix the existing artifact tree (or rebuild from the
         task text when no tree is recorded), then run the standard gate
-        sequence (QA/security/redeploy/health/screenshot/visual) under the same
-        task id. The stale run contract is invalidated: the tree is about to
+        sequence under the same task id. want_deploy must mirror the ORIGINAL
+        task's nature: a component/library rework has nothing to deploy and a
+        forced deploy would fail the health gate (postmortem
+        task-1794919400099: Langflow component, container had no server).
+        The stale run contract is invalidated: the tree is about to
         change and the old launch command must not be reused."""
         try:
             try:
@@ -3050,11 +3059,13 @@ Please generate the complete, corrected code with proper {metadata.get('language
                 manifest = []
             else:
                 git_url, manifest = None, self._gated_manifest_synth()
+            wf = ["implementation-engineer", "qa-engineer"]
+            if want_deploy:
+                wf.append("devops-engineer")
             self._execute_multifile_plan(
                 task_id, rework_prompt, manifest,
-                llm_plan={"workflow_sequence": ["implementation-engineer", "qa-engineer",
-                                                "devops-engineer"]},
-                metadata={"deploy_after_implementation": True},
+                llm_plan={"workflow_sequence": wf},
+                metadata={"deploy_after_implementation": bool(want_deploy)},
                 route="gated", prebuilt_git_url=git_url)
             sub = self.task_storage.get_task(task_id) or {}
             self._log_activity(task_id,

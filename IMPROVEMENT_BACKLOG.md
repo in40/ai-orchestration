@@ -368,3 +368,10 @@ metadata.deploy_env (devops injects at deploy), "secret" -> masked in
 _answers_text (prompts see only an env-var placeholder, value lives only
 in container env, never in git artifacts). Verified: resume_build pushed
 a tree; env/secret flags + deploy_env populated via API.
+
+## Rework deploy fix: inherit deploy intent from original task ✅
+In-place rework hardcoded deploy_after_implementation+devops, so a
+non-service task (Langflow PDF-splitter component) got force-deployed,
+the container could not healthcheck, and a green fix landed needs_revision
+(task-1794919400099). Rework now derives want_deploy from the parent
+(deployment_url or deploy flag) and skips devops entirely otherwise.
