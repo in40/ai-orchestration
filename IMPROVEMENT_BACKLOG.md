@@ -375,3 +375,10 @@ non-service task (Langflow PDF-splitter component) got force-deployed,
 the container could not healthcheck, and a green fix landed needs_revision
 (task-1794919400099). Rework now derives want_deploy from the parent
 (deployment_url or deploy flag) and skips devops entirely otherwise.
+
+## Security gate: one automatic repair pass ✅
+FAIL findings no longer go straight to needs_revision: each flagged
+file (max 4) is patched by the coder with its findings ("fix real risks,
+document intended behavior, tighten input"), then one rescan. Clean ->
+flow continues; still dirty -> needs_revision for the human (no loop -
+auto-fixing further risks gaming the scanner).

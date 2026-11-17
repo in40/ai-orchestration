@@ -286,6 +286,34 @@ class TaskAssignmentManager:
             return False, qa_info
         return self._run_qa_gate(task_id, git_url, task_id)
 
+    def _security_repair(self, task_id, coder_endpoint, git_url, sec_info):
+        """One automatic security repair pass (mirrors the QA repair loop):
+        hand each flagged file to the coder with its findings, then re-scan
+        once. Mechanical issues (exec in a test) get fixed; behavior that is
+        the file's intended purpose gets documented, not removed. If the
+        rescan is still dirty the decision escalates to the requestor -
+        auto-fixing further risks gaming the scanner instead of the finding."""
+        findings = (sec_info or {}).get("findings") or []
+        files = []
+        for f in findings:
+            if isinstance(f, dict) and f.get("file") and f["file"] not in files:
+                files.append(f["file"])
+        if not files:
+            return False, sec_info
+        for path in files[:4]:
+            detail = json.dumps([f for f in findings
+                                 if isinstance(f, dict) and f.get("file") == path])[:2000]
+            note = ("Security review flagged this file. Fix the flagged pattern when it "
+                    "is a real risk (e.g. replace exec() in tests with a direct call). "
+                    "When the flagged behavior IS the file's intended purpose, keep it "
+                    "working but tighten it (validate input, e.g. file extension) and add "
+                    "a short code comment + README note why it is safe. "
+                    f"Findings for this file: {detail}")
+            out = self._patch_one(coder_endpoint, task_id, path, note)
+            if not out.get("success"):
+                print(f"⚠️ security repair failed for {path}: {str(out)[:120]}", flush=True)
+        return self._security_gate(task_id, git_url)
+
     def _security_gate(self, task_id, git_url):
         """Security Reviewer scan; fails open when the reviewer is unavailable."""
         try:
@@ -976,6 +1004,15 @@ class TaskAssignmentManager:
             sec_ok, sec_info = self._security_gate(task_id, git_url)
             self._log_activity(task_id, "security_gate", agent="security-reviewer",
                                detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_info)[:200]}")
+            if not sec_ok:
+                # one automatic repair pass before escalating to the requestor
+                self._log_activity(task_id, "security_repair", agent="it-lead",
+                                   detail=f"feeding {len(sec_info.get('findings') or [])} "
+                                          f"finding(s) back to the coder, then rescan")
+                sec_ok, sec_rescan = self._security_repair(
+                    task_id, coder_endpoint, git_url, sec_info)
+                self._log_activity(task_id, "security_gate_rescan", agent="security-reviewer",
+                                   detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_rescan)[:200]}")
             if not sec_ok:
                 self._update_task_status(task_id, "needs_revision",
                                          f"security scan failed: {json.dumps(sec_info)[:400]}")
