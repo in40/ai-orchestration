@@ -334,3 +334,10 @@ devops at every deploy (proved: contract without LANGFLOW_BASE_URL ->
 container got it, proxy 403 = langflow answering). Guards: assign_task
 rejects active pipeline (in_progress/review/rework_in_progress + fresh
 submitted <15min); web-ui surfaces rejection as HTTP 409 (verified).
+
+## "View code" fixed: artifact file browser ✅
+Old button guessed a single result.<ext> path - 404 for every multi-file
+tree. Now opens a dialog listing all files in results/<task> (recursive,
+via /api/git/browse) with a content viewer + Copy + Raw. Backend: browse
+is recursive, files endpoint got a traversal guard, and the results clone
+is git-pulled on demand so the tree is never stale.

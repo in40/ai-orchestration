@@ -65,6 +65,34 @@ const TaskManagement = () => {
   // Rework dialog state
   const [openReworkDialog, setOpenReworkDialog] = useState(false);
   const [detailTask, setDetailTask] = useState(null);
+  const [codeView, setCodeView] = useState(null);
+
+  const openCodeBrowser = async (task) => {
+    const m = (task.git_url || '').match(/results\/([^/]+)/);
+    const dir = m ? m[1] : task.id;
+    setCodeView({ dir, files: [], loading: true, sel: null, content: '' });
+    try {
+      const r = await axios.get(`/api/git/browse/${encodeURIComponent(dir)}`);
+      const files = r.data.files || [];
+      setCodeView({ dir, files, loading: false, sel: files[0] || null, content: '' });
+      if (files[0]) loadFileContent(files[0]);
+    } catch (e) {
+      setCodeView({ dir, files: [], loading: false, sel: null, content: '',
+                    error: 'Artifact tree not found in results repo' });
+    }
+  };
+
+  const loadFileContent = async (f) => {
+    setCodeView(cv => ({ ...cv, sel: f, content: 'loading…' }));
+    try {
+      const r = await axios.get(f.url, { responseType: 'text', transformResponse: [d => d] });
+      const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2);
+      setCodeView(cv => ({ ...cv, content: text.length > 200000
+        ? text.slice(0, 200000) + '\n… (truncated, use raw link)' : text }));
+    } catch (e) {
+      setCodeView(cv => ({ ...cv, content: '(failed to load file)' }));
+    }
+  };
 
   // clipboard with fallback: the UI is served over plain http on the LAN,
   // where navigator.clipboard is unavailable (non-secure context)
@@ -441,15 +469,7 @@ const TaskManagement = () => {
                         <IconButton
                           color="success"
                           aria-label="view result"
-                          onClick={() => {
-                            const taskId = task.id;
-                            const ext = task.git_url.includes('.html') ? '.html' : task.git_url.includes('.md') ? '.md' : task.git_url.includes('.js') ? '.js' : '.py';
-                            const uuidMatch = task.git_url.match(/results\/([a-f0-9-]+)\//);
-                            const taskUuid = uuidMatch ? uuidMatch[1] : taskId;
-                            const currentHost = window.location.origin;
-                            const resultUrl = `${currentHost}/api/git/files/${taskUuid}/result${ext}`;
-                            window.open(resultUrl, '_blank');
-                          }}
+                          onClick={() => openCodeBrowser(task)}
                           title="View Generated Code"
                         >
                           <DescriptionIcon />
@@ -943,6 +963,85 @@ const TaskManagement = () => {
           >
             Submit Rework Request
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Artifact code browser: lists every file in results/<task> and shows
+          its content; replaces the old single result.<ext> link that broke for
+          multi-file trees. */}
+      <Dialog open={!!codeView} onClose={() => setCodeView(null)} maxWidth="lg" fullWidth>
+        <DialogTitle sx={{ pb: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
+            <Typography variant="h6">
+              Code: <Box component="span" sx={{ fontFamily: 'monospace', fontSize: 16 }}>{codeView?.dir}</Box>
+            </Typography>
+            <IconButton onClick={() => setCodeView(null)} size="small" aria-label="close">
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          {codeView?.loading && (
+            <Box display="flex" justifyContent="center" p={4}><CircularProgress /></Box>
+          )}
+          {codeView?.error && <Alert severity="warning" sx={{ mb: 1 }}>{codeView.error}</Alert>}
+          {!codeView?.loading && (
+            <Box sx={{ display: 'flex', gap: 2, minHeight: '50vh' }}>
+              <Box sx={{ width: 260, flexShrink: 0, maxHeight: '60vh', overflow: 'auto',
+                         borderRight: '1px solid', borderColor: 'divider', pr: 1 }}>
+                {codeView?.files?.map(f => (
+                  <Box
+                    key={f.name}
+                    onClick={() => loadFileContent(f)}
+                    sx={{
+                      px: 1, py: 0.75, cursor: 'pointer', borderRadius: 1,
+                      bgcolor: codeView?.sel?.name === f.name ? 'action.selected' : 'transparent',
+                      '&:hover': { bgcolor: 'action.hover' }
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{f.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {f.size > 1024 ? `${(f.size / 1024).toFixed(1)} KB` : `${f.size} B`}
+                    </Typography>
+                  </Box>
+                ))}
+                {codeView && !codeView.files?.length && !codeView.error && (
+                  <Typography variant="body2" color="text.secondary">No files</Typography>
+                )}
+              </Box>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                {codeView?.sel && (
+                  <>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                      <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
+                        {codeView.sel.name}
+                      </Typography>
+                      <Box>
+                        <Button size="small" startIcon={<CopyIcon />}
+                          onClick={() => copyText(codeView.content, 'file content')}>
+                          Copy
+                        </Button>
+                        <Button size="small" href={codeView.sel.url} target="_blank"
+                          startIcon={<OpenInNewIcon />}>
+                          Raw
+                        </Button>
+                      </Box>
+                    </Box>
+                    <Box component="pre" sx={{
+                      m: 0, p: 2, fontSize: 12.5, lineHeight: 1.5,
+                      bgcolor: 'grey.900', color: 'grey.100', borderRadius: 1,
+                      maxHeight: '55vh', overflow: 'auto', whiteSpace: 'pre'
+                    }}>
+                      {codeView.content}
+                    </Box>
+                  </>
+                )}
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCodeView(null)}>Close</Button>
         </DialogActions>
       </Dialog>
 

@@ -1834,6 +1834,21 @@ async def get_git_history(task_id: str):
 # HTTP Git File Access Endpoints  
 # ============================================================================
 
+def _results_dir(task_id: str) -> str:
+    """Local clone of the results repo for a task dir; refreshed best-effort
+    so the browser never shows a stale tree."""
+    import subprocess
+    repo = "/tmp/mcp-vibe-coding-git/repo"
+    try:
+        subprocess.run(["git", "-C", repo, "pull", "-q"], capture_output=True, timeout=25)
+    except Exception:
+        pass
+    d = os.path.join(repo, "results", task_id)
+    if not os.path.isdir(d):
+        d = f"/root/qwen/base/mcp-results/results/{task_id}"
+    return d
+
+
 @app.get("/api/git/files/{task_id:path}")
 async def get_git_file(task_id: str):
     """Serve files from Git repository via HTTP"""
@@ -1843,18 +1858,17 @@ async def get_git_file(task_id: str):
         if len(parts) != 2:
             raise HTTPException(status_code=400, detail="Invalid path. Use: {task_uuid}/{filename}")
         task_uuid, filename = parts
-        file_path = f"/tmp/mcp-vibe-coding-git/repo/results/{task_uuid}/{filename}"
-        import os
-        if not os.path.exists(file_path):
-            file_path = f"/root/qwen/base/mcp-results/results/{task_uuid}/{filename}"
-            if not os.path.exists(file_path):
-                raise HTTPException(status_code=404, detail="File not found")
+        task_dir = os.path.normpath(_results_dir(task_uuid))
+        file_path = os.path.normpath(os.path.join(task_dir, filename))
+        # traversal guard: must stay inside the task's results directory
+        if not file_path.startswith(task_dir + os.sep) or not os.path.isfile(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
         with open(file_path, 'rb') as f:
             content = f.read()
         ext = '.' + filename.split('.')[-1] if '.' in filename else ''
-        ct = {'.md':'text/markdown','.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.yaml':'text/yaml','.yml':'text/yaml','.py':'text/x-python','.txt':'text/plain'}.get(ext, 'application/octet-stream')
+        ct = {'.md':'text/markdown','.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.yaml':'text/yaml','.yml':'text/yaml','.py':'text/x-python','.txt':'text/plain','.svg':'image/svg+xml'}.get(ext, 'application/octet-stream')
         from fastapi.responses import Response
-        return Response(content=content, media_type=ct, headers={"Content-Disposition": f"inline; filename={filename}"})
+        return Response(content=content, media_type=ct, headers={"Content-Disposition": f"inline; filename={os.path.basename(filename)}"})
     except HTTPException:
         raise
     except Exception as e:
@@ -1864,19 +1878,25 @@ async def get_git_file(task_id: str):
 
 @app.get("/api/git/browse/{task_id}")
 async def browse_git_directory(task_id: str):
-    """Browse task directory"""
+    """List every file in the task's artifact tree (recursive, relative paths)."""
     logger.info(f"Browsing Git directory: {task_id}")
     try:
-        import os
-        dir_path = f"/tmp/mcp-vibe-coding-git/repo/results/{task_id}"
-        if not os.path.exists(dir_path):
-            dir_path = f"/root/qwen/base/mcp-results/results/{task_id}"
-            if not os.path.exists(dir_path):
-                raise HTTPException(status_code=404, detail="Task not found")
+        dir_path = _results_dir(task_id)
+        if not os.path.isdir(dir_path):
+            raise HTTPException(status_code=404, detail="Task not found")
         files = []
-        for item in os.listdir(dir_path):
-            item_path = os.path.join(dir_path, item)
-            files.append({"name": item, "type": "dir" if os.path.isdir(item_path) else "file", "size": os.path.getsize(item_path) if os.path.isfile(item_path) else 0, "url": f"/api/git/files/{task_id}/{item}"})
+        for root, dirs, fs in os.walk(dir_path):
+            dirs[:] = sorted(d for d in dirs
+                             if not d.startswith(".") and d != "__pycache__")
+            for f in sorted(fs):
+                if f.startswith("."):
+                    continue
+                rel = os.path.relpath(os.path.join(root, f), dir_path).replace("\\", "/")
+                full = os.path.join(root, f)
+                files.append({"name": rel,
+                              "type": "file",
+                              "size": os.path.getsize(full),
+                              "url": f"/api/git/files/{task_id}/{rel}"})
         return {"task_id": task_id, "files": files}
     except HTTPException:
         raise
