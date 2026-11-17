@@ -1245,6 +1245,22 @@ CMD ["python", "-m", "http.server", "{container_port}"]
             "message": f"Static application deployed at {deployment_url}"
         }
 
+    def _clear_deployment_url(self, task_id):
+        """After stop/delete there is no live deployment: drop the stale
+        deployment_url from task metadata so the UI offers Redeploy again
+        (the button is conditioned on its absence)."""
+        try:
+            import psycopg2 as _pg
+            _c = _pg.connect(host="127.0.0.1", database="mcp_registry",
+                             user="postgres", password="postgres")
+            _cur = _c.cursor()
+            _cur.execute("UPDATE task_registry SET metadata = metadata::jsonb - 'deployment_url' "
+                         "WHERE task_id = %s", (task_id,))
+            _c.commit()
+            _c.close()
+        except Exception as e:
+            deployment_logger.warning(f"clear deployment_url failed for {task_id}: {e}")
+
     def _stop_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Stop a deployment (keep container for restart)"""
         import subprocess
@@ -1275,6 +1291,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
             # Update database
             self._update_deployment_status(task_id, "stopped")
             self._edge_remove(task_id)
+            self._clear_deployment_url(task_id)
 
             return {
                 "success": True,
@@ -1344,6 +1361,10 @@ CMD ["python", "-m", "http.server", "{container_port}"]
             
             # Remove container
             subprocess.run(["docker", "rm", container_id], check=True, capture_output=True)
+
+            # the task no longer has a deployment - let the UI offer Redeploy
+            if str(container_id or "").lower().startswith("deploy-"):
+                self._clear_deployment_url(str(container_id)[len("deploy-"):])
 
             return {
                 "success": True,
