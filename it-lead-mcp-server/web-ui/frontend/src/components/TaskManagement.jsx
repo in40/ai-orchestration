@@ -33,7 +33,7 @@ import {
   Link,
   Tooltip
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon, Visibility as VisibilityIcon, ContentCopy as CopyIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 // Import enhanced AddTaskForm component
@@ -64,6 +64,29 @@ const TaskManagement = () => {
   });
   // Rework dialog state
   const [openReworkDialog, setOpenReworkDialog] = useState(false);
+  const [detailTask, setDetailTask] = useState(null);
+
+  // clipboard with fallback: the UI is served over plain http on the LAN,
+  // where navigator.clipboard is unavailable (non-secure context)
+  const copyText = async (text, label) => {
+    if (!text) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) {
+      window.prompt('Copy ' + (label || 'text'), text);
+    }
+  };
   const [selectedTaskForRework, setSelectedTaskForRework] = useState(null);
   const [reworkForm, setReworkForm] = useState({
     issue_description: '',
@@ -362,8 +385,12 @@ const TaskManagement = () => {
                         </Tooltip>
                       </TableCell>
                       <TableCell sx={{ maxWidth: 300 }}>
-                        <Tooltip title={task.description || 'No description'} placement="top">
-                          <Typography variant="body2" color="text.secondary" noWrap>
+                        <Tooltip title="Click to view and copy the full description" placement="top">
+                          <Typography
+                            variant="body2" color="text.secondary" noWrap
+                            onClick={() => setDetailTask(task)}
+                            sx={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                          >
                             {task.description || '-'}
                           </Typography>
                         </Tooltip>
@@ -461,6 +488,14 @@ const TaskManagement = () => {
                           <RestartAltIcon />
                         </IconButton>
                       )}
+                      <IconButton
+                        color="inherit"
+                        aria-label="view full task"
+                        onClick={() => setDetailTask(task)}
+                        title="View / copy full task"
+                      >
+                        <VisibilityIcon />
+                      </IconButton>
                       <IconButton
                         color="primary"
                         aria-label="view history"
@@ -908,6 +943,81 @@ const TaskManagement = () => {
           >
             Submit Rework Request
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Full task dialog: long descriptions are unreadable/uncopyable in the
+          table cell (Tooltip truncates), so open them here with copy buttons. */}
+      <Dialog open={!!detailTask} onClose={() => setDetailTask(null)} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ pb: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 2 }}>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6" sx={{ wordBreak: 'break-word' }}>
+                {detailTask?.title || detailTask?.id}
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                  {detailTask?.id}
+                </Typography>
+                <IconButton size="small" onClick={() => copyText(detailTask?.id, 'task id')}
+                  title="Copy task ID">
+                  <CopyIcon fontSize="small" />
+                </IconButton>
+              </Box>
+            </Box>
+            <IconButton onClick={() => setDetailTask(null)} size="small" aria-label="close">
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+            <Typography variant="subtitle2">Description</Typography>
+            <Button size="small" startIcon={<CopyIcon />}
+              onClick={() => copyText(detailTask?.description, 'description')}>
+              Copy
+            </Button>
+          </Box>
+          <Box sx={{
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            fontSize: 13,
+            lineHeight: 1.5,
+            bgcolor: 'grey.100',
+            border: '1px solid',
+            borderColor: 'divider',
+            borderRadius: 1,
+            p: 2,
+            maxHeight: '55vh',
+            overflow: 'auto'
+          }}>
+            {detailTask?.description || '(no description)'}
+          </Box>
+          {(detailTask?.git_url || detailTask?.deployment_url) && (
+            <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {[
+                ['Result (git)', detailTask?.git_url],
+                ['Deployment URL', detailTask?.deployment_url]
+              ].filter(([, v]) => v).map(([label, value]) => (
+                <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ minWidth: 120 }}>
+                    {label}
+                  </Typography>
+                  <Typography variant="body2" sx={{ wordBreak: 'break-all', flex: 1 }}>
+                    {value}
+                  </Typography>
+                  <IconButton size="small" onClick={() => copyText(value, label)}
+                    title={`Copy ${label}`}>
+                    <CopyIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDetailTask(null)}>Close</Button>
         </DialogActions>
       </Dialog>
     </Grid>
