@@ -1866,7 +1866,7 @@ async def get_git_file(task_id: str):
         with open(file_path, 'rb') as f:
             content = f.read()
         ext = '.' + filename.split('.')[-1] if '.' in filename else ''
-        ct = {'.md':'text/markdown','.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.yaml':'text/yaml','.yml':'text/yaml','.py':'text/x-python','.txt':'text/plain','.svg':'image/svg+xml'}.get(ext, 'application/octet-stream')
+        ct = {'.md':'text/markdown','.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.yaml':'text/yaml','.yml':'text/yaml','.py':'text/x-python','.txt':'text/plain','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.ico':'image/vnd.microsoft.icon'}.get(ext, 'application/octet-stream')
         from fastapi.responses import Response
         return Response(content=content, media_type=ct, headers={"Content-Disposition": f"inline; filename={os.path.basename(filename)}"})
     except HTTPException:

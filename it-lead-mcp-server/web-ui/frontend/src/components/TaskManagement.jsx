@@ -87,8 +87,14 @@ const TaskManagement = () => {
                   error: 'Artifact tree not found in results repo' });
   };
 
+  const isImageFile = (name) => /\.(png|jpe?g|gif|webp|ico|bmp|svg)$/i.test(name || '');
+
   const loadFileContent = async (f) => {
     setCodeView(cv => ({ ...cv, sel: f, content: 'loading…' }));
+    if (isImageFile(f.name)) {   // rendered via <img src>, no text fetch
+      setCodeView(cv => ({ ...cv, content: '' }));
+      return;
+    }
     try {
       const r = await axios.get(f.url, { responseType: 'text', transformResponse: [d => d] });
       const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2);
@@ -1023,8 +1029,10 @@ const TaskManagement = () => {
                       </Typography>
                       <Box>
                         <Button size="small" startIcon={<CopyIcon />}
-                          onClick={() => copyText(codeView.content, 'file content')}>
-                          Copy
+                          onClick={() => copyText(isImageFile(codeView.sel.name)
+                            ? window.location.origin + codeView.sel.url
+                            : codeView.content, 'file')}>
+                          {isImageFile(codeView.sel.name) ? 'Copy link' : 'Copy'}
                         </Button>
                         <Button size="small" href={codeView.sel.url} target="_blank"
                           startIcon={<OpenInNewIcon />}>
@@ -1032,6 +1040,15 @@ const TaskManagement = () => {
                         </Button>
                       </Box>
                     </Box>
+                    {isImageFile(codeView.sel.name) ? (
+                      // <img> sandbox: svg scripts do not execute in img context
+                      <Box sx={{ maxHeight: '55vh', overflow: 'auto', borderRadius: 1,
+                                 border: '1px solid', borderColor: 'divider',
+                                 bgcolor: 'grey.200', p: 1, textAlign: 'center' }}>
+                        <Box component="img" src={codeView.sel.url} alt={codeView.sel.name}
+                          sx={{ maxWidth: '100%', objectFit: 'contain' }} />
+                      </Box>
+                    ) : (
                     <Box component="pre" sx={{
                       m: 0, p: 2, fontSize: 12.5, lineHeight: 1.5,
                       bgcolor: 'grey.900', color: 'grey.100', borderRadius: 1,
@@ -1039,6 +1056,7 @@ const TaskManagement = () => {
                     }}>
                       {codeView.content}
                     </Box>
+                    )}
                   </>
                 )}
               </Box>
