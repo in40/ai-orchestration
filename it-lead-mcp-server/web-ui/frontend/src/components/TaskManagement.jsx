@@ -68,18 +68,23 @@ const TaskManagement = () => {
   const [codeView, setCodeView] = useState(null);
 
   const openCodeBrowser = async (task) => {
-    const m = (task.git_url || '').match(/results\/([^/]+)/);
-    const dir = m ? m[1] : task.id;
+    // git_url looks like ssh://…/mcp-results/tree/main/results/<task>:
+    // the leading slash matters, otherwise "mcp-results/tree" matches first.
+    const m = (task.git_url || '').match(/\/results\/([^/?#]+)/);
+    const candidates = [...new Set([m ? m[1] : null, task.id].filter(Boolean))];
+    const dir = candidates[0];
     setCodeView({ dir, files: [], loading: true, sel: null, content: '' });
-    try {
-      const r = await axios.get(`/api/git/browse/${encodeURIComponent(dir)}`);
-      const files = r.data.files || [];
-      setCodeView({ dir, files, loading: false, sel: files[0] || null, content: '' });
-      if (files[0]) loadFileContent(files[0]);
-    } catch (e) {
-      setCodeView({ dir, files: [], loading: false, sel: null, content: '',
-                    error: 'Artifact tree not found in results repo' });
+    for (const cand of candidates) {
+      try {
+        const r = await axios.get(`/api/git/browse/${encodeURIComponent(cand)}`);
+        const files = r.data.files || [];
+        setCodeView({ dir: cand, files, loading: false, sel: files[0] || null, content: '' });
+        if (files[0]) loadFileContent(files[0]);
+        return;
+      } catch (e) { /* try next candidate */ }
     }
+    setCodeView({ dir, files: [], loading: false, sel: null, content: '',
+                  error: 'Artifact tree not found in results repo' });
   };
 
   const loadFileContent = async (f) => {
