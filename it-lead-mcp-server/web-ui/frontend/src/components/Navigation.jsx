@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   AppBar, Toolbar, Typography, Button, Box, Container,
   IconButton, Badge, Menu, MenuItem,
@@ -16,6 +16,33 @@ const ClarificationBell = () => {
   const [answering, setAnswering] = useState(null);
   const [draft, setDraft] = useState({});
   const [busy, setBusy] = useState(false);
+  const seenIds = useRef(new Set());
+  const primed = useRef(false);
+
+  // short two-tone chirp via WebAudio (no audio assets needed)
+  const beep = () => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new Ctx();
+      if (ctx.state === 'suspended') return; // needs a prior user gesture
+      [880, 1245].forEach((f, i) => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = f; g.gain.value = 0.08;
+        o.start(ctx.currentTime + i * 0.18); o.stop(ctx.currentTime + i * 0.18 + 0.15);
+      });
+    } catch (e) { /* audio unavailable */ }
+  };
+
+  const systemNotify = (fresh) => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const n = new Notification(
+      `Пайплайн задаёт вопросы: ${fresh.length}`, {
+        body: fresh.map(q => `${q.field}: ${q.question}`).join('\n').slice(0, 300),
+        tag: 'clarification',
+      });
+    n.onclick = () => { window.focus(); window.location.href = '/tasks'; n.close(); };
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -29,6 +56,14 @@ const ClarificationBell = () => {
     const t = setInterval(refresh, 15000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  // system notification for NEW questions while the tab is in the background
+  useEffect(() => {
+    const fresh = items.filter(i => !seenIds.current.has(i.id));
+    items.forEach(i => seenIds.current.add(i.id));
+    if (!primed.current) { primed.current = true; return; } // skip load-time backlog
+    if (fresh.length && document.hidden) { beep(); systemNotify(fresh); }
+  }, [items]);
 
   const byTask = {};
   items.forEach(i => { (byTask[i.task_id] = byTask[i.task_id] || []).push(i); });
@@ -62,6 +97,17 @@ const ClarificationBell = () => {
       </IconButton>
       <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}
         PaperProps={{ sx: { maxWidth: 400 } }}>
+        {'Notification' in window && Notification.permission === 'default' && (
+          <MenuItem onClick={() => { Notification.requestPermission(); setAnchor(null); }}
+            sx={{ whiteSpace: 'normal', color: 'primary.main' }}>
+            🔔 Включить системные уведомления (звук + всплывающее окно)
+          </MenuItem>
+        )}
+        {'Notification' in window && Notification.permission === 'denied' && (
+          <MenuItem disabled sx={{ whiteSpace: 'normal', fontSize: 12 }}>
+            Системные уведомления заблокированы в настройках браузера
+          </MenuItem>
+        )}
         {groups.length === 0 && <MenuItem disabled>No pending questions</MenuItem>}
         {groups.map(([tid, qs]) => (
           <MenuItem key={tid} onClick={() => openAnswer(tid, qs)}
