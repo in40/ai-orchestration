@@ -105,7 +105,8 @@ const ClarificationBell = () => {
         )}
         {'Notification' in window && Notification.permission === 'denied' && (
           <MenuItem disabled sx={{ whiteSpace: 'normal', fontSize: 12 }}>
-            Системные уведомления заблокированы в настройках браузера
+            Системные уведомления заблокированы: откройте интерфейс по https://…
+            (на http браузер их запрещает всегда) и разрешите их в настройках сайта
           </MenuItem>
         )}
         {groups.length === 0 && <MenuItem disabled>No pending questions</MenuItem>}
