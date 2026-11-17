@@ -509,8 +509,10 @@ const TaskManagement = () => {
                           <BuildIcon />
                         </IconButton>
                       )}
-                      {/* Request Rework Button - shows for completed tasks that need rework */}
-                      {(task.status === 'done' || task.status === 'failed') && (
+                      {/* Request Rework Button - completed/failed/rejected tasks can all be
+                          reworked: needs_revision means a gate rejected the artifact and the
+                          requestor's next move IS a rework (backend allows it too) */}
+                      {['done', 'completed', 'failed', 'needs_revision'].includes(task.status) && (
                         <IconButton
                           color="warning"
                           aria-label="request rework"
