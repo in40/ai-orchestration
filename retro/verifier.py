@@ -9,8 +9,9 @@ reached a terminal state since the change and the rate dropped by more
 than DROP_TOLERANCE, the MOST RECENT such change is git-reverted (one
 revert per night to avoid cascades), the proposal is marked 'reverted'
 and a digest row notifies the bell. Changes that survive WATCH_DAYS are
-'marked settled'. The verifier never touches gates/security - only
-commits made by the retro applier.
+'marked settled'. M6 self-fix merges (selffix.status='merged') are
+watched identically and reverted the same way. The verifier never
+touches gates/security - only commits made by the applier/self-fix.
 """
 import json
 import os
@@ -43,7 +44,17 @@ def main():
                 "FROM retro_proposals WHERE status='applied' AND commit_sha IS NOT NULL "
                 "AND applied_at > now() - (%s || ' days')::interval "
                 "ORDER BY applied_at DESC", (str(WATCH_DAYS),))
-    watched = cur.fetchall()
+    watched = [("retro", r[0], r[1], r[2], r[3], r[4]) for r in cur.fetchall()]
+
+    # M6: human-approved self-fix merges are watched the same way
+    cur.execute("SELECT to_regclass('public.selffix') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT id, area || ' fix ' || task_id, merge_commit, "
+                    "metric_before::text, applied_at::timestamp AT TIME ZONE 'UTC' "
+                    "FROM selffix WHERE status='merged' AND merge_commit IS NOT NULL "
+                    "AND applied_at > now() - (%s || ' days')::interval", (str(WATCH_DAYS),))
+        watched += [("selffix", r[0], r[1], r[2], r[3], r[4]) for r in cur.fetchall()]
+    watched.sort(key=lambda w: w[5] or 0, reverse=True)
 
     # graduate old changes
     cur.execute("UPDATE retro_proposals SET status='settled', "
@@ -53,11 +64,20 @@ def main():
     if cur.rowcount:
         print(f"settled: {cur.rowcount}")
 
+    cur.execute("SELECT to_regclass('public.selffix') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute("UPDATE selffix SET status='settled', "
+                    "result=(coalesce(result,'') || ' | settled after watch window') "
+                    "WHERE status='merged' AND merge_commit IS NOT NULL "
+                    "AND applied_at < now() - (%s || ' days')::interval", (str(WATCH_DAYS),))
+        if cur.rowcount:
+            print(f"selffix settled: {cur.rowcount}")
+
     cur.execute("SELECT count(*) FROM task_registry WHERE status IN "
                 "('done','failed','needs_revision') AND created_at > now() - interval '7 days'")
     current = _baseline_metric(cur)
     reverted_any = False
-    for pid, title, sha, mb_raw, applied in watched:
+    for kind, pid, title, sha, mb_raw, applied in watched:
         if reverted_any:
             break  # one revert per night
         try:
@@ -74,14 +94,15 @@ def main():
         if current["rate"] < mb["rate"] - DROP_TOLERANCE:
             r = subprocess.run(["git", "-C", REPO, "revert", "--no-edit", sha],
                                capture_output=True, text=True)
+            table = "retro_proposals" if kind == "retro" else "selffix"
             if r.returncode != 0:
-                cur.execute("UPDATE retro_proposals SET status='revert_failed', "
-                            "result=%s WHERE id=%s",
+                cur.execute(f"UPDATE {table} SET status='revert_failed', result=%s "
+                            "WHERE id=%s",
                             (("git revert failed: " + (r.stderr or r.stdout)[-160]), pid))
                 digest = (f"⚠️ Retro: авто-revert НЕ УДАЛСЯ для «{title}» "
                           f"(метрика {mb['rate']}→{current['rate']}). Нужен человек.")
             else:
-                cur.execute("UPDATE retro_proposals SET status='reverted', result=%s "
+                cur.execute(f"UPDATE {table} SET status='reverted', result=%s "
                             "WHERE id=%s",
                             ((f"auto-reverted: rate {mb['rate']} -> {current['rate']} "
                               f"over {tasks_since} tasks"), pid))
@@ -89,7 +110,7 @@ def main():
                           f"упала {mb['rate']} → {current['rate']} за {tasks_since} задач")
                 reverted_any = True
             cur.execute("INSERT INTO retro_reports(digest, metrics) VALUES (%s, %s)",
-                        (digest, json.dumps({"verifier": True, "proposal": pid})))
+                        (digest, json.dumps({"verifier": True, kind: pid})))
             print(digest)
     conn.commit()
     cur.close()

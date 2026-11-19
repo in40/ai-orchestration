@@ -96,6 +96,44 @@ class HumanInterfaceHandlers:
                                 "required": ["task_id"]}
             },
             {
+                "name": "request_self_fix",
+                "description": "File a complaint about the platform's own UI/code; the "
+                               "team fixes a whitelisted snapshot and the diff awaits "
+                               "human approval in the bell.",
+                "inputSchema": {"type": "object", "properties": {
+                    "complaint": {"type": "string"},
+                    "area": {"type": "string", "description": "whitelisted area, e.g. web-ui-frontend"}},
+                    "required": ["complaint"]}
+            },
+            {
+                "name": "get_selffix_queue",
+                "description": "Self-fix items: diffs awaiting review plus recent history.",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "get_selffix_diff",
+                "description": "Full diff text of one self-fix item.",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"}},
+                                "required": ["id"]}
+            },
+            {
+                "name": "approve_selffix",
+                "description": "Merge an approved self-fix diff into the live repo "
+                               "(whitelist re-checked; verifier watches the commit).",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"}},
+                                "required": ["id"]}
+            },
+            {
+                "name": "reject_selffix",
+                "description": "Reject a self-fix diff with a short reason.",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"},
+                                               "reason": {"type": "string"}},
+                                "required": ["id"]}
+            },
+            {
                 "name": "get_retro_digest",
                 "description": "Latest nightly retro report: team health snapshot "
                                "(tasks/gates/reworks/stuck) for the notification bell.",
@@ -180,6 +218,29 @@ class HumanInterfaceHandlers:
             return {"success": True}
         elif tool_name == "get_retro_digest":
             return self._get_retro_digest(arguments)
+        elif tool_name == "request_self_fix":
+            from ..utils import self_fix
+            return self_fix.file_self_fix(
+                self.task_storage.connection,
+                arguments.get("complaint", ""),
+                arguments.get("area", "web-ui-frontend"),
+                self.task_assignment_manager,
+                log_activity=self.task_assignment_manager._log_activity
+                if self.task_assignment_manager else None)
+        elif tool_name == "get_selffix_queue":
+            from ..utils import self_fix
+            return {"success": True, "items": self_fix.list_queue(self.task_storage.connection)}
+        elif tool_name == "get_selffix_diff":
+            from ..utils import self_fix
+            return {"success": True, "diff": self_fix.get_diff(
+                self.task_storage.connection, int(arguments.get("id", 0)))}
+        elif tool_name == "approve_selffix":
+            from ..utils import self_fix
+            return self_fix.approve(self.task_storage.connection, int(arguments.get("id", 0)))
+        elif tool_name == "reject_selffix":
+            from ..utils import self_fix
+            return self_fix.reject(self.task_storage.connection, int(arguments.get("id", 0)),
+                                   str(arguments.get("reason", "")))
         elif tool_name == "get_deploy_env":
             task = self.task_storage.get_task(arguments.get("task_id", "")) if self.task_storage else None
             md = (task or {}).get("metadata") or {}

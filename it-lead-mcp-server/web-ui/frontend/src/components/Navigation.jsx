@@ -15,8 +15,14 @@ const ClarificationBell = () => {
   const [items, setItems] = useState([]);
   const [digest, setDigest] = useState(null);
   const [proposals, setProposals] = useState([]);
+  const [selffix, setSelffix] = useState([]);
+  const [sfDiff, setSfDiff] = useState({});
+  const [fixDialog, setFixDialog] = useState(false);
+  const [fixText, setFixText] = useState('');
+  const [fixBusy, setFixBusy] = useState(false);
   const seenProposals = useRef(null);
   const seenDigest = useRef(null);
+  const seenSelffix = useRef(null);
   const [anchor, setAnchor] = useState(null);
   const [answering, setAnswering] = useState(null);
   const [draft, setDraft] = useState({});
@@ -62,6 +68,10 @@ const ClarificationBell = () => {
     try {
       const p = await axios.get('/api/retro/proposals');
       setProposals((p.data.proposals || []).filter(x => x.status === 'proposed'));
+    } catch (e) { /* ignore */ }
+    try {
+      const s = await axios.get('/api/selffix');
+      setSelffix((s.data.items || []).filter(x => x.status === 'review'));
     } catch (e) { /* ignore */ }
   }, []);
 
@@ -114,6 +124,55 @@ const ClarificationBell = () => {
     }
   }, [proposals]);
 
+  // self-fix diffs awaiting review -> notify once per set
+  useEffect(() => {
+    const ids = selffix.map(p => p.id).sort().join(',');
+    if (seenSelffix.current === null) { seenSelffix.current = ids; return; }
+    if (ids && ids !== seenSelffix.current && document.hidden) {
+      seenSelffix.current = ids;
+      beep();
+      if ('Notification' in window && Notification.permission === 'granted') {
+        const n = new Notification(`Self-fix: диффов ждёт ревью: ${selffix.length}`, {
+          body: selffix.map(p => p.diff_stat || p.complaint).join('\n').slice(0, 300),
+          tag: 'selffix' });
+        n.onclick = () => { window.focus(); n.close(); };
+      }
+    } else {
+      seenSelffix.current = ids;
+    }
+  }, [selffix]);
+
+  const decideSelffix = async (id, action) => {
+    try {
+      const r = await axios.post(`/api/selffix/${id}/${action}`);
+      if (action === 'approve' && r.data && r.data.success === false) {
+        alert('Мерж не состоялся: ' + (r.data.error || ''));
+      }
+      refresh();
+    } catch (e) {
+      alert('Не удалось: ' + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  const showSelffixDiff = async (id) => {
+    if (sfDiff[id]) { setSfDiff(d => { const n = { ...d }; delete n[id]; return n; }); return; }
+    try {
+      const r = await axios.get(`/api/selffix/${id}/diff`);
+      setSfDiff(d => ({ ...d, [id]: (r.data.diff || '').slice(0, 20000) }));
+    } catch (e) { setSfDiff(d => ({ ...d, [id]: 'diff unavailable' })); }
+  };
+
+  const fileSelfFix = async () => {
+    setFixBusy(true);
+    try {
+      await axios.post('/api/selffix', { complaint: fixText });
+      setFixDialog(false); setFixText(''); refresh();
+    } catch (e) {
+      alert('Не удалось: ' + (e.response?.data?.detail || e.message));
+    }
+    setFixBusy(false);
+  };
+
   const decide = async (id, action) => {
     try {
       await axios.post(`/api/retro/proposals/${id}/${action}`);
@@ -159,7 +218,7 @@ const ClarificationBell = () => {
     <>
       <IconButton color="inherit" aria-label="clarification requests"
         onClick={(e) => { setAnchor(e.currentTarget); refresh(); }}>
-        <Badge badgeContent={items.length + proposals.length} color="error">
+        <Badge badgeContent={items.length + proposals.length + selffix.length} color="error">
           <BellIcon />
         </Badge>
       </IconButton>
@@ -190,8 +249,43 @@ const ClarificationBell = () => {
             (на http браузер их запрещает всегда) и разрешите их в настройках сайта
           </MenuItem>
         )}
-        {groups.length === 0 && proposals.length === 0 &&
+        {groups.length === 0 && proposals.length === 0 && selffix.length === 0 &&
           <MenuItem disabled>No pending questions</MenuItem>}
+        <MenuItem onClick={() => { setAnchor(null); setFixDialog(true); }}
+          sx={{ color: 'primary.main', fontSize: 13 }}>
+          🔧 Заявить проблему интерфейсу (self-fix)
+        </MenuItem>
+        {selffix.map(p => (
+          <Box key={p.id} sx={{ px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+            <Typography variant="subtitle2">
+              <Chip label="self-fix" size="small" color="secondary"
+                sx={{ mr: 1, height: 20, fontSize: 11 }} />
+              {p.area}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+              {(p.complaint || '').slice(0, 200)}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', fontFamily: 'monospace' }}>
+              {p.diff_stat}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, mt: 0.75 }}>
+              <Button size="small" onClick={() => showSelffixDiff(p.id)}>
+                {sfDiff[p.id] ? 'Скрыть diff' : 'Показать diff'}
+              </Button>
+              <Button size="small" variant="contained" onClick={() => decideSelffix(p.id, 'approve')}>
+                Одобрить
+              </Button>
+              <Button size="small" onClick={() => decideSelffix(p.id, 'reject')}>Отклонить</Button>
+            </Box>
+            {sfDiff[p.id] && (
+              <Box component="pre" sx={{
+                mt: 0.75, p: 1, bgcolor: 'grey.900', color: 'grey.100', fontSize: 11,
+                maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {sfDiff[p.id]}
+              </Box>
+            )}
+          </Box>
+        ))}
         {proposals.map(p => (
           <Box key={p.id} sx={{ px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
             <Typography variant="subtitle2">
@@ -267,6 +361,26 @@ const ClarificationBell = () => {
           <Button variant="contained" disabled={busy ||
             !Object.values(draft).some(v => v.trim())} onClick={submit}>
             Send answers
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={fixDialog} onClose={() => setFixDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Заявить проблему интерфейсу</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Команда сделает снимок UI-кода, починит копию, прогонит гейты — diff
+            придёт сюда на ревью. В живой репозиторий попадёт только после «Одобрить».
+          </Typography>
+          <TextField
+            fullWidth multiline minRows={4} size="small"
+            placeholder="Опишите, что не так: вкладка, что видно, что должно быть…"
+            value={fixText} onChange={e => setFixText(e.target.value)} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFixDialog(false)}>Cancel</Button>
+          <Button variant="contained" disabled={fixBusy || fixText.trim().length < 10}
+            onClick={fileSelfFix}>
+            Запустить self-fix
           </Button>
         </DialogActions>
       </Dialog>

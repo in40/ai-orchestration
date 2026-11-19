@@ -889,6 +889,36 @@ async def reject_retro_proposal(pid: int, body: dict = None):
                                {"id": pid, "reason": (body or {}).get("reason", "")})
 
 
+@app.get("/api/selffix")
+async def get_selffix_queue():
+    """Self-fix items: diffs awaiting review plus recent history."""
+    return await _it_lead_tool("get_selffix_queue", {})
+
+
+@app.post("/api/selffix")
+async def file_self_fix(body: dict):
+    """File a complaint about the platform itself; team fixes a snapshot."""
+    return await _it_lead_tool("request_self_fix", {
+        "complaint": body.get("complaint", ""),
+        "area": body.get("area", "web-ui-frontend")})
+
+
+@app.get("/api/selffix/{sid}/diff")
+async def get_selffix_diff(sid: int):
+    return await _it_lead_tool("get_selffix_diff", {"id": sid})
+
+
+@app.post("/api/selffix/{sid}/approve")
+async def approve_selffix(sid: int):
+    return await _it_lead_tool("approve_selffix", {"id": sid})
+
+
+@app.post("/api/selffix/{sid}/reject")
+async def reject_selffix(sid: int, body: dict = None):
+    return await _it_lead_tool("reject_selffix",
+                               {"id": sid, "reason": (body or {}).get("reason", "")})
+
+
 @app.post("/api/tasks/{task_id}/clarify")
 async def answer_clarification_endpoint(task_id: str, body: ClarificationAnswer):
     """Deliver the requestor's answers; the paused pipeline resumes planning."""
@@ -2232,7 +2262,15 @@ async def delete_deployment(task_id: str):
             delete_result = delete_response.json()
             if "error" in delete_result.get("result", {}):
                 raise HTTPException(status_code=500, detail=delete_result["result"]["error"])
-            
+
+            # The container is gone: clear deployment_url on the task, otherwise
+            # the Tasks-tab redeploy button (git_url && !deployment_url) never
+            # appears after a delete.
+            try:
+                await _it_lead_tool("clear_deployment_url", {"task_id": task_id})
+            except Exception as e:
+                logger.warning(f"clear_deployment_url after delete failed: {e}")
+
             return {
                 "success": True,
                 "message": "Deployment deleted successfully"

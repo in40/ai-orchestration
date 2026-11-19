@@ -130,8 +130,21 @@ class QaEngineerServerHandlers(McpServerHandlers):
         workdir = os.path.join(tempfile.gettempdir(), f"qa-{uuid}")
         shutil.rmtree(workdir, ignore_errors=True)
         os.makedirs(workdir)
-        subprocess.run(["git", "clone", "--depth", "1", DEFAULT_RESULTS_REPO, workdir],
-                       check=True, capture_output=True, timeout=60)
+        # Partial+sparse clone: fetch only results/<uuid> blobs. A plain
+        # --depth 1 clone of the whole results tree can exceed a minute and
+        # used to fail the smoke at stage=fetch for perfectly good code.
+        try:
+            subprocess.run(["git", "clone", "--depth", "1", "--filter=blob:none",
+                            "--sparse", "-q", DEFAULT_RESULTS_REPO, workdir],
+                           check=True, capture_output=True, timeout=180)
+            subprocess.run(["git", "-C", workdir, "sparse-checkout", "set",
+                            f"results/{uuid}"],
+                           check=True, capture_output=True, timeout=180)
+        except Exception:
+            shutil.rmtree(workdir, ignore_errors=True)
+            os.makedirs(workdir)
+            subprocess.run(["git", "clone", "--depth", "1", DEFAULT_RESULTS_REPO, workdir],
+                           check=True, capture_output=True, timeout=300)
         result_dir = os.path.join(workdir, "results", uuid)
         if not os.path.isdir(result_dir):
             raise FileNotFoundError(f"results/{uuid} not found in repo")

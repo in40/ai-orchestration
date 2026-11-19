@@ -1092,6 +1092,8 @@ class TaskAssignmentManager:
                     self._update_task_status(task_id, "needs_revision",
                                              f"client acceptance failed against {url}: {acc_out[:300]}")
                     return
+                if self._finalize_selffix(task_id):
+                    return
                 self._update_task_status(task_id, "done",
                                          ("Rework deliverable: gates passed, redeployed at " + url
                                           if prebuilt_git_url else
@@ -1101,10 +1103,45 @@ class TaskAssignmentManager:
             self._update_task_status(task_id, "needs_revision",
                                      f"deploy failed: {str(dep)[:200]}")
             return
+        if self._finalize_selffix(task_id):
+            return
         self._update_task_status(task_id, "done",
                                  ("Rework deliverable: gates passed (no deploy expected)"
                                   if prebuilt_git_url else
                                   f"Multi-file deliverable: {len(results or file_manifest)} files, QA passed"))
+
+    def _finalize_selffix(self, task_id) -> bool:
+        """M6: if this rework was a self-fix over a snapshot, compute the
+        review diff and park the task in 'review' for the human instead of
+        closing it as done."""
+        try:
+            with self.task_storage.connection.cursor() as cur:
+                cur.execute("SELECT metadata->>'selffix_area' FROM task_registry "
+                            "WHERE task_id=%s", (task_id,))
+                row = cur.fetchone()
+            area = row and row[0]
+        except Exception:
+            area = None
+        if not area:
+            return False
+        try:
+            from . import self_fix
+            res = self_fix.finalize(self.task_storage.connection, task_id)
+        except Exception as e:
+            self._log_activity(task_id, "selffix_error", agent="it-lead",
+                               detail=str(e)[:200])
+            res = None
+        if res == "review":
+            self._update_task_status(
+                task_id, "review", "self-fix diff ready for human review (bell)")
+            self._log_activity(task_id, "selffix_review", agent="it-lead",
+                               detail=f"area={area}, awaiting approval")
+        elif res == "failed":
+            self._update_task_status(task_id, "needs_revision",
+                                     "self-fix produced no diff")
+            self._log_activity(task_id, "selffix_no_diff", agent="it-lead",
+                               detail=f"area={area}")
+        return res is not None
 
     def _capture_screenshot(self, task_id, url, stage="deploy"):
         """V1 visual evidence: headless screenshot of a live URL. PNGs live
@@ -3142,6 +3179,22 @@ Please generate the complete, corrected code with proper {metadata.get('language
                                          f"rework error: {str(e)[:200]}")
             except Exception:
                 pass
+        # M6: if this was a self-fix and the rework died (gate fail / error),
+        # close the selffix row too - otherwise it hangs in 'fixing' forever
+        try:
+            fin = self.task_storage.get_task(task_id) or {}
+            if fin.get("status") not in ("done", "review"):
+                from . import self_fix
+                with self.task_storage.connection.cursor() as c:
+                    c.execute("SELECT 1 FROM task_registry WHERE task_id=%s "
+                              "AND metadata->>'selffix_area' IS NOT NULL", (task_id,))
+                    if c.fetchone():
+                        self_fix.fail(self.task_storage.connection, task_id,
+                                      fin.get("status_reason") or fin.get("status"))
+                        self._log_activity(task_id, "selffix_failed", agent="it-lead",
+                                           detail=str(fin.get("status"))[:150])
+        except Exception:
+            pass
 
     def _forward_to_code_reviewer(self, parent_task_id: str, code_git_url: str, original_prompt: str):
         """Forward code to Code Reviewer for review before deployment.
