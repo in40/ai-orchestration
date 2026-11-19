@@ -26,6 +26,27 @@ def _db():
     return psycopg2.connect(**DB)
 
 
+def _baseline_metric(cur):
+    """done-without-rework share over the last 7 days - the primary health
+    metric (chosen so it cannot be gamed by suppressing gate failures)."""
+    cur.execute("SELECT status, activity::text FROM task_registry "
+                "WHERE created_at > now() - interval '7 days'")
+    done = no_rework = 0
+    for status, act in cur.fetchall():
+        import json as _json
+        try:
+            events = _json.loads(act) if isinstance(act, str) else (act or [])
+        except Exception:
+            events = []
+        if status == "done":
+            done += 1
+            if not any(isinstance(e, dict) and e.get("event") == "rework_requested"
+                       for e in events):
+                no_rework += 1
+    return {"done": done, "done_no_rework": no_rework,
+            "rate": round(no_rework / done, 3) if done else None}
+
+
 def apply_proposal(pid: int) -> dict:
     conn = _db()
     cur = conn.cursor()
@@ -47,7 +68,16 @@ def apply_proposal(pid: int) -> dict:
             subprocess.run(["git", "-C", REPO, "commit", "-q",
                             "-m", f"feat(retro): approved convention - {title[:60]}"],
                            check=True)
-            result = f"appended to {os.path.basename(TARGETS[ctype])}, committed"
+            sha = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"],
+                                 capture_output=True, text=True).stdout.strip()
+            result = f"appended to {os.path.basename(TARGETS[ctype])}, committed {sha[:8]}"
+            cur.execute("UPDATE retro_proposals SET status='applied', result=%s, "
+                        "commit_sha=%s, metric_before=%s::jsonb, applied_at=now() "
+                        "WHERE id=%s",
+                        (result, sha,
+                         json.dumps(_baseline_metric(cur), ensure_ascii=False), pid))
+            conn.commit()
+            return {"success": True, "result": result}
         elif ctype == "hire":
             result = "hire task creation is queued (M4)"  # M2: approval recorded
         else:

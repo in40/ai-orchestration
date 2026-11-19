@@ -448,6 +448,9 @@ class HumanInterfaceHandlers:
                 "WHERE metadata::jsonb->'clarifications' IS NOT NULL "
                 "ORDER BY updated_at DESC LIMIT 200")
             rows = cursor.fetchall()
+            # commit: release the transaction lock - an idle-in-transaction
+            # shared connection blocks retro's ALTER TABLEs
+            self.task_storage.connection.commit()
             cursor.close()
         except Exception as e:
             return {"success": False, "error": str(e), "clarifications": []}
@@ -473,6 +476,7 @@ class HumanInterfaceHandlers:
             cursor.execute("SELECT EXTRACT(EPOCH FROM ts), digest, metrics::text "
                            "FROM retro_reports ORDER BY ts DESC LIMIT 1")
             row = cursor.fetchone()
+            self.task_storage.connection.commit()
             cursor.close()
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -494,6 +498,7 @@ class HumanInterfaceHandlers:
                 "WHERE status = 'proposed' OR ts > now() - interval '3 days' "
                 "ORDER BY id DESC LIMIT 20")
             rows = cursor.fetchall()
+            self.task_storage.connection.commit()
             cursor.close()
         except Exception as e:
             return {"success": True, "proposals": [], "note": str(e)[:120]}

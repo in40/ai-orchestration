@@ -401,3 +401,15 @@ plan time (no restarts; revert = git revert). R2 hire -> approval recorded
 (task creation in M4). Applier whitelist-only: cannot touch gates,
 security or retro itself. Live test: 3 proposals generated, #1 approved
 via API -> committed f52beb1.
+
+## Retro M3: Verifier ✅
+Canary over the live task stream: each applied convention stores
+commit_sha + baseline done-without-rework rate; nightly verifier compares
+with current 7d rate - if >=5 terminal tasks since apply and the rate
+dropped >0.15, the most recent change is git-reverted (one per night),
+proposal marked reverted, digest row -> bell notification. Changes that
+survive 14 days graduate to settled. Golden eval suite (retro/evals.json
++ eval_runner.py) frozen, manual: python3 retro/eval_runner.py. Fixed:
+IT Lead retro/clarification getters now commit after SELECT (idle-in-
+transaction was blocking ALTER TABLE). Live: proposal#1 watched,
+metric 0.765 == baseline -> no action.
