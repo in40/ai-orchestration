@@ -1404,10 +1404,15 @@ Overall project goal:
                     "  HTML must reference assets relatively (static/... NOT /static/...), and\n"
                     "  client-side fetch paths must be relative or derived from location.pathname.\n"
                     "- README.md must document the ACTUAL run command and endpoints.\n")
-                try:  # retro M2: learned conventions, read at build time (no restart needed)
-                    _rc = Path("/root/qwen/base/retro/conventions.md")
-                    if _rc.exists():
-                        agents_text += "\n## Learned conventions (retro)\n" + _rc.read_text()[:4000]
+                try:  # retro M2: learned conventions travel with the request
+                    # (MCP argument); the shared-file read remains as fallback
+                    _conv = str(arguments.get("conventions") or "")
+                    if not _conv.strip():
+                        _rc = Path("/root/qwen/base/retro/conventions.md")
+                        if _rc.exists():
+                            _conv = _rc.read_text()[:4000]
+                    if _conv.strip():
+                        agents_text += "\n## Learned conventions (retro)\n" + _conv[:4000]
                 except Exception:
                     pass
                 (ws / "AGENTS.md").write_text(agents_text)

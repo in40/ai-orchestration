@@ -19,7 +19,10 @@ class McpRegistryClient:
     not direct DB access or hardcoded lists.
     """
 
-    def __init__(self, registry_endpoint: str = "http://127.0.0.1:3031/mcp"):
+    def __init__(self, registry_endpoint: str = None):
+        import os as _os
+        registry_endpoint = registry_endpoint or _os.environ.get(
+            "MCP_REGISTRY_URL", "http://127.0.0.1:3031/mcp")
         """
         Initialize MCP Registry Client
 

@@ -1091,22 +1091,10 @@ CMD ["/bin/sh", "-c", "{run}"]
         # Operator-set runtime env survives contract re-planning and redeploys:
         # task metadata.deploy_env overrides the planned env (e.g. a backend URL
         # the planner cannot know). Lost LANGFLOW_BASE_URL postmortem, 2026-11-16.
-        try:
-            import json as _json
-            import psycopg2 as _pg
-            _c = _pg.connect(host="127.0.0.1", database="mcp_registry",
-                             user="postgres", password="postgres")
-            _cur = _c.cursor()
-            _cur.execute("SELECT metadata::jsonb->>'deploy_env' FROM task_registry "
-                         "WHERE task_id = %s", (task_id,))
-            _row = _cur.fetchone()
-            _c.close()
-            extra = _json.loads(_row[0]) if _row and _row[0] else None
-            if isinstance(extra, dict) and extra:
-                rc["env"] = {**(rc.get("env") or {}), **extra}
-                deployment_logger.info(f"deploy_env merged from task metadata: {sorted(extra)}")
-        except Exception as _e:
-            deployment_logger.warning(f"deploy_env merge skipped: {_e}")
+        extra = self._get_deploy_env(task_id)
+        if extra:
+            rc["env"] = {**(rc.get("env") or {}), **extra}
+            deployment_logger.info(f"deploy_env merged from task metadata: {sorted(extra)}")
         if rc.get("kind") in ("service", "cli", "static"):
             hc = rc.get("healthcheck") or {}
             if hc.get("port"):
@@ -1245,21 +1233,45 @@ CMD ["python", "-m", "http.server", "{container_port}"]
             "message": f"Static application deployed at {deployment_url}"
         }
 
-    def _clear_deployment_url(self, task_id):
-        """After stop/delete there is no live deployment: drop the stale
-        deployment_url from task metadata so the UI offers Redeploy again
-        (the button is conditioned on its absence)."""
+    def _it_lead_tool(self, name, arguments, timeout=10):
+        """Call an IT Lead MCP tool (task owner) instead of reaching into its DB."""
+        import os as _os
+        import requests as _rq
+        url = _os.environ.get("IT_LEAD_MCP_URL", "http://127.0.0.1:3061/mcp")
+        r = _rq.post(url, json={"jsonrpc": "2.0", "id": f"devops-{name}",
+                                "method": "tools/call",
+                                "params": {"name": name, "arguments": arguments}},
+                     timeout=timeout)
+        out = r.json().get("result", {})
+        if isinstance(out, dict) and isinstance(out.get("result"), dict):
+            out = out["result"]
+        return out if isinstance(out, dict) else {}
+
+    def _get_deploy_env(self, task_id):
+        """Runtime env from the task owner via MCP; direct SQL only as a
+        fallback so a devops box needs no DB credentials in the norm."""
+        import json as _json
         try:
-            import psycopg2 as _pg
-            _c = _pg.connect(host="127.0.0.1", database="mcp_registry",
-                             user="postgres", password="postgres")
-            _cur = _c.cursor()
-            _cur.execute("UPDATE task_registry SET metadata = metadata::jsonb - 'deployment_url' "
-                         "WHERE task_id = %s", (task_id,))
-            _c.commit()
-            _c.close()
+            env = self._it_lead_tool("get_deploy_env", {"task_id": task_id}).get("env")
+            if isinstance(env, dict):
+                return env
         except Exception as e:
-            deployment_logger.warning(f"clear deployment_url failed for {task_id}: {e}")
+            deployment_logger.info(f"get_deploy_env via MCP failed ({e}), direct read")
+        try:
+            self._it_lead_tool("clear_deployment_url", {"task_id": task_id})
+        except Exception as e:
+            deployment_logger.info(f"clear_deployment_url via MCP failed ({e}), direct write")
+            try:
+                import psycopg2 as _pg
+                _c = _pg.connect(host="127.0.0.1", database="mcp_registry",
+                             user="postgres", password="postgres")
+                _cur = _c.cursor()
+                _cur.execute("UPDATE task_registry SET metadata = metadata::jsonb - 'deployment_url' "
+                             "WHERE task_id = %s", (task_id,))
+                _c.commit()
+                _c.close()
+            except Exception as e2:
+                deployment_logger.warning(f"clear deployment_url failed for {task_id}: {e2}")
 
     def _stop_deployment(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Stop a deployment (keep container for restart)"""

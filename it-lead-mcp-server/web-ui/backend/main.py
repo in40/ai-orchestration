@@ -202,7 +202,7 @@ async def refresh_agent_status_from_it_lead():
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Call the registry server directly (assuming it's on port 3031)
             registry_response = await client.post(
-                f"http://127.0.0.1:3031/mcp",  # Registry server address
+                os.environ.get("MCP_REGISTRY_URL", "http://127.0.0.1:3031/mcp"),
                 json={
                     "jsonrpc": "2.0",
                     "id": "list_services",

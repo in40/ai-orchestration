@@ -58,6 +58,18 @@ class QaEngineerServerHandlers(McpServerHandlers):
         })
 
         self.tools.append({
+            "name": "invalidate_contract",
+            "description": "Drop the cached run contract for a task (the artifact tree "
+                           "changed - rework/redeploy - so the contract must be re-planned). "
+                           "Callers go through this tool instead of deleting cache files.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+            },
+        })
+
+        self.tools.append({
             "name": "plan_run_contract",
             "description": "Read a task's artifact tree and decide how to install, run and "
                            "health-check it (LLM reads README + entry files). Returns a run "
@@ -97,6 +109,13 @@ class QaEngineerServerHandlers(McpServerHandlers):
             return self._smoke_run(arguments)
         if name == "plan_run_contract":
             return self._plan_run_contract(arguments)
+        if name == "invalidate_contract":
+            try:
+                os.remove(os.path.join(tempfile.gettempdir(), "qa-contracts",
+                                       f"{arguments['task_id']}.json"))
+                return {"success": True, "invalidated": arguments["task_id"]}
+            except OSError:
+                return {"success": True, "invalidated": False}
         if name == "visual_review":
             return self._visual_review(arguments)
         return super()._execute_tool(tool, arguments)

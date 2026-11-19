@@ -90,6 +90,29 @@ class TaskAssignmentManager:
         except Exception as e:
             print(f"⚠️ Error initializing result router: {e}")
 
+    def _invalidate_qa_contract(self, task_id):
+        """Ask QA to drop its cached run contract via MCP (QA owns that cache);
+        local file removal only as a fallback for older QA builds."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+            ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                       for s in services if isinstance(s, dict)
+                       and "qa engineer" in (s.get("name") or "").lower()
+                       and s.get("endpoint")), None)
+            if ep:
+                requests.post(ep, json={"jsonrpc": "2.0", "id": f"inval-{task_id}",
+                                        "method": "tools/call",
+                                        "params": {"name": "invalidate_contract",
+                                                   "arguments": {"task_id": task_id}}},
+                              timeout=15)
+                return
+        except Exception as e:
+            print(f"⚠️ invalidate_contract via MCP failed: {e}")
+        try:
+            os.remove(f"/tmp/qa-contracts/{task_id}.json")
+        except OSError:
+            pass
+
     def _run_qa_gate(self, task_id: str, git_url: str, async_task_id: str,
                      answers_text: str = ""):
         """Run QA validate_artifact + smoke_run on a coder artifact.
@@ -681,6 +704,15 @@ class TaskAssignmentManager:
             time.sleep(5)
         return False, last
 
+    def _retro_conventions_text(self):
+        """Retro skill library travels with the build request (MCP argument),
+        so the coder host needs no shared filesystem with IT Lead."""
+        try:
+            with open("/root/qwen/base/retro/conventions.md") as f:
+                return f.read()[:4000]
+        except Exception:
+            return ""
+
     def _build_via_opencode(self, task_id, task_description, file_manifest,
                             coder_endpoint, metadata, base_tree=None):
         """Phase A: one opencode coder session for the whole manifest.
@@ -707,6 +739,7 @@ class TaskAssignmentManager:
                         "task_id": task_id, "manifest": manifest_str,
                         "project_description": task_description,
                         "spec_context": (metadata or {}).get("spec_context", ""),
+                        "conventions": self._retro_conventions_text(),
                         **({"base_tree": base_tree,
                             "fix_instructions": task_description} if base_tree else {})}}},
                     timeout=3600)
@@ -979,10 +1012,7 @@ class TaskAssignmentManager:
                     return
                 self._log_activity(task_id, "clarification_resumed", agent="it-lead",
                                    detail="QA contract re-planned with requestor answers")
-                try:
-                    os.remove(f"/tmp/qa-contracts/{task_id}.json")
-                except OSError:
-                    pass
+                self._invalidate_qa_contract(task_id)
                 qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id,
                                                    answers_text=self._answers_text(task_id))
         self._log_activity(task_id, "qa_gate", agent="qa-engineer",
@@ -3080,12 +3110,9 @@ Please generate the complete, corrected code with proper {metadata.get('language
                                          "rework failed: implementation-engineer unavailable")
                 return
             coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
-            try:
-                os.remove(f"/tmp/qa-contracts/{task_id}.json")
-                self._log_activity(task_id, "contract_invalidated", agent="it-lead",
-                                   detail="stale run contract dropped before rework")
-            except OSError:
-                pass
+            self._invalidate_qa_contract(task_id)
+            self._log_activity(task_id, "contract_invalidated", agent="it-lead",
+                               detail="stale run contract dropped before rework")
             if base_git_url:
                 git_url = self._build_via_opencode(task_id, rework_prompt, [],
                                                    coder_endpoint, {}, base_tree=base_git_url)

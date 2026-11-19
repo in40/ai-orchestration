@@ -77,6 +77,25 @@ class HumanInterfaceHandlers:
                 "inputSchema": {"type": "object", "properties": {}}
             },
             {
+                "name": "get_deploy_env",
+                "description": "Runtime env vars the requestor set for a task "
+                               "(metadata.deploy_env). DevOps merges these into the "
+                               "container environment at deploy; exposed as a tool so "
+                               "other services never read the task DB directly.",
+                "inputSchema": {"type": "object",
+                                "properties": {"task_id": {"type": "string"}},
+                                "required": ["task_id"]}
+            },
+            {
+                "name": "clear_deployment_url",
+                "description": "Drop deployment_url from task metadata after the "
+                               "deployment was stopped/deleted (task owner exposes this "
+                               "so devops never writes to the task DB directly).",
+                "inputSchema": {"type": "object",
+                                "properties": {"task_id": {"type": "string"}},
+                                "required": ["task_id"]}
+            },
+            {
                 "name": "get_retro_digest",
                 "description": "Latest nightly retro report: team health snapshot "
                                "(tasks/gates/reworks/stuck) for the notification bell.",
@@ -152,8 +171,25 @@ class HumanInterfaceHandlers:
             return self._answer_clarification(arguments)
         elif tool_name == "get_pending_clarifications":
             return self._get_pending_clarifications(arguments)
+        elif tool_name == "clear_deployment_url":
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute("UPDATE task_registry SET metadata = metadata::jsonb - 'deployment_url' "
+                           "WHERE task_id = %s", (arguments.get("task_id", ""),))
+            self.task_storage.connection.commit()
+            cursor.close()
+            return {"success": True}
         elif tool_name == "get_retro_digest":
             return self._get_retro_digest(arguments)
+        elif tool_name == "get_deploy_env":
+            task = self.task_storage.get_task(arguments.get("task_id", "")) if self.task_storage else None
+            md = (task or {}).get("metadata") or {}
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except Exception:
+                    md = {}
+            env = md.get("deploy_env")
+            return {"success": True, "env": env if isinstance(env, dict) else {}}
         elif tool_name == "get_retro_proposals":
             return self._get_retro_proposals(arguments)
         elif tool_name == "approve_retro_proposal":
