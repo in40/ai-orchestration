@@ -1364,7 +1364,7 @@ Overall project goal:
                         + ("\n\n# Technical specification (authoritative)\n"
                            + str(arguments.get("spec_context", ""))
                            if arguments.get("spec_context") else ""))
-                (ws / "AGENTS.md").write_text(
+                agents_text = (
                     "# Project conventions (authoritative)\n"
                     "- Python: prefer the stdlib; third-party packages only in requirements.txt.\n"
                     "- Network servers MUST bind 0.0.0.0 and read the port from env PORT (default 5000).\n"
@@ -1404,6 +1404,13 @@ Overall project goal:
                     "  HTML must reference assets relatively (static/... NOT /static/...), and\n"
                     "  client-side fetch paths must be relative or derived from location.pathname.\n"
                     "- README.md must document the ACTUAL run command and endpoints.\n")
+                try:  # retro M2: learned conventions, read at build time (no restart needed)
+                    _rc = Path("/root/qwen/base/retro/conventions.md")
+                    if _rc.exists():
+                        agents_text += "\n## Learned conventions (retro)\n" + _rc.read_text()[:4000]
+                except Exception:
+                    pass
+                (ws / "AGENTS.md").write_text(agents_text)
                 instruction = ("Read MANIFEST.md and AGENTS.md. The tree already exists: fix "
                                "the listed issues with minimal targeted edits, keep everything "
                                "else intact and working, then verify as usual (compile, tests, "

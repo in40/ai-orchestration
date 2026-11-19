@@ -14,6 +14,8 @@ import axios from 'axios';
 const ClarificationBell = () => {
   const [items, setItems] = useState([]);
   const [digest, setDigest] = useState(null);
+  const [proposals, setProposals] = useState([]);
+  const seenProposals = useRef(null);
   const seenDigest = useRef(null);
   const [anchor, setAnchor] = useState(null);
   const [answering, setAnswering] = useState(null);
@@ -57,6 +59,10 @@ const ClarificationBell = () => {
       const d = await axios.get('/api/retro/latest');
       setDigest(d.data && d.data.digest ? d.data : null);
     } catch (e) { /* ignore */ }
+    try {
+      const p = await axios.get('/api/retro/proposals');
+      setProposals((p.data.proposals || []).filter(x => x.status === 'proposed'));
+    } catch (e) { /* ignore */ }
   }, []);
 
   useEffect(() => {
@@ -89,6 +95,33 @@ const ClarificationBell = () => {
       }
     }
   }, [digest]);
+
+  // new improvement proposals -> notify once per set
+  useEffect(() => {
+    const ids = proposals.map(p => p.id).sort().join(',');
+    if (seenProposals.current === null) { seenProposals.current = ids; return; }
+    if (ids && ids !== seenProposals.current && document.hidden) {
+      seenProposals.current = ids;
+      beep();
+      if ('Notification' in window && Notification.permission === 'granted') {
+        const n = new Notification(`Retro: предложений к рассмотрению: ${proposals.length}`, {
+          body: proposals.map(p => `${p.risk} ${p.title}`).join('\n').slice(0, 300),
+          tag: 'retro-proposal' });
+        n.onclick = () => { window.focus(); n.close(); };
+      }
+    } else {
+      seenProposals.current = ids;
+    }
+  }, [proposals]);
+
+  const decide = async (id, action) => {
+    try {
+      await axios.post(`/api/retro/proposals/${id}/${action}`);
+      refresh();
+    } catch (e) {
+      alert('Не удалось: ' + (e.response?.data?.detail || e.message));
+    }
+  };
 
   const byTask = {};
   items.forEach(i => { (byTask[i.task_id] = byTask[i.task_id] || []).push(i); });
@@ -126,7 +159,7 @@ const ClarificationBell = () => {
     <>
       <IconButton color="inherit" aria-label="clarification requests"
         onClick={(e) => { setAnchor(e.currentTarget); refresh(); }}>
-        <Badge badgeContent={items.length} color="error">
+        <Badge badgeContent={items.length + proposals.length} color="error">
           <BellIcon />
         </Badge>
       </IconButton>
@@ -157,7 +190,31 @@ const ClarificationBell = () => {
             (на http браузер их запрещает всегда) и разрешите их в настройках сайта
           </MenuItem>
         )}
-        {groups.length === 0 && <MenuItem disabled>No pending questions</MenuItem>}
+        {groups.length === 0 && proposals.length === 0 &&
+          <MenuItem disabled>No pending questions</MenuItem>}
+        {proposals.map(p => (
+          <Box key={p.id} sx={{ px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+            <Typography variant="subtitle2">
+              <Chip label={p.risk} size="small" sx={{ mr: 1, height: 20, fontSize: 11 }}
+                color={p.risk === 'R2' ? 'error' : 'warning'} />
+              {p.title}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+              {p.problem}
+            </Typography>
+            <Typography variant="caption" sx={{
+              display: 'block', bgcolor: 'grey.200', p: 0.75, mt: 0.5,
+              whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 11.5 }}>
+              {p.patch_text}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, mt: 0.75 }}>
+              <Button size="small" variant="contained" onClick={() => decide(p.id, 'approve')}>
+                Одобрить
+              </Button>
+              <Button size="small" onClick={() => decide(p.id, 'reject')}>Отклонить</Button>
+            </Box>
+          </Box>
+        ))}
         {groups.map(([tid, qs]) => (
           <MenuItem key={tid} onClick={() => openAnswer(tid, qs)}
             sx={{ whiteSpace: 'normal', py: 1, display: 'block' }}>

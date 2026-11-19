@@ -6,3 +6,4 @@ After=postgresql.service
 Type=oneshot
 EnvironmentFile=-/root/qwen/base/.env
 ExecStart=/root/qwen/base/it-lead-mcp-server/venv/bin/python3 /root/qwen/base/retro/observer.py
+ExecStart=/root/qwen/base/it-lead-mcp-server/venv/bin/python3 /root/qwen/base/retro/proposer.py

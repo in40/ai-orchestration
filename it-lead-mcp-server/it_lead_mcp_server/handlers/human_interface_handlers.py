@@ -81,6 +81,27 @@ class HumanInterfaceHandlers:
                 "description": "Latest nightly retro report: team health snapshot "
                                "(tasks/gates/reworks/stuck) for the notification bell.",
                 "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "get_retro_proposals",
+                "description": "Improvement proposals from the retro proposer "
+                               "(status=proposed awaiting approval, plus recent history).",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "approve_retro_proposal",
+                "description": "Approve a retro proposal: R1 convention/planner notes are "
+                               "applied to the learned-convention files; R2 is recorded.",
+                "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}},
+                                "required": ["id"]}
+            },
+            {
+                "name": "reject_retro_proposal",
+                "description": "Reject a retro proposal with a short reason.",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"},
+                                               "reason": {"type": "string"}},
+                                "required": ["id"]}
             }
         ]
 
@@ -133,6 +154,12 @@ class HumanInterfaceHandlers:
             return self._get_pending_clarifications(arguments)
         elif tool_name == "get_retro_digest":
             return self._get_retro_digest(arguments)
+        elif tool_name == "get_retro_proposals":
+            return self._get_retro_proposals(arguments)
+        elif tool_name == "approve_retro_proposal":
+            return self._approve_retro_proposal(arguments)
+        elif tool_name == "reject_retro_proposal":
+            return self._reject_retro_proposal(arguments)
 
         # For any other tools, return None to indicate this module doesn't handle them
         return None
@@ -456,3 +483,43 @@ class HumanInterfaceHandlers:
         except Exception:
             metrics = {}
         return {"success": True, "ts": float(row[0]), "digest": row[1], "metrics": metrics}
+
+    def _get_retro_proposals(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "SELECT id, EXTRACT(EPOCH FROM ts), title, problem, change_type, risk, "
+                "patch_text, rationale, expected_effect, status "
+                "FROM retro_proposals "
+                "WHERE status = 'proposed' OR ts > now() - interval '3 days' "
+                "ORDER BY id DESC LIMIT 20")
+            rows = cursor.fetchall()
+            cursor.close()
+        except Exception as e:
+            return {"success": True, "proposals": [], "note": str(e)[:120]}
+        out = [{"id": r[0], "ts": float(r[1]), "title": r[2], "problem": r[3],
+                "change_type": r[4], "risk": r[5], "patch_text": r[6],
+                "rationale": r[7], "expected_effect": r[8], "status": r[9]}
+               for r in rows]
+        return {"success": True, "proposals": out}
+
+    def _approve_retro_proposal(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            import sys as _sys
+            if "/root/qwen/base/retro" not in _sys.path:
+                _sys.path.insert(0, "/root/qwen/base/retro")
+            from applier import apply_proposal
+            return apply_proposal(int(arguments.get("id", 0)))
+        except Exception as e:
+            return {"success": False, "error": str(e)[:200]}
+
+    def _reject_retro_proposal(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            import sys as _sys
+            if "/root/qwen/base/retro" not in _sys.path:
+                _sys.path.insert(0, "/root/qwen/base/retro")
+            from applier import reject_proposal
+            return reject_proposal(int(arguments.get("id", 0)),
+                                   str(arguments.get("reason", "")))
+        except Exception as e:
+            return {"success": False, "error": str(e)[:200]}

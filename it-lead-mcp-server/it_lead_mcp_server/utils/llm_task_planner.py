@@ -85,6 +85,15 @@ be defaulted - do not ask for things a competent engineer would just choose.
 If the task text already contains a "CLARIFICATIONS FROM THE REQUESTOR"
 section, those values are authoritative: use them and emit no need_info for
 those fields."""
+
+        try:  # retro M2: learned planner notes, read at plan time (no restart needed)
+            import pathlib as _pl
+            _pn = _pl.Path("/root/qwen/base/retro/planner_notes.md")
+            if _pn.exists():
+                prompt += ("\n\n## Retro notes (learned, authoritative)\n"
+                           + _pn.read_text()[:4000])
+        except Exception:
+            pass
         
         # Call LLM
         try:

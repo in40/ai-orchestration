@@ -390,3 +390,14 @@ clarification backlog + frequent fields, stuck active tasks, failures
 with reasons. Stored in retro_reports; surfaced via IT Lead tool
 get_retro_digest -> /api/retro/latest -> bell section + system
 notification when a new digest lands. Credentials from .env.
+
+## Retro M2: Proposer ✅
+Nightly (after observer): LLM reads snapshot+evidence, emits <=3
+risk-classed proposals into retro_proposals (14-day title dedup).
+R0 note -> auto-appended to backlog. R1 agents_md/planner -> bell
+approval -> appended to retro/conventions.md / planner_notes.md, which
+are injected into AGENTS.md at build time and into the planner prompt at
+plan time (no restarts; revert = git revert). R2 hire -> approval recorded
+(task creation in M4). Applier whitelist-only: cannot touch gates,
+security or retro itself. Live test: 3 proposals generated, #1 approved
+via API -> committed f52beb1.

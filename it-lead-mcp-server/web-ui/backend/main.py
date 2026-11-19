@@ -872,6 +872,23 @@ async def get_retro_latest():
     return await _it_lead_tool("get_retro_digest", {})
 
 
+@app.get("/api/retro/proposals")
+async def get_retro_proposals():
+    """Improvement proposals awaiting approval + recent history."""
+    return await _it_lead_tool("get_retro_proposals", {})
+
+
+@app.post("/api/retro/proposals/{pid}/approve")
+async def approve_retro_proposal(pid: int):
+    return await _it_lead_tool("approve_retro_proposal", {"id": pid})
+
+
+@app.post("/api/retro/proposals/{pid}/reject")
+async def reject_retro_proposal(pid: int, body: dict = None):
+    return await _it_lead_tool("reject_retro_proposal",
+                               {"id": pid, "reason": (body or {}).get("reason", "")})
+
+
 @app.post("/api/tasks/{task_id}/clarify")
 async def answer_clarification_endpoint(task_id: str, body: ClarificationAnswer):
     """Deliver the requestor's answers; the paused pipeline resumes planning."""
