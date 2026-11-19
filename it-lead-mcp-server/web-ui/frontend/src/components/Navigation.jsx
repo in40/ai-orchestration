@@ -13,6 +13,8 @@ import axios from 'axios';
 // planner/QA lack critical details; pending questions come from IT Lead.
 const ClarificationBell = () => {
   const [items, setItems] = useState([]);
+  const [digest, setDigest] = useState(null);
+  const seenDigest = useRef(null);
   const [anchor, setAnchor] = useState(null);
   const [answering, setAnswering] = useState(null);
   const [draft, setDraft] = useState({});
@@ -51,6 +53,10 @@ const ClarificationBell = () => {
       const r = await axios.get('/api/clarifications/pending');
       setItems(r.data.clarifications || []);
     } catch (e) { /* backend hiccup: keep the last snapshot */ }
+    try {
+      const d = await axios.get('/api/retro/latest');
+      setDigest(d.data && d.data.digest ? d.data : null);
+    } catch (e) { /* ignore */ }
   }, []);
 
   useEffect(() => {
@@ -66,6 +72,23 @@ const ClarificationBell = () => {
     if (!primed.current) { primed.current = true; return; } // skip load-time backlog
     if (fresh.length && document.hidden) { beep(); systemNotify(fresh); }
   }, [items]);
+
+  // nightly retro digest: notify once per new report
+  useEffect(() => {
+    if (!digest || !digest.ts) return;
+    if (seenDigest.current === null) { seenDigest.current = digest.ts; return; } // backlog on load
+    if (digest.ts !== seenDigest.current) {
+      seenDigest.current = digest.ts;
+      if (document.hidden) {
+        beep();
+        if ('Notification' in window && Notification.permission === 'granted') {
+          const n = new Notification('Retro: ночной отчёт готов', {
+            body: (digest.digest || '').slice(0, 300), tag: 'retro' });
+          n.onclick = () => { window.focus(); n.close(); };
+        }
+      }
+    }
+  }, [digest]);
 
   const byTask = {};
   items.forEach(i => { (byTask[i.task_id] = byTask[i.task_id] || []).push(i); });
@@ -108,7 +131,20 @@ const ClarificationBell = () => {
         </Badge>
       </IconButton>
       <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}
-        PaperProps={{ sx: { maxWidth: 400 } }}>
+        PaperProps={{ sx: { maxWidth: 460 } }}>
+        {digest && (
+          <MenuItem disabled sx={{ whiteSpace: 'pre-wrap', py: 1, opacity: '1 !important',
+                                  bgcolor: 'grey.100', mb: 0.5 }}>
+            <Box>
+              <Typography variant="subtitle2" color="primary">
+                📋 Retro · {new Date(digest.ts * 1000).toLocaleString('ru-RU')}
+              </Typography>
+              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', fontSize: 12.5 }}>
+                {digest.digest}
+              </Typography>
+            </Box>
+          </MenuItem>
+        )}
         {'Notification' in window && Notification.permission === 'default' && (
           <MenuItem onClick={() => { Notification.requestPermission(); setAnchor(null); }}
             sx={{ whiteSpace: 'normal', color: 'primary.main' }}>

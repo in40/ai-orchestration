@@ -75,6 +75,12 @@ class HumanInterfaceHandlers:
                 "description": "List unanswered clarification questions across tasks "
                                "(for the requestor's notification bell).",
                 "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "get_retro_digest",
+                "description": "Latest nightly retro report: team health snapshot "
+                               "(tasks/gates/reworks/stuck) for the notification bell.",
+                "inputSchema": {"type": "object", "properties": {}}
             }
         ]
 
@@ -125,6 +131,8 @@ class HumanInterfaceHandlers:
             return self._answer_clarification(arguments)
         elif tool_name == "get_pending_clarifications":
             return self._get_pending_clarifications(arguments)
+        elif tool_name == "get_retro_digest":
+            return self._get_retro_digest(arguments)
 
         # For any other tools, return None to indicate this module doesn't handle them
         return None
@@ -430,3 +438,21 @@ class HumanInterfaceHandlers:
                                 "asked_by": c.get("asked_by"),
                                 "asked_at": c.get("asked_at")})
         return {"success": True, "clarifications": out}
+
+    def _get_retro_digest(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Latest nightly health snapshot written by retro/observer.py."""
+        try:
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute("SELECT EXTRACT(EPOCH FROM ts), digest, metrics::text "
+                           "FROM retro_reports ORDER BY ts DESC LIMIT 1")
+            row = cursor.fetchone()
+            cursor.close()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if not row:
+            return {"success": True, "digest": None}
+        try:
+            metrics = json.loads(row[2]) if row[2] else {}
+        except Exception:
+            metrics = {}
+        return {"success": True, "ts": float(row[0]), "digest": row[1], "metrics": metrics}

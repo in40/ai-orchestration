@@ -382,3 +382,11 @@ file (max 4) is patched by the coder with its findings ("fix real risks,
 document intended behavior, tighten input"), then one rescan. Clean ->
 flow continues; still dirty -> needs_revision for the human (no loop -
 auto-fixing further risks gaming the scanner).
+
+## Retro M1: nightly Observer ✅
+retro/observer.py (systemd timer 03:00, read-only): health snapshot
+over 7 days - done-without-rework rate, gate pass/fail, security repairs,
+clarification backlog + frequent fields, stuck active tasks, failures
+with reasons. Stored in retro_reports; surfaced via IT Lead tool
+get_retro_digest -> /api/retro/latest -> bell section + system
+notification when a new digest lands. Credentials from .env.

@@ -866,6 +866,12 @@ async def get_pending_clarifications():
     return await _it_lead_tool("get_pending_clarifications", {})
 
 
+@app.get("/api/retro/latest")
+async def get_retro_latest():
+    """Latest nightly retro digest (team health snapshot)."""
+    return await _it_lead_tool("get_retro_digest", {})
+
+
 @app.post("/api/tasks/{task_id}/clarify")
 async def answer_clarification_endpoint(task_id: str, body: ClarificationAnswer):
     """Deliver the requestor's answers; the paused pipeline resumes planning."""
