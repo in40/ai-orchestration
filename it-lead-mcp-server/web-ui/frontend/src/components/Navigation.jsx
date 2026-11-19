@@ -3,7 +3,7 @@ import {
   AppBar, Toolbar, Typography, Button, Box, Container,
   IconButton, Badge, Menu, MenuItem,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField,
-  Checkbox, FormControlLabel
+  Checkbox, FormControlLabel, Chip
 } from '@mui/material';
 import { NotificationsNone as BellIcon } from '@mui/icons-material';
 import { Link, useLocation } from 'react-router-dom';
