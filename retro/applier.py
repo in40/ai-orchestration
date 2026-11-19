@@ -47,7 +47,7 @@ def _baseline_metric(cur):
             "rate": round(no_rework / done, 3) if done else None}
 
 
-def apply_proposal(pid: int) -> dict:
+def apply_proposal(pid: int, manager=None) -> dict:
     conn = _db()
     cur = conn.cursor()
     cur.execute("SELECT title, change_type, patch_text, status FROM retro_proposals "
@@ -62,6 +62,10 @@ def apply_proposal(pid: int) -> dict:
         return {"success": False, "error": f"proposal {pid} is {status}, not proposed"}
     try:
         if ctype in TARGETS:
+            # M5: every learned convention carries provenance (which proposal,
+            # i.e. which evidenced pain it came from) - the library is auditable
+            if "retro #" not in patch:
+                patch = patch.strip() + f" (retro #{pid})"
             with open(TARGETS[ctype], "a") as f:
                 f.write("\n" + patch.strip() + "\n")
             subprocess.run(["git", "-C", REPO, "add", TARGETS[ctype]], check=True)
@@ -79,7 +83,27 @@ def apply_proposal(pid: int) -> dict:
             conn.commit()
             return {"success": True, "result": result}
         elif ctype == "hire":
-            result = "hire task creation is queued (M4)"  # M2: approval recorded
+            # M4: approval turns the R2 spec into a real pipeline task -
+            # the team builds its own new member from the std skeleton.
+            if manager is None:
+                raise ValueError("hire approval requires the task manager")
+            import re as _re
+            import time as _t
+            slug = _re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:30]
+            tid = f"hire-{slug}-{int(_t.time())}"
+            desc = ("Найм нового члена команды конвейера. Роль и спецификация:\n"
+                    + patch +
+                    "\n\nТребования к артефакту: MCP-сервер (stdio) на базе "
+                    "mcp-std-skeleton (Python, stdlib), инструменты строго по "
+                    "спецификации, self-test утилита (запускает сервер, дергает "
+                    "tools/list и каждый инструмент, печатает PASS/FAIL), README с "
+                    "инструкцией регистрации в mcp_registry и подключения к конвейеру "
+                    "в advisory (shadow) режиме. Критерий приёмки: сам-тест зелёный и "
+                    "описана метрика согласия с существующими гейтами.")
+            manager.assign_and_forward_task(tid, desc, assignee="IT Lead",
+                                            priority="medium",
+                                            metadata={"is_hire_task": True})
+            result = f"hire task {tid} created in the pipeline"
         else:
             raise ValueError(f"no applier for change_type {ctype}")
         cur.execute("UPDATE retro_proposals SET status='applied', result=%s WHERE id=%s",

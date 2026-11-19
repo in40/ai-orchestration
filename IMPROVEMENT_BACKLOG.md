@@ -413,3 +413,22 @@ survive 14 days graduate to settled. Golden eval suite (retro/evals.json
 IT Lead retro/clarification getters now commit after SELECT (idle-in-
 transaction was blocking ALTER TABLE). Live: proposal#1 watched,
 metric 0.765 == baseline -> no action.
+
+## Retro M4+M5: hiring + skill library ✅
+M4: approving an R2 "hire" proposal creates a real pipeline task
+(hire-<slug>) - the team builds its new member from mcp-std-skeleton
+(self-test + registration + advisory-mode instructions required in the
+spec). retro/shadow_eval.py: runs a candidate tool over recent artifacts,
+compares verdicts with the real gate (qa/security/visual), prints
+agreement 
+## Retro M4+M5: hiring + skill library ✅
+M4: approving an R2 "hire" proposal creates a real pipeline task
+(hire-<slug>) - the team builds its new member from mcp-std-skeleton
+(self-test + registration + advisory-mode instructions required in the
+spec). retro/shadow_eval.py: runs a candidate tool over recent artifacts,
+compares verdicts with the real gate (qa/security/visual), prints
+agreement stats - promotion to blocking stays a human bell decision.
+M5: proposer now receives evidence.recurring (patterns with count>=2 from
+reworks + gate fails) and MUST cover each with an agents_md/planner
+proposal; every applied convention gets provenance "(retro #id)" - the
+conventions file is now an auditable skill library.

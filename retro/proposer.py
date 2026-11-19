@@ -56,6 +56,11 @@ def gather_evidence(cur):
         for c in (_j(md) or {}).get("clarifications") or []:
             if isinstance(c, dict):
                 ev["clarifications"].append(f"{c.get('field')} ({c.get('status')})")
+    # M5 skill library: recurring patterns (>=2) are mandatory proposal fodder
+    from collections import Counter
+    norm = Counter(s.split(": ", 1)[-1][:60].lower()
+                   for s in ev["rework_issues"] + ev["gate_fails"])
+    ev["recurring"] = [f"{p} ×{c}" for p, c in norm.items() if c >= 2]
     return {k: v[:12] for k, v in ev.items()}
 
 
@@ -76,8 +81,11 @@ operational, no diff syntax); for note - the backlog line; for hire - the role s
 (what it does, where in the pipeline, how to evaluate it)
   rationale, expected_effect
 Rules: never propose weakening or removing security/QA gates; never propose editing \
-this retro system itself; prefer the smallest change that fixes the pattern; if the \
-data shows no recurring problem, return {"proposals": []}.
+this retro system itself; prefer the smallest change that fixes the pattern; every \
+item in evidence.recurring is a REPEAT pattern - for each one not already covered by \
+conventions, you MUST emit an agents_md or planner proposal whose patch_text ends \
+with provenance task ids; if the data shows no recurring problem and no repeat \
+pattern, return {"proposals": []}.
 
 SNAPSHOT:
 %s

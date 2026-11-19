@@ -514,7 +514,8 @@ class HumanInterfaceHandlers:
             if "/root/qwen/base/retro" not in _sys.path:
                 _sys.path.insert(0, "/root/qwen/base/retro")
             from applier import apply_proposal
-            return apply_proposal(int(arguments.get("id", 0)))
+            return apply_proposal(int(arguments.get("id", 0)),
+                                  manager=self.task_assignment_manager)
         except Exception as e:
             return {"success": False, "error": str(e)[:200]}
 
