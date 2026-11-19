@@ -250,7 +250,7 @@ const ClarificationBell = () => {
           </MenuItem>
         )}
         {groups.length === 0 && proposals.length === 0 && selffix.length === 0 &&
-          <MenuItem disabled>No pending questions</MenuItem>}
+          <MenuItem disabled>Нет активных вопросов</MenuItem>}
         <MenuItem onClick={() => { setAnchor(null); setFixDialog(true); }}
           sx={{ color: 'primary.main', fontSize: 13 }}>
           🔧 Заявить проблему интерфейсу (self-fix)
