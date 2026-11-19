@@ -432,3 +432,12 @@ M5: proposer now receives evidence.recurring (patterns with count>=2 from
 reworks + gate fails) and MUST cover each with an agents_md/planner
 proposal; every applied convention gets provenance "(retro #id)" - the
 conventions file is now an auditable skill library.
+
+## Team tab fixes: registry boot race + agent details 404 ✅
+Members vanished after reboot: agents start 1s after the registry but
+before it binds; the single-shot registry/register POST failed and was
+never retried. Registration now retries ~2 min in every vendored copy of
+mcp_std_server (8 files). AgentDetail used to hit /api/agents (3
+hardcoded roles) while the Team list comes from /api/planner/agents
+(raw registry names) -> every View Details 404'd; it now uses the
+dynamic endpoint and normalizes capabilities/status/last_seen.

@@ -43,8 +43,18 @@ const AgentDetail = () => {
     const fetchData = async () => {
       try {
         setLoading(true);
-        const response = await axios.get(`/api/agents/${encodeURIComponent(agentName)}`);
-        setAgent(response.data);
+        // dynamic registry endpoint: same source as the Team list, so every
+        // listed agent resolves here (the old /api/agents had 3 hardcoded roles)
+        const response = await axios.get(`/api/planner/agents/${encodeURIComponent(agentName)}`);
+        const data = response.data || {};
+        setAgent({
+          ...data,
+          status: data.status || 'online',
+          last_seen: data.last_seen || new Date().toISOString(),
+          capabilities: (data.capabilities || [])
+            .map(c => (typeof c === 'string' ? c : c && c.name))
+            .filter(Boolean),
+        });
         setError(null);
       } catch (err) {
         setError('Failed to load agent details');
