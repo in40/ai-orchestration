@@ -37,6 +37,7 @@ import {
 } from '@mui/icons-material';
 import axios from 'axios';
 import DeploymentTester from './DeploymentTester';
+import PageHeader from './PageHeader';
 
 const Deployments = () => {
   const [deployments, setDeployments] = useState([]);
@@ -144,30 +145,29 @@ const Deployments = () => {
   }
 
   return (
-    <Box sx={{ p: 3 }}>
-      {/* Header */}
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
-        <Typography variant="h4" gutterBottom>
-          Deployments
-        </Typography>
-        <Box display="flex" gap={2} alignItems="center">
-          <FormControl size="small" sx={{ minWidth: 150 }}>
-            <InputLabel>Status</InputLabel>
-            <Select
-              value={statusFilter}
-              label="Status"
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
-              <MenuItem value="all">All</MenuItem>
-              <MenuItem value="running">Running</MenuItem>
-              <MenuItem value="stopped">Stopped</MenuItem>
-            </Select>
-          </FormControl>
-          <IconButton onClick={handleRefresh} color="primary">
-            <RefreshIcon />
-          </IconButton>
-        </Box>
-      </Box>
+    <>
+      {/* unified header: title left, actions right (same pattern as Tasks) */}
+      <PageHeader title="Deployments">
+        <FormControl size="small" sx={{ minWidth: 150 }}>
+          <InputLabel>Status</InputLabel>
+          <Select
+            value={statusFilter}
+            label="Status"
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <MenuItem value="all">All</MenuItem>
+            <MenuItem value="running">Running</MenuItem>
+            <MenuItem value="stopped">Stopped</MenuItem>
+          </Select>
+        </FormControl>
+        <Button
+          variant="outlined"
+          startIcon={<RefreshIcon />}
+          onClick={handleRefresh}
+        >
+          Refresh
+        </Button>
+      </PageHeader>
 
       {/* Error Alert */}
       {error && (
@@ -349,7 +349,7 @@ const Deployments = () => {
       )}
 
       <DeploymentTester open={!!testerFor} onClose={() => setTesterFor(null)} deployment={testerFor} />
-    </Box>
+    </>
   );
 };
 

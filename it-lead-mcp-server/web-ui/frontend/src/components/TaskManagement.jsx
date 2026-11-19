@@ -38,6 +38,7 @@ import axios from 'axios';
 
 // Import enhanced AddTaskForm component
 import AddTaskForm from './enhanced/AddTaskForm';
+import PageHeader from './PageHeader';
 
 const TaskManagement = () => {
   const [tasks, setTasks] = useState([]);
@@ -374,26 +375,22 @@ const TaskManagement = () => {
   return (
     <Grid container spacing={3}>
       <Grid item xs={12}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-          <Typography variant="h4">Task Management</Typography>
-          <Box>
-            <Button
-              variant="outlined"
-              startIcon={<RefreshIcon />}
-              onClick={handleRefreshTasks}
-              sx={{ mr: 1 }}
-            >
-              Refresh
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={handleAddTask}
-            >
-              Add Task
-            </Button>
-          </Box>
-        </Box>
+        <PageHeader title="Task Management">
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={handleRefreshTasks}
+          >
+            Refresh
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={handleAddTask}
+          >
+            Add Task
+          </Button>
+        </PageHeader>
       </Grid>
 
       <Grid item xs={12}>
