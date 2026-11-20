@@ -78,6 +78,27 @@ class TaskAssignmentManager:
             except Exception as e:
                 print(f"Error updating agent endpoints from registry: {e}")
 
+        # Restart resilience: pipeline threads live only inside this process,
+        # so any task still marked in_progress/rework_in_progress at startup
+        # was orphaned by the previous shutdown. Surface them as needs_revision
+        # (actionable in the UI) instead of letting them hang forever.
+        try:
+            if self.task_storage:
+                cur = self.task_storage.connection.cursor()
+                cur.execute(
+                    "UPDATE task_registry SET status='needs_revision', "
+                    "status_reason='pipeline thread lost on IT Lead restart; "
+                    "request rework to resume' "
+                    "WHERE status IN ('in_progress','rework_in_progress') "
+                    "RETURNING task_id")
+                orphans = [r[0] for r in cur.fetchall()]
+                self.task_storage.connection.commit()
+                cur.close()
+                for tid in orphans:
+                    print(f"⚠️ orphaned task swept to needs_revision: {tid}")
+        except Exception as e:
+            print(f"⚠️ orphan sweep failed: {e}")
+
     def _init_result_router(self):
         """Initialize result router for storing agent results"""
         try:
@@ -1119,6 +1140,7 @@ class TaskAssignmentManager:
                 cur.execute("SELECT metadata->>'selffix_area' FROM task_registry "
                             "WHERE task_id=%s", (task_id,))
                 row = cur.fetchone()
+            self.task_storage.connection.commit()
             area = row and row[0]
         except Exception:
             area = None

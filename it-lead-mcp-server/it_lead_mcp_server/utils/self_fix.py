@@ -148,6 +148,7 @@ def finalize(conn, task_id):
                 (task_id,))
     row = cur.fetchone()
     if not row:
+        conn.commit()
         cur.close()
         return None
     area = row[0]
@@ -190,6 +191,7 @@ def list_queue(conn, limit=10):
     rows = [{"id": r[0], "ts": float(r[1]), "task_id": r[2], "area": r[3],
              "complaint": (r[4] or "")[:200], "diff_stat": r[5], "status": r[6]}
             for r in cur.fetchall()]
+    conn.commit()
     cur.close()
     return rows
 
@@ -198,6 +200,7 @@ def get_diff(conn, pid):
     cur = conn.cursor()
     cur.execute("SELECT diff FROM selffix WHERE id=%s", (pid,))
     row = cur.fetchone()
+    conn.commit()
     cur.close()
     return row[0] if row else ""
 
