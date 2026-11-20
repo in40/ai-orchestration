@@ -120,7 +120,36 @@ class TaskAssignmentManager:
                             args=(tid, prompt, "", "medium"),
                             daemon=True).start()
                     else:
-                        print(f"⚠️ orphaned task swept to needs_revision: {tid}")
+                        # nothing pushed to adopt: re-run the original
+                        # pipeline from scratch instead of dead-ending in
+                        # needs_revision (a rework there would be rejected
+                        # for lack of git_url)
+                        restarted = False
+                        try:
+                            with self.task_storage.connection.cursor() as c3:
+                                c3.execute("SELECT description, priority, metadata "
+                                           "FROM task_registry WHERE task_id=%s", (tid,))
+                            row = c3.fetchone()
+                            self.task_storage.connection.commit()
+                            if row and row[0]:
+                                desc, prio = row[0], (row[1] or "medium")
+                                raw = row[2] if isinstance(row[2], dict) else {}
+                                orig = ((raw.get("original_arguments") or {})
+                                        .get("metadata") or {})
+                                meta = {k: orig[k] for k in
+                                        ("deploy_after_implementation", "requires_client")
+                                        if k in orig}
+                                print(f"🩹 orphan re-run from scratch: {tid}")
+                                threading.Thread(
+                                    target=self.assign_and_forward_task,
+                                    args=(tid, desc),
+                                    kwargs={"priority": prio, "metadata": meta},
+                                    daemon=True).start()
+                                restarted = True
+                        except Exception as e:
+                            print(f"⚠️ orphan re-run failed for {tid}: {e}")
+                        if not restarted:
+                            print(f"⚠️ orphaned task swept to needs_revision: {tid}")
         except Exception as e:
             print(f"⚠️ orphan sweep failed: {e}")
 
