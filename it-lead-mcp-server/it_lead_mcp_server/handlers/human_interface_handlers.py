@@ -575,6 +575,26 @@ class HumanInterfaceHandlers:
                                 "asked_at": c.get("asked_at")})
         return {"success": True, "clarifications": out}
 
+    def _get_pipeline_alerts(self) -> Dict[str, Any]:
+        """Recent incident events from task activity logs (48h window)."""
+        events = ("rework_rejected", "selffix_failed", "selffix_no_diff",
+                  "clarification_timeout", "git_url_recovered", "selffix_error")
+        try:
+            cur = self.task_storage.connection.cursor()
+            cur.execute(
+                "SELECT task_id, e->>'event', e->>'detail', (e->>'ts')::bigint "
+                "FROM task_registry, jsonb_array_elements(COALESCE(activity,'[]'::jsonb)) e "
+                "WHERE e->>'event' = ANY(%s) "
+                "AND (e->>'ts')::bigint > EXTRACT(EPOCH FROM now() - interval '48 hours')::bigint "
+                "ORDER BY (e->>'ts')::bigint DESC LIMIT 20", (list(events),))
+            rows = [{"task_id": r[0], "event": r[1], "detail": (r[2] or "")[:150],
+                     "ts": int(r[3])} for r in cur.fetchall()]
+            self.task_storage.connection.commit()
+            cur.close()
+            return {"success": True, "alerts": rows}
+        except Exception as e:
+            return {"success": True, "alerts": [], "note": str(e)[:120]}
+
     def _get_retro_digest(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Latest nightly health snapshot written by retro/observer.py."""
         try:
