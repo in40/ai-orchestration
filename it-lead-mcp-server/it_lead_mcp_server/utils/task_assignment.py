@@ -1137,6 +1137,7 @@ class TaskAssignmentManager:
                     return
                 if self._finalize_selffix(task_id):
                     return
+                self._generate_docs(task_id)
                 self._update_task_status(task_id, "done",
                                          ("Rework deliverable: gates passed, redeployed at " + url
                                           if prebuilt_git_url else
@@ -1148,10 +1149,43 @@ class TaskAssignmentManager:
             return
         if self._finalize_selffix(task_id):
             return
+        self._generate_docs(task_id)
         self._update_task_status(task_id, "done",
                                  ("Rework deliverable: gates passed (no deploy expected)"
                                   if prebuilt_git_url else
                                   f"Multi-file deliverable: {len(results or file_manifest)} files, QA passed"))
+
+    def _generate_docs(self, task_id):
+        """Post-gates best-effort: documentation-engineer writes
+        docs/REQUIREMENTS.md + docs/ARCHITECTURE.md into the results tree.
+        Fire-and-forget: never affects the task status."""
+        def _run():
+            try:
+                services = self.mcp_registry_client.list_services(use_cache=True)
+                ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                           for s in services if isinstance(s, dict)
+                           and "documentation" in (s.get("name") or "").lower()
+                           and s.get("endpoint")), None)
+                if not ep:
+                    self._log_activity(task_id, "docs", agent="it-lead",
+                                       detail="skipped (documentation-engineer not registered)")
+                    return
+                import requests as _rq
+                r = _rq.post(ep, json={"jsonrpc": "2.0", "id": f"docs-{task_id}",
+                                       "method": "tools/call",
+                                       "params": {"name": "generate_task_docs",
+                                                  "arguments": {"task_id": task_id}}},
+                             timeout=300)
+                ok = r.status_code == 200 and "error" not in r.json()
+                self._log_activity(task_id, "docs", agent="documentation-engineer",
+                                   detail="ok" if ok else f"skipped (http {r.status_code})")
+            except Exception as e:
+                try:
+                    self._log_activity(task_id, "docs", agent="documentation-engineer",
+                                       detail=f"skipped ({str(e)[:80]})")
+                except Exception:
+                    pass
+        threading.Thread(target=_run, daemon=True).start()
 
     def _finalize_selffix(self, task_id) -> bool:
         """M6: if this rework was a self-fix over a snapshot, compute the
