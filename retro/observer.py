@@ -58,7 +58,8 @@ def collect():
     cur.execute(
         "SELECT task_id, status, status_reason, created_at, updated_at, "
         "metadata::text, activity::text FROM task_registry "
-        "WHERE created_at > now() - (%s || ' days')::interval", (str(WINDOW_DAYS),))
+        "WHERE created_at > now() - (%s || ' days')::interval "
+        "AND NOT COALESCE(archived, false)", (str(WINDOW_DAYS),))
     rows = cur.fetchall()
     cur.close()
     conn.close()

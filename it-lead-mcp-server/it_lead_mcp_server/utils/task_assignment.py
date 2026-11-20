@@ -84,6 +84,8 @@ class TaskAssignmentManager:
         # (actionable in the UI) instead of letting them hang forever.
         try:
             if self.task_storage:
+                from . import task_lifecycle
+                task_lifecycle._sql(self.task_storage.connection)
                 cur = self.task_storage.connection.cursor()
                 cur.execute(
                     "UPDATE task_registry SET status='needs_revision', "

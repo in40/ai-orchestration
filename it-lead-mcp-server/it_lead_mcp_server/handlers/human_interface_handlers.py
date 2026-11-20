@@ -134,6 +134,23 @@ class HumanInterfaceHandlers:
                                 "required": ["id"]}
             },
             {
+                "name": "archive_task",
+                "description": "Archive (hide, lossless) or unarchive a task.",
+                "inputSchema": {"type": "object", "properties": {
+                    "task_id": {"type": "string"},
+                    "archived": {"type": "boolean"}},
+                    "required": ["task_id"]}
+            },
+            {
+                "name": "delete_task",
+                "description": "Delete a task: snapshot to trash, purge work "
+                               "state and results/<task>. Requires confirm=task_id.",
+                "inputSchema": {"type": "object", "properties": {
+                    "task_id": {"type": "string"},
+                    "confirm": {"type": "string"}},
+                    "required": ["task_id", "confirm"]}
+            },
+            {
                 "name": "list_products",
                 "description": "Products (mirrors on .187, optional GitHub publication).",
                 "inputSchema": {"type": "object", "properties": {}}
@@ -254,6 +271,16 @@ class HumanInterfaceHandlers:
             return self._get_retro_digest(arguments)
         elif tool_name == "get_pipeline_alerts":
             return self._get_pipeline_alerts()
+        elif tool_name == "archive_task":
+            from ..utils import task_lifecycle
+            return task_lifecycle.archive_task(
+                self.task_storage.connection, arguments.get("task_id", ""),
+                bool(arguments.get("archived", True)))
+        elif tool_name == "delete_task":
+            from ..utils import task_lifecycle
+            return task_lifecycle.delete_task(
+                self.task_storage.connection, arguments.get("task_id", ""),
+                arguments.get("confirm", ""))
         elif tool_name == "list_products":
             from ..utils import products
             return {"success": True,

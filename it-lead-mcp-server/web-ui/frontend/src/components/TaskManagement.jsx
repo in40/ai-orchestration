@@ -9,6 +9,8 @@ import {
   Button,
   CircularProgress,
   Alert,
+  Checkbox,
+  FormControlLabel,
   Grid,
   Table,
   TableBody,
@@ -33,7 +35,7 @@ import {
   Link,
   Tooltip
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon, Visibility as VisibilityIcon, ContentCopy as CopyIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon, Visibility as VisibilityIcon, ContentCopy as CopyIcon, Archive as ArchiveIcon, Unarchive as UnarchiveIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 // Import enhanced AddTaskForm component
@@ -42,6 +44,9 @@ import PageHeader from './PageHeader';
 
 const TaskManagement = () => {
   const [tasks, setTasks] = useState([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [delTask, setDelTask] = useState(null);
+  const [delWord, setDelWord] = useState('');
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -266,8 +271,7 @@ const TaskManagement = () => {
   };
 
   const handleDelete = async (taskId) => {
-    if (!window.confirm("Are you sure?")) return;
-    try {
+    if (!window.confirm("Are you sure?")) return;    try {
       await axios.post('/api/tasks/delete', { task_id: taskId });
       // Refresh tasks from server
       const response = await axios.get('/api/tasks');
@@ -275,6 +279,32 @@ const TaskManagement = () => {
     } catch (err) {
       console.error("Error deleting task:", err);
       alert("Failed to delete task");
+    }
+  };
+
+  const doArchive = async (task) => {
+    try {
+      await axios.post(`/api/tasks/${task.task_id}/archive`, { archived: !task.archived });
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      alert('Не удалось: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const doDelete = async () => {
+    try {
+      const r = await axios.post(`/api/tasks/${delTask.task_id}/delete`,
+        { confirm: delWord });
+      if (r.data && r.data.success === false) {
+        alert('Не удалено: ' + r.data.error);
+        return;
+      }
+      setDelTask(null); setDelWord('');
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      alert('Не удалось: ' + (err.response?.data?.detail || err.message));
     }
   };
 
@@ -376,6 +406,11 @@ const TaskManagement = () => {
     <Grid container spacing={3}>
       <Grid item xs={12}>
         <PageHeader title="Task Management">
+          <FormControlLabel
+            control={<Checkbox size="small" checked={showArchived}
+              onChange={e => setShowArchived(e.target.checked)} />}
+            label={<Typography variant="body2">архив</Typography>}
+          />
           <Button
             variant="outlined"
             startIcon={<RefreshIcon />}
@@ -410,7 +445,7 @@ const TaskManagement = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {tasks.map((task) => (
+                  {tasks.filter(t => showArchived || !t.archived).map((task) => (
                     <TableRow
                       key={task.id}
                       sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
@@ -535,9 +570,18 @@ const TaskManagement = () => {
                         <HistoryIcon />
                       </IconButton>
                       <IconButton
+                        color={task.archived ? 'action' : 'default'}
+                        aria-label="archive task"
+                        onClick={() => doArchive(task)}
+                        title={task.archived ? 'Вернуть из архива' : 'В архив (скрыть, без потерь)'}
+                      >
+                        {task.archived ? <UnarchiveIcon /> : <ArchiveIcon />}
+                      </IconButton>
+                      <IconButton
                         color="error"
                         aria-label="delete task"
-                        onClick={() => handleDelete(task.id)}
+                        onClick={() => { setDelTask(task); setDelWord(''); }}
+                        title="Удалить безвозвратно (в trash)"
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -1140,6 +1184,27 @@ const TaskManagement = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDetailTask(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={!!delTask} onClose={() => setDelTask(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Удалить задачу безвозвратно?</DialogTitle>
+        <DialogContent dividers>
+          <Alert severity="error" sx={{ mb: 1 }}>
+            Строка уйдёт в tasks_trash, рабочие файлы (/tmp, скриншоты) и
+            results/{delTask?.task_id} будут стёрты. Продукты (зеркала/GitHub) не пострадают.
+          </Alert>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Для подтверждения введите имя задачи: <b>{delTask?.task_id}</b>
+          </Typography>
+          <TextField fullWidth size="small" value={delWord}
+            onChange={e => setDelWord(e.target.value)} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDelTask(null)}>Отмена</Button>
+          <Button variant="contained" color="error"
+            disabled={delWord !== delTask?.task_id} onClick={doDelete}>
+            Удалить
+          </Button>
         </DialogActions>
       </Dialog>
     </Grid>

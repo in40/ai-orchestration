@@ -408,7 +408,8 @@ class TaskStorage:
                 SELECT id, task_id, title, description, submitter, submitter_type, transport_channel,
                        status, status_reason, assigned_to, priority, deadline,
                        created_at, updated_at, assigned_at, started_at, completed_at,
-                       source_server, target_server, result, metadata, status_history
+                       source_server, target_server, result, metadata, status_history,
+                       COALESCE(archived, false) AS archived
                 FROM task_registry
                 ORDER BY created_at DESC
             """)
@@ -440,7 +441,8 @@ class TaskStorage:
                     "target_server": row[18],
                     "result": row[19],
                     "metadata": row[20],
-                    "status_history": row[21]
+                    "status_history": row[21],
+                    "archived": row[22]
                 })
 
             return tasks

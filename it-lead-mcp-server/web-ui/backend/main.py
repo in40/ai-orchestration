@@ -889,6 +889,18 @@ async def reject_retro_proposal(pid: int, body: dict = None):
                                {"id": pid, "reason": (body or {}).get("reason", "")})
 
 
+@app.post("/api/tasks/{task_id}/archive")
+async def archive_task_endpoint(task_id: str, body: dict = None):
+    return await _it_lead_tool("archive_task", {
+        "task_id": task_id, "archived": (body or {}).get("archived", True)})
+
+
+@app.post("/api/tasks/{task_id}/delete")
+async def delete_task_endpoint(task_id: str, body: dict = None):
+    return await _it_lead_tool("delete_task", {
+        "task_id": task_id, "confirm": (body or {}).get("confirm", "")})
+
+
 @app.get("/api/products")
 async def list_products():
     return await _it_lead_tool("list_products", {})
