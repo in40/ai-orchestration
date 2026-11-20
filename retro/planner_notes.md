@@ -2,3 +2,5 @@
      at plan time. Keep entries short and operational. -->
 
 Перед постановкой задачи кодеру зафиксируй MVP, точные acceptance criteria и out-of-scope; любые новые фичи/смены темы/LLM/NPU выноси в отдельный task после подтверждения пользователем; не передавай в coder расширяющиеся требования.
+
+Before coding, define a frozen scope with explicit acceptance criteria and out-of-scope list; any new feature or UI change after task start must be split into a new task or approved change request, not added to the current task. [task-1794906501267, task-1795002226860] (retro #7)
