@@ -19,6 +19,7 @@ const Products = () => {
   const [pubRepo, setPubRepo] = useState('');
   const [pubPrivate, setPubPrivate] = useState(true);
   const [pubWord, setPubWord] = useState('');
+  const [pubForce, setPubForce] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -42,13 +43,13 @@ const Products = () => {
     setBusy(false);
   };
 
-  const openPublish = (p) => { setPub(p); setPubRepo(p.name); setPubWord(''); };
+  const openPublish = (p) => { setPub(p); setPubRepo(p.name); setPubWord(''); setPubForce(false); };
 
   const doPublish = async () => {
     setBusy(true);
     try {
       const r = await axios.post(`/api/products/${pub.id}/publish`,
-        { github_repo: pubRepo, private: pubPrivate, confirm: pubWord });
+        { github_repo: pubRepo, private: pubPrivate, confirm: pubWord, force: pubForce });
       if (r.data && r.data.success === false) alert('Не опубликовано: ' + r.data.error);
       else if (r.data && r.data.github_url) window.open(r.data.github_url, '_blank');
       setPub(null);
@@ -139,6 +140,9 @@ const Products = () => {
           <FormControlLabel control={
             <Checkbox checked={pubPrivate} onChange={e => setPubPrivate(e.target.checked)} />
           } label="приватный репозиторий" />
+          <FormControlLabel control={
+            <Checkbox checked={pubForce} onChange={e => setPubForce(e.target.checked)} />
+          } label={<Typography variant="body2">force — перезаписать историю удалённого репо</Typography>} />
           <Alert severity="warning" sx={{ mt: 1 }}>
             Код уйдёт наружу (github.com/in40). Для подтверждения введите слово publish.
           </Alert>

@@ -191,7 +191,8 @@ def _github_create_repo(pat, repo, private, description):
         return e.code, payload
 
 
-def publish_product(conn, product_id, github_repo, private=True, confirm=""):
+def publish_product(conn, product_id, github_repo, private=True, confirm="",
+                    force=False):
     if confirm != "publish":
         return {"success": False,
                 "error": "publish requires explicit human confirm='publish'"}
@@ -236,9 +237,14 @@ def publish_product(conn, product_id, github_repo, private=True, confirm=""):
             return {"success": False, "error": redact(c.stderr)[:200]}
         auth_url = f"https://x-access-token:{pat}@github.com/{owner}/{repo}.git"
         _run(["git", "-C", work, "remote", "add", "gh", auth_url])
-        p = _run(["git", "-C", work, "push", "gh", "HEAD:main"], timeout=600)
+        push_cmd = ["git", "-C", work, "push"] + (["--force"] if force else []) + ["gh", "HEAD:main"]
+        p = _run(push_cmd, timeout=600)
         if p.returncode != 0:
-            return {"success": False, "error": redact(p.stderr)[:200]}
+            msg = redact(p.stderr)[:300]
+            if not force and ("rejected" in msg or "fetch first" in msg):
+                msg += (" — удалённый репозиторий содержит другую историю; "
+                        "повторите с force=true, чтобы перезаписать")
+            return {"success": False, "error": msg}
         url = f"https://github.com/{owner}/{repo}"
         cur.execute("UPDATE products SET github_url=%s, status='published', "
                     "visibility=%s, published_at=now(), result=%s WHERE id=%s",

@@ -297,7 +297,8 @@ class HumanInterfaceHandlers:
                 self.task_storage.connection, int(arguments.get("id", 0)),
                 arguments.get("github_repo", ""),
                 bool(arguments.get("private", True)),
-                arguments.get("confirm", ""))
+                arguments.get("confirm", ""),
+                bool(arguments.get("force", False)))
         elif tool_name == "request_self_fix":
             from ..utils import self_fix
             return self_fix.file_self_fix(

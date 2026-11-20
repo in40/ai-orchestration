@@ -919,7 +919,8 @@ async def publish_product(pid: int, body: dict = None):
     b = body or {}
     return await _it_lead_tool("publish_product", {
         "id": pid, "github_repo": b.get("github_repo", ""),
-        "private": b.get("private", True), "confirm": b.get("confirm", "")})
+        "private": b.get("private", True), "confirm": b.get("confirm", ""),
+        "force": b.get("force", False)})
 
 
 @app.get("/api/pipeline/alerts")
