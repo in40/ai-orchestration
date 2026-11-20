@@ -62,6 +62,12 @@ def _sql(conn):
         "mirror_url text, github_url text, visibility text DEFAULT 'private', "
         "status text DEFAULT 'draft', created_at timestamptz DEFAULT now(), "
         "published_at timestamptz, result text)")
+    # upstream provenance: where an imported product came from, and whether we
+    # can ever push back to it (third-party repos: pull-only, read-only)
+    cur = conn.cursor()
+    cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS upstream_url text")
+    cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+                "upstream_readonly boolean NOT NULL DEFAULT false")
     conn.commit()
 
 
@@ -87,11 +93,13 @@ def list_products(conn):
     _sql(conn)
     cur = conn.cursor()
     cur.execute("SELECT id, name, description, mirror_url, github_url, "
-                "visibility, status, EXTRACT(EPOCH FROM created_at), result "
+                "visibility, status, EXTRACT(EPOCH FROM created_at), result, "
+                "upstream_url, upstream_readonly "
                 "FROM products ORDER BY id DESC")
     out = [{"id": r[0], "name": r[1], "description": r[2] or "",
             "mirror_url": r[3], "github_url": r[4], "visibility": r[5],
-            "status": r[6], "created_at": float(r[7]), "result": r[8] or ""}
+            "status": r[6], "created_at": float(r[7]), "result": r[8] or "",
+            "upstream_url": r[9] or "", "upstream_readonly": bool(r[10])}
            for r in cur.fetchall()]
     conn.commit()
     cur.close()
@@ -99,7 +107,7 @@ def list_products(conn):
 
 
 def import_product(conn, name, description="", source_url="", seed_task_id="",
-                   adopt_existing=False):
+                   adopt_existing=False, readonly=False):
     _sql(conn)
     name = (name or "").strip()
     if not NAME_RE.match(name):
@@ -158,10 +166,11 @@ def import_product(conn, name, description="", source_url="", seed_task_id="",
         origin = "adopted existing mirror"
 
     cur.execute(
-        "INSERT INTO products(name, description, mirror_url, status) "
-        "VALUES (%s,%s,%s,'draft') ON CONFLICT (name) DO UPDATE SET "
+        "INSERT INTO products(name, description, mirror_url, status, "
+        "upstream_url, upstream_readonly) "
+        "VALUES (%s,%s,%s,'draft',%s,%s) ON CONFLICT (name) DO UPDATE SET "
         "description=EXCLUDED.description RETURNING id",
-        (name, description, mirror))
+        (name, description, mirror, source_url or None, bool(readonly)))
     pid = cur.fetchone()[0]
     cur.execute("UPDATE products SET result=%s WHERE id=%s",
                 (f"imported: {origin}"[:400], pid))

@@ -163,7 +163,10 @@ class HumanInterfaceHandlers:
                     "name": {"type": "string"},
                     "description": {"type": "string"},
                     "source_url": {"type": "string"},
-                    "seed_task_id": {"type": "string"}},
+                    "seed_task_id": {"type": "string"},
+                    "readonly": {"type": "boolean",
+                                 "description": "upstream is pull-only (third-party "
+                                                "repo we can never push to)"}},
                     "required": ["name"]}
             },
             {
@@ -290,7 +293,8 @@ class HumanInterfaceHandlers:
             return products.import_product(
                 self.task_storage.connection,
                 arguments.get("name", ""), arguments.get("description", ""),
-                arguments.get("source_url", ""), arguments.get("seed_task_id", ""))
+                arguments.get("source_url", ""), arguments.get("seed_task_id", ""),
+                readonly=bool(arguments.get("readonly")))
         elif tool_name == "publish_product":
             from ..utils import products
             return products.publish_product(

@@ -912,7 +912,8 @@ async def import_product(body: dict):
     return await _it_lead_tool("import_product", {
         "name": body.get("name", ""), "description": body.get("description", ""),
         "source_url": body.get("source_url", ""),
-        "seed_task_id": body.get("seed_task_id", "")})
+        "seed_task_id": body.get("seed_task_id", ""),
+        "readonly": bool(body.get("readonly"))})
 
 
 @app.post("/api/products/{pid}/publish")

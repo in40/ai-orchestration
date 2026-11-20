@@ -14,7 +14,7 @@ const Products = () => {
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
   const [importOpen, setImportOpen] = useState(false);
-  const [imp, setImp] = useState({ name: '', description: '', seed_task_id: '', source_url: '' });
+  const [imp, setImp] = useState({ name: '', description: '', seed_task_id: '', source_url: '', readonly: false });
   const [pub, setPub] = useState(null); // product being published
   const [pubRepo, setPubRepo] = useState('');
   const [pubPrivate, setPubPrivate] = useState(true);
@@ -37,7 +37,7 @@ const Products = () => {
       const r = await axios.post('/api/products', imp);
       if (r.data && r.data.success === false) alert('Ошибка: ' + r.data.error);
       setImportOpen(false);
-      setImp({ name: '', description: '', seed_task_id: '', source_url: '' });
+      setImp({ name: '', description: '', seed_task_id: '', source_url: '', readonly: false });
       refresh();
     } catch (e) { alert('Ошибка: ' + (e.response?.data?.detail || e.message)); }
     setBusy(false);
@@ -78,8 +78,14 @@ const Products = () => {
               <CardContent sx={{ flexGrow: 1 }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Typography variant="h6">{p.name}</Typography>
-                  <Chip size="small" label={p.status}
-                    color={p.status === 'published' ? 'success' : 'default'} />
+                  <Box sx={{ display: 'flex', gap: 0.5 }}>
+                    {p.upstream_readonly && (
+                      <Chip size="small" color="warning" variant="outlined"
+                        label="upstream: только чтение" />
+                    )}
+                    <Chip size="small" label={p.status}
+                      color={p.status === 'published' ? 'success' : 'default'} />
+                  </Box>
                 </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ my: 1 }}>
                   {p.description || '—'}
@@ -91,6 +97,11 @@ const Products = () => {
                   <Typography variant="caption" sx={{ fontFamily: 'monospace', display: 'block' }}>
                     <a href={p.github_url} target="_blank" rel="noreferrer">{p.github_url}</a>
                     {' '}({p.visibility})
+                  </Typography>
+                )}
+                {p.upstream_url && (
+                  <Typography variant="caption" sx={{ fontFamily: 'monospace', display: 'block' }}>
+                    upstream: <a href={p.upstream_url} target="_blank" rel="noreferrer">{p.upstream_url}</a>
                   </Typography>
                 )}
                 {p.result && (
@@ -128,6 +139,14 @@ const Products = () => {
             value={imp.seed_task_id} onChange={e => setImp(s => ({ ...s, seed_task_id: e.target.value }))} />
           <TextField fullWidth size="small" margin="normal" label="или source_url (git)"
             value={imp.source_url} onChange={e => setImp(s => ({ ...s, source_url: e.target.value }))} />
+          <FormControlLabel
+            disabled={!imp.source_url.trim()}
+            control={
+              <Checkbox checked={imp.readonly}
+                onChange={e => setImp(s => ({ ...s, readonly: e.target.checked }))} />
+            }
+            label="read-only upstream (чужой репозиторий — обновления только к нам, наружу не пушим)"
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setImportOpen(false)}>Отмена</Button>

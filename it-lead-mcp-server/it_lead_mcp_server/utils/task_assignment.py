@@ -1042,7 +1042,7 @@ class TaskAssignmentManager:
                     with self.task_storage.connection.cursor() as pc:
                         pc.execute("SELECT name, mirror_url FROM products WHERE id=%s",
                                    (int(pid),))
-                    prow = pc.fetchone()
+                        prow = pc.fetchone()
                     self.task_storage.connection.commit()
                     if prow:
                         base = prow[1]
@@ -1274,7 +1274,7 @@ class TaskAssignmentManager:
             with self.task_storage.connection.cursor() as c:
                 c.execute("SELECT name, mirror_url FROM products WHERE id=%s",
                           (int(pid),))
-            row = c.fetchone()
+                row = c.fetchone()
             self.task_storage.connection.commit()
             if not row:
                 return
