@@ -925,6 +925,24 @@ async def publish_product(pid: int, body: dict = None):
         "force": b.get("force", False)})
 
 
+@app.get("/api/products/{pid}/upstream")
+async def check_upstream(pid: int):
+    return await _it_lead_tool("check_upstream", {"id": pid})
+
+
+@app.post("/api/products/{pid}/upstream/pull")
+async def pull_upstream(pid: int, body: dict = None):
+    b = body or {}
+    return await _it_lead_tool("pull_upstream", {
+        "id": pid, "mode": b.get("mode", "ff"), "confirm": b.get("confirm", "")})
+
+
+@app.post("/api/products/{pid}/upstream/rollback")
+async def rollback_upstream(pid: int, body: dict = None):
+    b = body or {}
+    return await _it_lead_tool("rollback_upstream", {"id": pid, "tag": b.get("tag", "")})
+
+
 @app.get("/api/pipeline/alerts")
 async def get_pipeline_alerts():
     """Recent pipeline incidents: rework rejections, self-fix failures, timeouts."""

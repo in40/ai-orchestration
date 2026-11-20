@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -268,5 +269,217 @@ def publish_product(conn, product_id, github_repo, private=True, confirm="",
         conn.commit()
         cur.close()
         return {"success": True, "github_url": url}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- upstream sync
+# A mirror can have an upstream (imported source_url, or our own github_url).
+# Sync is always human-triggered: check first (read-only diagnosis), then pull
+# with an explicit mode. Every pull tags the mirror pre-sync-<ts> so any
+# mistake is one rollback away. read-only upstreams are pull-only by design —
+# nothing here ever pushes to upstream.
+
+def _load_product(cur, product_id):
+    cur.execute("SELECT name, mirror_url, upstream_url, github_url, "
+                "upstream_readonly FROM products WHERE id=%s", (product_id,))
+    return cur.fetchone()
+
+
+def _upstream_branch(up_url):
+    r = _run(["git", "ls-remote", "--symref", up_url, "HEAD"], timeout=60)
+    m = re.search(r"refs/heads/(\S+)", r.stdout or "")
+    return m.group(1) if m else "main"
+
+
+def _prep_clone(mirror, up):
+    """Clone mirror + add 'up' remote; returns (work, branch) or (None, err)."""
+    tmp = tempfile.mkdtemp(prefix="prod-upsync-")
+    work = os.path.join(tmp, "w")
+    c = _run(["git", "clone", "--", mirror, work], timeout=600)
+    if c.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None, redact(c.stderr)[:200]
+    _run(["git", "-C", work, "remote", "add", "up", up], timeout=60)
+    br = _upstream_branch(up)
+    f = _run(["git", "-C", work, "fetch", "-q", "up", br], timeout=600)
+    if f.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None, f"upstream fetch failed: {redact(f.stderr)[:150]}"
+    return (work, br), None
+
+
+def check_upstream(conn, product_id):
+    """Read-only diagnosis: how do mirror and upstream differ?"""
+    _sql(conn)
+    cur = conn.cursor()
+    row = _load_product(cur, product_id)
+    conn.commit()
+    cur.close()
+    if not row:
+        return {"success": False, "error": f"product {product_id} not found"}
+    name, mirror, up_url, gh_url, ro = row
+    up = up_url or gh_url or ""
+    if not up:
+        return {"success": False,
+                "error": "нет upstream: импортируйте с source_url или опубликуйте"}
+    prepped, err = _prep_clone(mirror, up)
+    if err:
+        return {"success": False, "error": err}
+    work, br = prepped
+    try:
+        lr = _run(["git", "-C", work, "rev-list", "--left-right", "--count",
+                   f"HEAD...up/{br}"], timeout=60)
+        ahead, behind = (int(x) for x in lr.stdout.split())
+        verdict = ("up_to_date" if not (ahead or behind) else
+                   "behind" if behind and not ahead else
+                   "ahead_only" if ahead and not behind else "diverged")
+        up_commits = _run(["git", "-C", work, "log", "--oneline", "-n", "30",
+                           f"HEAD..up/{br}"], timeout=60).stdout.splitlines()
+        our_commits = _run(["git", "-C", work, "log", "--oneline", "-n", "30",
+                            f"up/{br}..HEAD"], timeout=60).stdout.splitlines()
+        diffstat = _run(["git", "-C", work, "diff", "--stat", "HEAD",
+                         f"up/{br}"], timeout=120).stdout
+        tags = _run(["git", "-C", work, "tag", "-l", "pre-sync-*",
+                     "--sort=-refname"], timeout=60).stdout.splitlines()
+        return {"success": True, "name": name, "upstream": up, "branch": br,
+                "readonly": bool(ro), "verdict": verdict, "ahead": ahead,
+                "behind": behind, "upstream_commits": up_commits,
+                "our_commits": our_commits, "diffstat": diffstat[-3000:],
+                "tags": tags[:10]}
+    finally:
+        shutil.rmtree(os.path.dirname(work), ignore_errors=True)
+
+
+def pull_upstream(conn, product_id, mode="ff", confirm=""):
+    """Apply upstream into the mirror. Modes: ff | merge | rebase | overwrite.
+    overwrite (throw away our commits) requires confirm == product name.
+    Always tags the mirror pre-sync-<ts> before touching main."""
+    if mode not in ("ff", "merge", "rebase", "overwrite"):
+        return {"success": False, "error": f"bad mode {mode!r}"}
+    _sql(conn)
+    cur = conn.cursor()
+    row = _load_product(cur, product_id)
+    conn.commit()
+    if not row:
+        cur.close()
+        return {"success": False, "error": f"product {product_id} not found"}
+    name, mirror, up_url, gh_url, ro = row
+    up = up_url or gh_url or ""
+    if not up:
+        cur.close()
+        return {"success": False, "error": "нет upstream у продукта"}
+    if mode == "overwrite" and confirm != name:
+        cur.close()
+        return {"success": False,
+                "error": f"overwrite теряет наши коммиты — введите имя продукта "
+                         f"({name!r}) для подтверждения"}
+    prepped, err = _prep_clone(mirror, up)
+    if err:
+        cur.close()
+        return {"success": False, "error": err}
+    work, br = prepped
+    try:
+        lr = _run(["git", "-C", work, "rev-list", "--left-right", "--count",
+                   f"HEAD...up/{br}"], timeout=60)
+        ahead, behind = (int(x) for x in lr.stdout.split())
+        if behind == 0:
+            return {"success": True, "detail": "уже актуально: новых коммитов "
+                                               "в upstream нет"}
+        if mode == "ff" and ahead > 0:
+            return {"success": False,
+                    "error": f"расхождение (наши {ahead}, их {behind}): "
+                             "выберите merge, rebase или overwrite"}
+        # insurance tag on the mirror BEFORE any change
+        tag = f"pre-sync-{int(time.time())}"
+        t = _run(["git", "-C", work, "tag", tag], timeout=60)
+        _run(["git", "-C", work, "push", "--quiet", "origin", f"refs/tags/{tag}"],
+             timeout=120)
+        if t.returncode != 0:
+            return {"success": False, "error": "не удалось поставить pre-sync тег"}
+
+        def conflicts():
+            return _run(["git", "-C", work, "diff", "--name-only",
+                         "--diff-filter=U"], timeout=60).stdout.splitlines()
+
+        if mode == "overwrite":
+            p = _run(["git", "-C", work, "push", "--force", "origin",
+                      f"up/{br}:main"], timeout=600)
+            if p.returncode != 0:
+                return {"success": False, "error": redact(p.stderr)[:200]}
+            detail = f"overwrite: main = up/{br} ({behind} чужих коммитов принято как есть)"
+        else:
+            if mode == "ff":
+                m = _run(["git", "-C", work, "merge", "--ff-only", f"up/{br}"],
+                         timeout=300)
+            elif mode == "merge":
+                m = _run(["git", "-C", work, *GIT_ID, "merge", "--no-edit",
+                          f"up/{br}"], timeout=300)
+                if m.returncode != 0:
+                    cf = conflicts()
+                    _run(["git", "-C", work, "merge", "--abort"], timeout=60)
+                    return {"success": False, "conflicts": cf,
+                            "error": "конфликты merge — ничего не изменено; "
+                                     "см. список файлов"}
+            else:  # rebase
+                m = _run(["git", "-C", work, *GIT_ID, "rebase", f"up/{br}"],
+                         timeout=600)
+                if m.returncode != 0:
+                    cf = conflicts()
+                    _run(["git", "-C", work, "rebase", "--abort"], timeout=60)
+                    return {"success": False, "conflicts": cf,
+                            "error": "конфликты rebase — ничего не изменено; "
+                                     "см. список файлов"}
+            if m.returncode != 0:
+                return {"success": False, "error": redact(m.stderr)[:200]}
+            push = ["git", "-C", work, "push"]
+            if mode == "rebase":
+                push.append("--force-with-lease")
+            p = _run(push + ["origin", "HEAD:main"], timeout=600)
+            if p.returncode != 0:
+                return {"success": False, "error": redact(p.stderr)[:200]}
+            detail = f"{mode}: подтянуто {behind} коммитов из up/{br}"
+        cur.execute("UPDATE products SET result=%s WHERE id=%s",
+                    (f"upstream sync ({mode}) {time.strftime('%Y-%m-%d %H:%M')}, "
+                     f"откат: {tag}", product_id))
+        conn.commit()
+        cur.close()
+        return {"success": True, "detail": detail, "rollback_tag": tag}
+    finally:
+        shutil.rmtree(os.path.dirname(work), ignore_errors=True)
+
+
+def rollback_upstream(conn, product_id, tag):
+    """Reset mirror main back to a pre-sync tag (undo a bad pull)."""
+    if not re.match(r"^pre-sync-\d+$", tag or ""):
+        return {"success": False, "error": "катиться можно только на pre-sync-* тег"}
+    _sql(conn)
+    cur = conn.cursor()
+    row = _load_product(cur, product_id)
+    conn.commit()
+    cur.close()
+    if not row:
+        return {"success": False, "error": f"product {product_id} not found"}
+    mirror = row[1]
+    tmp = tempfile.mkdtemp(prefix="prod-rollback-")
+    try:
+        work = os.path.join(tmp, "w")
+        c = _run(["git", "clone", "--", mirror, work], timeout=600)
+        if c.returncode != 0:
+            return {"success": False, "error": redact(c.stderr)[:200]}
+        v = _run(["git", "-C", work, "rev-parse", "--verify", f"refs/tags/{tag}"],
+                 timeout=60)
+        if v.returncode != 0:
+            return {"success": False, "error": f"тег {tag} не найден в зеркале"}
+        p = _run(["git", "-C", work, "push", "--force", "origin",
+                  f"{tag}^{{}}:main"], timeout=300)
+        if p.returncode != 0:
+            return {"success": False, "error": redact(p.stderr)[:200]}
+        cur2 = conn.cursor()
+        cur2.execute("UPDATE products SET result=%s WHERE id=%s",
+                     (f"rollback к {tag}", product_id))
+        conn.commit()
+        cur2.close()
+        return {"success": True, "detail": f"main зеркала откатан к {tag}"}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -181,6 +181,36 @@ class HumanInterfaceHandlers:
                     "required": ["id", "confirm"]}
             },
             {
+                "name": "check_upstream",
+                "description": "Read-only diagnosis of a product mirror vs its "
+                               "upstream (imported source or GitHub): verdict "
+                               "(up_to_date/behind/ahead_only/diverged), commit "
+                               "lists, diffstat, rollback tags.",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "integer"}}, "required": ["id"]}
+            },
+            {
+                "name": "pull_upstream",
+                "description": "Human-only: apply upstream into the product mirror. "
+                               "mode: ff | merge | rebase | overwrite (overwrite "
+                               "discards our commits, needs confirm=product name). "
+                               "Mirror is tagged pre-sync-<ts> before any change.",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "integer"},
+                    "mode": {"type": "string", "enum": ["ff", "merge", "rebase",
+                                                        "overwrite"]},
+                    "confirm": {"type": "string"}},
+                    "required": ["id", "mode"]}
+            },
+            {
+                "name": "rollback_upstream",
+                "description": "Human-only: reset the product mirror's main back "
+                               "to a pre-sync-<ts> tag (undo a bad pull).",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "integer"},
+                    "tag": {"type": "string"}}, "required": ["id", "tag"]}
+            },
+            {
                 "name": "get_pipeline_alerts",
                 "description": "Recent pipeline incidents (rework rejections, "
                                "self-fix failures, clarification timeouts, recovered "
@@ -303,6 +333,20 @@ class HumanInterfaceHandlers:
                 bool(arguments.get("private", True)),
                 arguments.get("confirm", ""),
                 bool(arguments.get("force", False)))
+        elif tool_name == "check_upstream":
+            from ..utils import products
+            return products.check_upstream(
+                self.task_storage.connection, int(arguments.get("id", 0)))
+        elif tool_name == "pull_upstream":
+            from ..utils import products
+            return products.pull_upstream(
+                self.task_storage.connection, int(arguments.get("id", 0)),
+                arguments.get("mode", "ff"), arguments.get("confirm", ""))
+        elif tool_name == "rollback_upstream":
+            from ..utils import products
+            return products.rollback_upstream(
+                self.task_storage.connection, int(arguments.get("id", 0)),
+                arguments.get("tag", ""))
         elif tool_name == "request_self_fix":
             from ..utils import self_fix
             return self_fix.file_self_fix(
