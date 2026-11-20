@@ -28,7 +28,8 @@ class RequirementEngineerMcpServer:
                  postgres_db: str = "mcp_registry", postgres_user: str = "postgres", postgres_password: str = "",
                  max_concurrent_requests: int = 10,
                  enable_client_mode: bool = False, client_transport_type: str = "streamable-http",
-                 client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None):
+                 client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None,
+                 llm_model: Optional[str] = None, llm_provider_url: Optional[str] = None):
         self.transport_type = transport_type
         self.host = host
         self.port = port
@@ -44,6 +45,8 @@ class RequirementEngineerMcpServer:
         self.postgres_user = postgres_user
         self.postgres_password = postgres_password
         self.max_concurrent_requests = max_concurrent_requests
+        self.llm_model = llm_model
+        self.llm_provider_url = llm_provider_url
 
         # Client mode configuration
         self.enable_client_mode = enable_client_mode
@@ -79,7 +82,9 @@ class RequirementEngineerMcpServer:
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
             postgres_config=postgres_config,
-            client_handlers=self.client_handlers
+            client_handlers=self.client_handlers,
+            llm_model=self.llm_model,
+            llm_provider_url=self.llm_provider_url
         )
         self.notification_manager = NotificationManager(self.rpc_handler)
 
@@ -165,13 +170,17 @@ class RequirementEngineerMcpServer:
             import json
 
             # Determine the correct endpoint based on the transport type
+            # CRITICAL FIX: Normalize 0.0.0.0 to 127.0.0.1 for endpoint URL
+            # 0.0.0.0 is a bind address, not a connectable address
+            connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
+            
             if self.transport_type == "streamable-http":
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/mcp"
-                endpoint_url = f"http://{self.host}:{self.port}/mcp"
+                endpoint_url = f"http://{connect_host}:{self.port}/mcp"
             else:
                 # For legacy transport, use the send endpoint
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/send"
-                endpoint_url = f"http://{self.host}:{self.port}/send"
+                endpoint_url = f"http://{connect_host}:{self.port}/send"
 
             print(f"DEBUG: Preparing registration payload to {registry_url}")
 
@@ -433,6 +442,13 @@ def main():
                        type=int,
                        default=10,
                        help='Maximum number of concurrent requests (default: 10)')
+    # LLM configuration
+    parser.add_argument('--llm-provider-url',
+                       default='http://192.168.51.237:1234/v1/chat/completions',
+                       help='LLM provider URL (default: http://192.168.51.237:1234/v1/chat/completions)')
+    parser.add_argument('--llm-model',
+                       default='qwen3-coder-next@q5_k_xl',
+                       help='LLM model name (default: qwen3-coder-next@q5_k_xl)')
 
     args = parser.parse_args()
 
@@ -468,7 +484,9 @@ def main():
         client_transport_type=args.client_transport,
         client_host=args.client_host,
         client_port=args.client_port,
-        client_endpoint=args.client_endpoint
+        client_endpoint=args.client_endpoint,
+        llm_model=args.llm_model,
+        llm_provider_url=args.llm_provider_url
     )
     server.start()
 

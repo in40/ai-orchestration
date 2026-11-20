@@ -1,6 +1,6 @@
 """
 Database Integration for MCP Server Registry
-Optional database integration for the registry functionality
+Database integration for the registry functionality using PostgreSQL
 enabling a registry server that tracks multiple MCP services.
 
 HOW TO USE REGISTRY FUNCTIONALITY:
@@ -8,7 +8,7 @@ HOW TO USE REGISTRY FUNCTIONALITY:
 2. Call register_service, list_services, and unregister_service methods as needed
 
 EXAMPLE USAGE:
-    registry = ServiceRegistryDB(db_path="mcp_registry.db")
+    registry = ServiceRegistryDB(host="localhost", database="mcp_registry", user="postgres", password="postgres")
     registry.register_service({
         "id": "service-123",
         "name": "Example Service",
@@ -23,43 +23,72 @@ EXAMPLE USAGE:
     services = registry.list_services()
     registry.unregister_service("service-123")
 """
-import sqlite3
 import json
 import time
 from typing import Dict, List, Any, Optional
+import psycopg2
 
 
 class ServiceRegistryDB:
-    """Optional database integration for MCP server registry functionality.
+    """Database integration for MCP server registry functionality using PostgreSQL.
 
     This class provides database storage for the registry functionality,
     enabling a registry server that tracks multiple MCP services.
     """
 
-    def __init__(self, db_path: str = "mcp_registry.db"):
-        self.db_path = db_path
+    def __init__(self, host: str = "localhost", port: int = 5432, database: str = "mcp_registry",
+                 user: str = "postgres", password: str = "postgres"):
+        self.host = host
+        self.port = port
+        self.database = database
+        self.user = user
+        self.password = password
+        self.connection = None
         self.init_db()
+
+    def _connect(self):
+        """Establish connection to PostgreSQL database"""
+        try:
+            self.connection = psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                database=self.database,
+                user=self.user,
+                password=self.password
+            )
+        except Exception as e:
+            print(f"Failed to connect to PostgreSQL: {e}")
+            raise
 
     def init_db(self):
         """Initialize the database and create tables if they don't exist"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        try:
+            self._connect()
+            cursor = self.connection.cursor()
 
-        # Create services table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS services (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT,
-                endpoint TEXT NOT NULL,
-                capabilities TEXT,  -- JSON string
-                registered_at REAL NOT NULL,
-                last_seen REAL NOT NULL
-            )
-        """)
+            # Create services table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS services (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    endpoint TEXT NOT NULL,
+                    capabilities JSONB,
+                    registered_at DOUBLE PRECISION NOT NULL,
+                    last_seen DOUBLE PRECISION NOT NULL
+                )
+            """)
 
-        conn.commit()
-        conn.close()
+            # Create index for capability searches
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_services_name ON services(name)
+            """)
+
+            self.connection.commit()
+            cursor.close()
+        except Exception as e:
+            print(f"Error initializing database: {e}")
+            raise
 
     def register_service(self, service_info: Dict[str, Any]) -> bool:
         """Register a service with the registry.
@@ -73,8 +102,7 @@ class ServiceRegistryDB:
             True if registration was successful, False otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
             # Set timestamps
             now = time.time()
@@ -83,9 +111,16 @@ class ServiceRegistryDB:
 
             # Insert or replace the service
             cursor.execute("""
-                INSERT OR REPLACE INTO services
+                INSERT INTO services
                 (id, name, description, endpoint, capabilities, registered_at, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    endpoint = EXCLUDED.endpoint,
+                    capabilities = EXCLUDED.capabilities,
+                    registered_at = EXCLUDED.registered_at,
+                    last_seen = EXCLUDED.last_seen
             """, (
                 service_info['id'],
                 service_info['name'],
@@ -96,8 +131,8 @@ class ServiceRegistryDB:
                 service_info['last_seen']
             ))
 
-            conn.commit()
-            conn.close()
+            self.connection.commit()
+            cursor.close()
 
             return True
         except Exception as e:
@@ -111,8 +146,7 @@ class ServiceRegistryDB:
             List of dictionaries containing service information
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
@@ -121,7 +155,7 @@ class ServiceRegistryDB:
             """)
 
             rows = cursor.fetchall()
-            conn.close()
+            cursor.close()
 
             services = []
             for row in rows:
@@ -151,17 +185,16 @@ class ServiceRegistryDB:
             Service information dictionary or None if not found
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
                 FROM services
-                WHERE id = ?
+                WHERE id = %s
             """, (service_id,))
 
             row = cursor.fetchone()
-            conn.close()
+            cursor.close()
 
             if row:
                 return {
@@ -189,14 +222,13 @@ class ServiceRegistryDB:
             True if removal was successful, False otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
-            cursor.execute("DELETE FROM services WHERE id = ?", (service_id,))
+            cursor.execute("DELETE FROM services WHERE id = %s", (service_id,))
             affected_rows = cursor.rowcount
 
-            conn.commit()
-            conn.close()
+            self.connection.commit()
+            cursor.close()
 
             return affected_rows > 0
         except Exception as e:
@@ -213,19 +245,18 @@ class ServiceRegistryDB:
             True if update was successful, False otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
             now = time.time()
             cursor.execute("""
                 UPDATE services
-                SET last_seen = ?
-                WHERE id = ?
+                SET last_seen = %s
+                WHERE id = %s
             """, (now, service_id))
 
             affected_rows = cursor.rowcount
-            conn.commit()
-            conn.close()
+            self.connection.commit()
+            cursor.close()
 
             return affected_rows > 0
         except Exception as e:
@@ -242,20 +273,19 @@ class ServiceRegistryDB:
             Number of services removed
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
             max_age_seconds = max_age_minutes * 60
             cutoff_time = time.time() - max_age_seconds
 
             cursor.execute("""
                 DELETE FROM services
-                WHERE last_seen < ?
+                WHERE last_seen < %s
             """, (cutoff_time,))
 
             removed_count = cursor.rowcount
-            conn.commit()
-            conn.close()
+            self.connection.commit()
+            cursor.close()
 
             return removed_count
         except Exception as e:
@@ -273,8 +303,7 @@ class ServiceRegistryDB:
             List of services that support the specified capability
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
@@ -282,7 +311,7 @@ class ServiceRegistryDB:
             """)
 
             rows = cursor.fetchall()
-            conn.close()
+            cursor.close()
 
             matching_services = []
             for row in rows:
@@ -320,8 +349,7 @@ class ServiceRegistryDB:
             List of services that support any of the specified capability types
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            cursor = self.connection.cursor()
 
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
@@ -329,7 +357,7 @@ class ServiceRegistryDB:
             """)
 
             rows = cursor.fetchall()
-            conn.close()
+            cursor.close()
 
             matching_services = []
             for row in rows:
@@ -352,3 +380,8 @@ class ServiceRegistryDB:
         except Exception as e:
             print(f"Error finding services by capability types: {e}")
             return []
+
+    def close(self):
+        """Close the database connection"""
+        if self.connection:
+            self.connection.close()

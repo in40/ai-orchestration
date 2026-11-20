@@ -4,6 +4,7 @@ Implements human interface capabilities for software development teams
 """
 import json
 import time
+import datetime
 from typing import Dict, Any, List, Optional
 from ..utils.json_rpc import JsonRpcHandler
 
@@ -11,10 +12,11 @@ from ..utils.json_rpc import JsonRpcHandler
 class HumanInterfaceHandlers:
     """Handles human interface specific MCP server methods for software development teams"""
 
-    def __init__(self, llm_client=None, agent_registry=None, task_storage=None):
+    def __init__(self, llm_client=None, agent_registry=None, task_storage=None, task_assignment_manager=None):
         self.llm_client = llm_client
         self.agent_registry = agent_registry
         self.task_storage = task_storage
+        self.task_assignment_manager = task_assignment_manager
         
         # Human interface tools
         self.tools = [
@@ -31,6 +33,183 @@ class HumanInterfaceHandlers:
                     },
                     "required": ["task_id", "reason", "context"]
                 }
+            },
+            {
+                "name": "request_task_rework",
+                "description": "Request rework on a completed task that is not acceptable",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "ID of the completed task requiring rework"},
+                        "issue_description": {"type": "string", "description": "Description of the issue or why rework is needed"},
+                        "additional_comments": {"type": "string", "description": "Optional additional comments for the developer"},
+                        "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Priority for the rework", "default": "medium"}
+                    },
+                    "required": ["task_id", "issue_description"]
+                }
+            },
+            {
+                "name": "answer_clarification",
+                "description": "Answer clarification question(s) the pipeline asked the requestor "
+                               "(task in awaiting_input). Answers are injected into re-planning.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task the questions belong to"},
+                        "answers": {"type": "object",
+                                    "description": "map of FIELD (as asked) -> answer text"},
+                        "env_fields": {"type": "array", "items": {"type": "string"},
+                                       "description": "answered FIELDS to inject into the "
+                                                      "container env at deploy (metadata.deploy_env)"},
+                        "secret_fields": {"type": "array", "items": {"type": "string"},
+                                          "description": "answered FIELDS that are secrets: "
+                                                         "masked in prompts, env-only"},
+                        "answered_by": {"type": "string", "description": "Who answered",
+                                        "default": "human_operator"}
+                    },
+                    "required": ["task_id", "answers"]
+                }
+            },
+            {
+                "name": "get_pending_clarifications",
+                "description": "List unanswered clarification questions across tasks "
+                               "(for the requestor's notification bell).",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "get_deploy_env",
+                "description": "Runtime env vars the requestor set for a task "
+                               "(metadata.deploy_env). DevOps merges these into the "
+                               "container environment at deploy; exposed as a tool so "
+                               "other services never read the task DB directly.",
+                "inputSchema": {"type": "object",
+                                "properties": {"task_id": {"type": "string"}},
+                                "required": ["task_id"]}
+            },
+            {
+                "name": "clear_deployment_url",
+                "description": "Drop deployment_url from task metadata after the "
+                               "deployment was stopped/deleted (task owner exposes this "
+                               "so devops never writes to the task DB directly).",
+                "inputSchema": {"type": "object",
+                                "properties": {"task_id": {"type": "string"}},
+                                "required": ["task_id"]}
+            },
+            {
+                "name": "request_self_fix",
+                "description": "File a complaint about the platform's own UI/code; the "
+                               "team fixes a whitelisted snapshot and the diff awaits "
+                               "human approval in the bell.",
+                "inputSchema": {"type": "object", "properties": {
+                    "complaint": {"type": "string"},
+                    "area": {"type": "string", "description": "whitelisted area, e.g. web-ui-frontend"}},
+                    "required": ["complaint"]}
+            },
+            {
+                "name": "get_selffix_queue",
+                "description": "Self-fix items: diffs awaiting review plus recent history.",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "get_selffix_diff",
+                "description": "Full diff text of one self-fix item.",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"}},
+                                "required": ["id"]}
+            },
+            {
+                "name": "approve_selffix",
+                "description": "Merge an approved self-fix diff into the live repo "
+                               "(whitelist re-checked; verifier watches the commit).",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"}},
+                                "required": ["id"]}
+            },
+            {
+                "name": "reject_selffix",
+                "description": "Reject a self-fix diff with a short reason.",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"},
+                                               "reason": {"type": "string"}},
+                                "required": ["id"]}
+            },
+            {
+                "name": "archive_task",
+                "description": "Archive (hide, lossless) or unarchive a task.",
+                "inputSchema": {"type": "object", "properties": {
+                    "task_id": {"type": "string"},
+                    "archived": {"type": "boolean"}},
+                    "required": ["task_id"]}
+            },
+            {
+                "name": "delete_task",
+                "description": "Delete a task: snapshot to trash, purge work "
+                               "state and results/<task>. Requires confirm=task_id.",
+                "inputSchema": {"type": "object", "properties": {
+                    "task_id": {"type": "string"},
+                    "confirm": {"type": "string"}},
+                    "required": ["task_id", "confirm"]}
+            },
+            {
+                "name": "list_products",
+                "description": "Products (mirrors on .187, optional GitHub publication).",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "import_product",
+                "description": "Create a product mirror on the artifact host from "
+                               "a git URL or a results/<task_id> seed.",
+                "inputSchema": {"type": "object", "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "source_url": {"type": "string"},
+                    "seed_task_id": {"type": "string"}},
+                    "required": ["name"]}
+            },
+            {
+                "name": "publish_product",
+                "description": "Human-only: push a product mirror to a new GitHub "
+                               "repo (requires confirm='publish').",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "integer"},
+                    "github_repo": {"type": "string"},
+                    "private": {"type": "boolean"},
+                    "confirm": {"type": "string"}},
+                    "required": ["id", "confirm"]}
+            },
+            {
+                "name": "get_pipeline_alerts",
+                "description": "Recent pipeline incidents (rework rejections, "
+                               "self-fix failures, clarification timeouts, recovered "
+                               "artifacts) within the last 48 hours.",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "get_retro_digest",
+                "description": "Latest nightly retro report: team health snapshot "
+                               "(tasks/gates/reworks/stuck) for the notification bell.",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "get_retro_proposals",
+                "description": "Improvement proposals from the retro proposer "
+                               "(status=proposed awaiting approval, plus recent history).",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "approve_retro_proposal",
+                "description": "Approve a retro proposal: R1 convention/planner notes are "
+                               "applied to the learned-convention files; R2 is recorded.",
+                "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}},
+                                "required": ["id"]}
+            },
+            {
+                "name": "reject_retro_proposal",
+                "description": "Reject a retro proposal with a short reason.",
+                "inputSchema": {"type": "object",
+                                "properties": {"id": {"type": "integer"},
+                                               "reason": {"type": "string"}},
+                                "required": ["id"]}
             }
         ]
 
@@ -75,6 +254,90 @@ class HumanInterfaceHandlers:
 
         if tool_name == "escalate_to_human":
             return self._escalate_to_human(arguments)
+        elif tool_name == "request_task_rework":
+            return self._request_task_rework(arguments)
+        elif tool_name == "answer_clarification":
+            return self._answer_clarification(arguments)
+        elif tool_name == "get_pending_clarifications":
+            return self._get_pending_clarifications(arguments)
+        elif tool_name == "clear_deployment_url":
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute("UPDATE task_registry SET metadata = metadata::jsonb - 'deployment_url' "
+                           "WHERE task_id = %s", (arguments.get("task_id", ""),))
+            self.task_storage.connection.commit()
+            cursor.close()
+            return {"success": True}
+        elif tool_name == "get_retro_digest":
+            return self._get_retro_digest(arguments)
+        elif tool_name == "get_pipeline_alerts":
+            return self._get_pipeline_alerts()
+        elif tool_name == "archive_task":
+            from ..utils import task_lifecycle
+            return task_lifecycle.archive_task(
+                self.task_storage.connection, arguments.get("task_id", ""),
+                bool(arguments.get("archived", True)))
+        elif tool_name == "delete_task":
+            from ..utils import task_lifecycle
+            return task_lifecycle.delete_task(
+                self.task_storage.connection, arguments.get("task_id", ""),
+                arguments.get("confirm", ""))
+        elif tool_name == "list_products":
+            from ..utils import products
+            return {"success": True,
+                    "products": products.list_products(self.task_storage.connection)}
+        elif tool_name == "import_product":
+            from ..utils import products
+            return products.import_product(
+                self.task_storage.connection,
+                arguments.get("name", ""), arguments.get("description", ""),
+                arguments.get("source_url", ""), arguments.get("seed_task_id", ""))
+        elif tool_name == "publish_product":
+            from ..utils import products
+            return products.publish_product(
+                self.task_storage.connection, int(arguments.get("id", 0)),
+                arguments.get("github_repo", ""),
+                bool(arguments.get("private", True)),
+                arguments.get("confirm", ""),
+                bool(arguments.get("force", False)))
+        elif tool_name == "request_self_fix":
+            from ..utils import self_fix
+            return self_fix.file_self_fix(
+                self.task_storage.connection,
+                arguments.get("complaint", ""),
+                arguments.get("area", "web-ui-frontend"),
+                self.task_assignment_manager,
+                log_activity=self.task_assignment_manager._log_activity
+                if self.task_assignment_manager else None)
+        elif tool_name == "get_selffix_queue":
+            from ..utils import self_fix
+            return {"success": True, "items": self_fix.list_queue(self.task_storage.connection)}
+        elif tool_name == "get_selffix_diff":
+            from ..utils import self_fix
+            return {"success": True, "diff": self_fix.get_diff(
+                self.task_storage.connection, int(arguments.get("id", 0)))}
+        elif tool_name == "approve_selffix":
+            from ..utils import self_fix
+            return self_fix.approve(self.task_storage.connection, int(arguments.get("id", 0)))
+        elif tool_name == "reject_selffix":
+            from ..utils import self_fix
+            return self_fix.reject(self.task_storage.connection, int(arguments.get("id", 0)),
+                                   str(arguments.get("reason", "")))
+        elif tool_name == "get_deploy_env":
+            task = self.task_storage.get_task(arguments.get("task_id", "")) if self.task_storage else None
+            md = (task or {}).get("metadata") or {}
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except Exception:
+                    md = {}
+            env = md.get("deploy_env")
+            return {"success": True, "env": env if isinstance(env, dict) else {}}
+        elif tool_name == "get_retro_proposals":
+            return self._get_retro_proposals(arguments)
+        elif tool_name == "approve_retro_proposal":
+            return self._approve_retro_proposal(arguments)
+        elif tool_name == "reject_retro_proposal":
+            return self._reject_retro_proposal(arguments)
 
         # For any other tools, return None to indicate this module doesn't handle them
         return None
@@ -206,3 +469,266 @@ class HumanInterfaceHandlers:
                 "urgency": "medium",
                 "recommended_action": "No recommendation due to error"
             }
+
+    def _request_task_rework(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Request rework on a completed task that is not acceptable"""
+        task_id = arguments.get("task_id", "")
+        issue_description = arguments.get("issue_description", "")
+        additional_comments = arguments.get("additional_comments", "")
+        priority = arguments.get("priority", "medium")
+
+        # Validate task exists and is in done status
+        if self.task_storage:
+            task = self.task_storage.get_task(task_id)
+            if not task:
+                return {
+                    "success": False,
+                    "error": f"Task not found: {task_id}",
+                    "message": "Cannot request rework for non-existent task"
+                }
+
+            current_status = task.get("status", "")
+            # Allow rework for tasks that have completed (done/failed) or are in revision workflow (needs_revision/rework_in_progress)
+            if current_status not in ("done", "failed", "needs_revision", "rework_in_progress"):
+                return {
+                    "success": False,
+                    "error": f"Task is not in a state for rework: {current_status}",
+                    "message": f"Can only request rework for tasks with status 'done', 'failed', 'needs_revision', or 'rework_in_progress', current status is '{current_status}'"
+                }
+
+        # Prepare rework request
+        rework_request = {
+            "task_id": task_id,
+            "issue_description": issue_description,
+            "additional_comments": additional_comments,
+            "requested_by": "human_operator",
+            "requested_at": datetime.now().isoformat() if hasattr(datetime, 'isoformat') else str(time.time()),
+            "priority": priority,
+            "status": "pending_review"
+        }
+
+        # Store rework request in task metadata
+        if self.task_storage:
+            try:
+                import json
+                task = self.task_storage.get_task(task_id)
+                if task:
+                    existing_meta = {}
+                    metadata = task.get("metadata", {}) or {}
+                    try:
+                        existing_meta = json.loads(metadata) if isinstance(metadata, str) else metadata
+                    except:
+                        pass
+
+                    # Add rework_request to history
+                    rework_history = existing_meta.get("rework_requests", [])
+                    if isinstance(rework_history, str):
+                        rework_history = json.loads(rework_history)
+                    rework_history.append(rework_request)
+
+                    # Update metadata with rework request
+                    existing_meta["rework_requests"] = rework_history
+                    existing_meta["last_rework_requested_at"] = rework_request["requested_at"]
+
+                    # Update task status to needs_revision
+                    self.task_storage.update_task_status_only(
+                        task_id=task_id,
+                        status="needs_revision",
+                        status_reason=f"Rework requested: {issue_description[:100]}...",
+                        metadata=existing_meta
+                    )
+            except Exception as e:
+                print(f"Error storing rework request: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Trigger rework workflow if task_assignment_manager is available
+        if self.task_assignment_manager and task:
+            issue_desc_for_workflow = issue_description if issue_description else "Issues found in deployed code"
+            self.task_assignment_manager._trigger_rework_workflow(
+                task_id=task_id,
+                issue_description=issue_desc_for_workflow,
+                additional_comments=additional_comments if additional_comments else "",
+                priority=priority if priority else "medium"
+            )
+
+        return {
+            "success": True,
+            "message": f"Rework requested for task {task_id}",
+            "rework_request": rework_request
+        }
+
+    def _answer_clarification(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Record the requestor's answers; the paused pipeline watcher picks
+        them up and resumes planning."""
+        task_id = arguments.get("task_id", "")
+        answers = arguments.get("answers", {}) or {}
+        if not self.task_storage:
+            return {"success": False, "error": "task storage unavailable"}
+        task = self.task_storage.get_task(task_id)
+        if not task:
+            return {"success": False, "error": f"Task not found: {task_id}"}
+        md = task.get("metadata", {}) or {}
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except Exception:
+                md = {}
+        cl = md.get("clarifications") or []
+        norm = {str(k).strip().upper().replace(" ", "_"): str(v)
+                for k, v in answers.items()}
+        env_set = {str(f).strip().upper().replace(" ", "_")
+                   for f in (arguments.get("env_fields") or [])}
+        secret_set = {str(f).strip().upper().replace(" ", "_")
+                      for f in (arguments.get("secret_fields") or [])}
+        updated = 0
+        for c in cl:
+            if c.get("status") == "pending" and c.get("field") in norm:
+                c["status"] = "answered"
+                c["answer"] = norm[c["field"]]
+                c["answered_at"] = time.time()
+                c["answered_by"] = arguments.get("answered_by", "human_operator")
+                c["in_env"] = c["field"] in env_set
+                c["is_secret"] = c["field"] in secret_set
+                updated += 1
+        # V3: requestor-marked runtime values flow into deploy_env, which devops
+        # merges into the container environment at every deploy (survives
+        # contract re-planning). Secrets stay OUT of prompts and git artifacts.
+        deploy_env = dict(md.get("deploy_env") or {})
+        for c in cl:
+            if c.get("status") == "answered" and c.get("in_env"):
+                deploy_env[c["field"]] = c["answer"]
+        if deploy_env:
+            md["deploy_env"] = deploy_env
+        md["clarifications"] = cl
+        self.task_storage.update_task_status_only(
+            task_id=task_id,
+            status=task.get("status") or "awaiting_input",
+            status_reason=f"{updated} clarification answer(s) recorded",
+            metadata=md)
+        if self.task_assignment_manager and updated:
+            try:
+                self.task_assignment_manager._log_activity(
+                    task_id, "clarification_answered", agent="human_operator",
+                    detail=", ".join(sorted(norm)))
+            except Exception:
+                pass
+        pending = [c["field"] for c in cl if c.get("status") == "pending"]
+        return {"success": True, "answered": updated, "still_pending": pending}
+
+    def _get_pending_clarifications(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Flatten pending questions across tasks for the UI bell."""
+        out = []
+        try:
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "SELECT task_id, title, metadata::jsonb FROM task_registry "
+                "WHERE metadata::jsonb->'clarifications' IS NOT NULL "
+                "ORDER BY updated_at DESC LIMIT 200")
+            rows = cursor.fetchall()
+            # commit: release the transaction lock - an idle-in-transaction
+            # shared connection blocks retro's ALTER TABLEs
+            self.task_storage.connection.commit()
+            cursor.close()
+        except Exception as e:
+            return {"success": False, "error": str(e), "clarifications": []}
+        for tid, title, md in rows:
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except Exception:
+                    continue
+            for c in (md or {}).get("clarifications") or []:
+                if c.get("status") == "pending":
+                    out.append({"task_id": tid, "title": title,
+                                "id": c.get("id"), "field": c.get("field"),
+                                "question": c.get("question"), "why": c.get("why"),
+                                "asked_by": c.get("asked_by"),
+                                "asked_at": c.get("asked_at")})
+        return {"success": True, "clarifications": out}
+
+    def _get_pipeline_alerts(self) -> Dict[str, Any]:
+        """Recent incident events from task activity logs (48h window)."""
+        events = ("rework_rejected", "selffix_failed", "selffix_no_diff",
+                  "clarification_timeout", "git_url_recovered", "selffix_error")
+        try:
+            cur = self.task_storage.connection.cursor()
+            cur.execute(
+                "SELECT task_id, e->>'event', e->>'detail', (e->>'ts')::numeric::bigint "
+                "FROM task_registry, jsonb_array_elements(COALESCE(activity,'[]'::jsonb)) e "
+                "WHERE e->>'event' = ANY(%s) "
+                "AND COALESCE(e->>'ts','') ~ '^[0-9]+(\\.[0-9]+)?$' "
+                "AND (e->>'ts')::numeric > EXTRACT(EPOCH FROM now() - interval '48 hours') "
+                "ORDER BY (e->>'ts')::numeric DESC LIMIT 20", (list(events),))
+            rows = [{"task_id": r[0], "event": r[1], "detail": (r[2] or "")[:150],
+                     "ts": int(r[3])} for r in cur.fetchall()]
+            self.task_storage.connection.commit()
+            cur.close()
+            return {"success": True, "alerts": rows}
+        except Exception as e:
+            try:
+                self.task_storage.connection.rollback()
+            except Exception:
+                pass
+            return {"success": True, "alerts": [], "note": str(e)[:120]}
+
+    def _get_retro_digest(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Latest nightly health snapshot written by retro/observer.py."""
+        try:
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute("SELECT EXTRACT(EPOCH FROM ts), digest, metrics::text "
+                           "FROM retro_reports ORDER BY ts DESC LIMIT 1")
+            row = cursor.fetchone()
+            self.task_storage.connection.commit()
+            cursor.close()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if not row:
+            return {"success": True, "digest": None}
+        try:
+            metrics = json.loads(row[2]) if row[2] else {}
+        except Exception:
+            metrics = {}
+        return {"success": True, "ts": float(row[0]), "digest": row[1], "metrics": metrics}
+
+    def _get_retro_proposals(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "SELECT id, EXTRACT(EPOCH FROM ts), title, problem, change_type, risk, "
+                "patch_text, rationale, expected_effect, status "
+                "FROM retro_proposals "
+                "WHERE status = 'proposed' OR ts > now() - interval '3 days' "
+                "ORDER BY id DESC LIMIT 20")
+            rows = cursor.fetchall()
+            self.task_storage.connection.commit()
+            cursor.close()
+        except Exception as e:
+            return {"success": True, "proposals": [], "note": str(e)[:120]}
+        out = [{"id": r[0], "ts": float(r[1]), "title": r[2], "problem": r[3],
+                "change_type": r[4], "risk": r[5], "patch_text": r[6],
+                "rationale": r[7], "expected_effect": r[8], "status": r[9]}
+               for r in rows]
+        return {"success": True, "proposals": out}
+
+    def _approve_retro_proposal(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            import sys as _sys
+            if "/root/qwen/base/retro" not in _sys.path:
+                _sys.path.insert(0, "/root/qwen/base/retro")
+            from applier import apply_proposal
+            return apply_proposal(int(arguments.get("id", 0)),
+                                  manager=self.task_assignment_manager)
+        except Exception as e:
+            return {"success": False, "error": str(e)[:200]}
+
+    def _reject_retro_proposal(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            import sys as _sys
+            if "/root/qwen/base/retro" not in _sys.path:
+                _sys.path.insert(0, "/root/qwen/base/retro")
+            from applier import reject_proposal
+            return reject_proposal(int(arguments.get("id", 0)),
+                                   str(arguments.get("reason", "")))
+        except Exception as e:
+            return {"success": False, "error": str(e)[:200]}

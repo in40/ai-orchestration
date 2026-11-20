@@ -19,6 +19,14 @@ from devops_release_engineer_mcp_server.transports.stdio import StdioTransport
 from devops_release_engineer_mcp_server.transports.http_sse import HttpSseTransport
 from devops_release_engineer_mcp_server.transports.streamable_http import StreamableHttpTransport
 from devops_release_engineer_mcp_server.handlers.server_handlers import DevOpsReleaseEngineerHandlers
+
+# Import TaskStorage for task registry updates
+try:
+    from it_lead_mcp_server.utils.task_storage import TaskStorage
+    TASK_STORAGE_AVAILABLE = True
+except ImportError:
+    TASK_STORAGE_AVAILABLE = False
+    print("Warning: it_lead_mcp_server.utils.task_storage not available - task registry updates will use direct database access")
 from devops_release_engineer_mcp_server.handlers.client_handlers import ClientMethodsHandlers
 from devops_release_engineer_mcp_server.utils.notifications import NotificationManager
 from devops_release_engineer_mcp_server.utils.heartbeat_manager import HeartbeatManager, RemoteHeartbeatManager
@@ -35,8 +43,8 @@ class DevOpsReleaseEngineerMcpServer:
                  max_concurrent_requests: int = 10,
                  enable_client_mode: bool = True, client_transport_type: str = "streamable-http",
                  client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None,
-                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
+                 llm_provider_url: str = None,  # REQUIRED from config
+                 llm_model: str = None,  # REQUIRED from config
                  prompts_dir: str = "."):
         self.transport_type = transport_type
         self.host = host
@@ -65,7 +73,17 @@ class DevOpsReleaseEngineerMcpServer:
             self.client_port = client_port
         self.client_endpoint = client_endpoint
 
-        # LLM Configuration
+        # LLM Configuration - MUST come from environment or command line, NO defaults
+        import os
+        if not llm_provider_url:
+            llm_provider_url = os.environ.get("LLM_PROVIDER_URL")
+            if not llm_provider_url:
+                raise ValueError("LLM_PROVIDER_URL environment variable not set - must be defined in .env file")
+        if not llm_model:
+            llm_model = os.environ.get("LLM_MODEL")
+            if not llm_model:
+                raise ValueError("LLM_MODEL environment variable not set - must be defined in .env file")
+        
         self.llm_provider_url = llm_provider_url
         self.llm_model = llm_model
         self.prompts_dir = prompts_dir
@@ -91,6 +109,23 @@ class DevOpsReleaseEngineerMcpServer:
             }
 
         self.client_handlers = ClientMethodsHandlers(self.rpc_handler)
+
+        # Initialize task storage for updating task registry after deployments
+        self.task_storage = None
+        if TASK_STORAGE_AVAILABLE:
+            try:
+                self.task_storage = TaskStorage(
+                    host=postgres_host,
+                    port=self.postgres_port,
+                    database=self.postgres_db,
+                    user=self.postgres_user,
+                    password=self.postgres_password
+                )
+                print("TaskStorage initialized successfully for task registry updates")
+            except Exception as e:
+                print(f"Failed to initialize task storage: {e}")
+                print("Continuing with direct database access for task updates")
+
         self.server_handlers = DevOpsReleaseEngineerHandlers(
             enable_registry=enable_registry,
             use_postgres=self.use_postgres,
@@ -98,7 +133,8 @@ class DevOpsReleaseEngineerMcpServer:
             client_handlers=self.client_handlers,
             llm_provider_url=llm_provider_url,
             llm_model=llm_model,
-            prompts_dir=prompts_dir
+            prompts_dir=prompts_dir,
+            task_storage=self.task_storage
         )
         self.notification_manager = NotificationManager(self.rpc_handler)
 
@@ -156,7 +192,23 @@ class DevOpsReleaseEngineerMcpServer:
             # Determine the correct endpoint based on the transport type
             if self.transport_type == "streamable-http":
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/mcp"
-                endpoint_url = f"http://{self.host}:{self.port}/mcp"
+                import os as _os
+                # advertise a REACHABLE address, not the bind wildcard:
+                # 0.0.0.0 in the registry forced every client into a
+                # replace("0.0.0.0","127.0.0.1") hack that dies on multi-host
+                import socket as _sock
+                _adv = (_os.environ.get("MCP_ADVERTISE_HOST") or "").strip()
+                if self.host not in ("0.0.0.0", "::"):
+                    _adv = self.host
+                elif not _adv:
+                    try:
+                        _s = _sock.socket()
+                        _s.connect(("10.255.255.255", 1))
+                        _adv = _s.getsockname()[0]
+                        _s.close()
+                    except Exception:
+                        _adv = "127.0.0.1"
+                endpoint_url = f"http://{_adv}:{self.port}/mcp"
             else:
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/send"
                 endpoint_url = f"http://{self.host}:{self.port}/send"
@@ -185,7 +237,20 @@ class DevOpsReleaseEngineerMcpServer:
             print(f"DEBUG: Registration payload prepared: {payload['params']['id']}")
 
             print(f"DEBUG: Sending registration request to {registry_url}")
-            response = requests.post(registry_url, json=payload)
+            # Boot race: at systemd start the registry process exists but is
+            # not listening yet; a single-shot POST silently lost members
+            # from the team list until manual restart (retry ~2 min window).
+            import time as _t
+            response = None
+            for attempt in range(24):
+                try:
+                    response = requests.post(registry_url, json=payload, timeout=5)
+                    if response.status_code == 200:
+                        break
+                except Exception as e:
+                    if attempt == 23:
+                        raise
+                _t.sleep(5)
             print(f"DEBUG: Registration response status: {response.status_code}")
             print(f"DEBUG: Registration response text: {response.text}")
 
@@ -210,6 +275,31 @@ class DevOpsReleaseEngineerMcpServer:
             print(f"Error registering with registry: {e}")
             import traceback
             traceback.print_exc()
+
+    def _validate_git_repository_at_startup(self):
+        """Validate Git repository connectivity at server startup"""
+        print("\n=== Git Repository Connectivity Check ===")
+        try:
+            # Get Git repo URL from environment or use default
+            import os
+            git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+
+            print(f"Validating Git repository: {git_repo_url}")
+
+            # Call the validation method from server_handlers
+            if hasattr(self.server_handlers, '_validate_git_repository'):
+                result = self.server_handlers._validate_git_repository(git_repo_url)
+                if result.get("success"):
+                    print(f"✅ Git repository is accessible and ready for deployments")
+                else:
+                    print(f"❌ Git repository is NOT accessible!")
+                    print(f"   Error: {result.get('message')}")
+                    print(f"   ⚠️  Deployments will fail until Git repository is accessible!")
+            else:
+                print("⚠️  Git repository validation method not available - skipping startup check")
+        except Exception as e:
+            print(f"⚠️  Could not validate Git repository at startup: {e}")
+        print()
 
     def _register_handlers(self):
         """Register all handlers with the RPC handler"""
@@ -307,6 +397,9 @@ class DevOpsReleaseEngineerMcpServer:
             print(f"Registering with registry at {self.registry_host}:{self.registry_port}...")
             self._register_with_registry()
 
+        # Validate Git repository connectivity at startup
+        self._validate_git_repository_at_startup()
+
         try:
             while self.running:
                 time.sleep(0.1)
@@ -339,6 +432,10 @@ class DevOpsReleaseEngineerMcpServer:
         if self.heartbeat_manager:
             print("Stopping local heartbeat manager...")
             self.heartbeat_manager.stop()
+
+        if self.task_storage:
+            print("Stopping task storage...")
+            self.task_storage.close()
 
         self.running = False
         self.transport.stop()

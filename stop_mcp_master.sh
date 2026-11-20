@@ -77,7 +77,11 @@ cleanup() {
     pkill -f "it_lead_mcp_server" 2>/dev/null || true
     pkill -f "team_management" 2>/dev/null || true
     pkill -f "devops_release_engineer_mcp_server" 2>/dev/null || true
-    pkill -f "uvicorn.*web-backend" 2>/dev/null || true
+    
+    # CRITICAL: Kill Web UI processes (uvicorn and vite)
+    pkill -9 -f "uvicorn.*main:app" 2>/dev/null || true
+    pkill -9 -f "vite.*5173" 2>/dev/null || true
+    pkill -9 -f "start_ui.sh" 2>/dev/null || true
 
     echo ""
     echo "MCP System has been shut down."
@@ -164,12 +168,17 @@ pkill -f "it_lead_mcp_server" 2>/dev/null || true
 pkill -f "team_management" 2>/dev/null || true
 pkill -f "devops_release_engineer_mcp_server" 2>/dev/null || true
 
+# CRITICAL: Kill Web UI processes (uvicorn and vite)
+pkill -9 -f "uvicorn.*main:app" 2>/dev/null || true
+pkill -9 -f "vite.*5173" 2>/dev/null || true
+pkill -9 -f "start_ui.sh" 2>/dev/null || true
+
 sleep 1
 
 # Check if any processes are still running
 echo ""
 echo "Verifying shutdown..."
-RUNNING=$(pgrep -c -f "(mcp_std_server|it_lead_mcp_server|team_management|devops_release_engineer_mcp_server)" 2>/dev/null || echo "0")
+RUNNING=$(pgrep -c -f "(mcp_std_server|it_lead_mcp_server|team_management|devops_release_engineer_mcp_server|uvicorn.*main|vite.*5173)" 2>/dev/null || echo "0")
 if [ "$RUNNING" -eq 0 ]; then
     echo "✓ All MCP processes have been stopped."
 else

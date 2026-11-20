@@ -36,7 +36,7 @@ echo ""
 echo "Step 1/7: Starting Registry Server on port 3031..."
 echo "---------------------------------------------------"
 cd /root/qwen/base/mcp-std-skeleton
-nohup bash ./start_registry_server.sh --port 3031 > /tmp/mcp_registry.log 2>&1 &
+nohup bash ./start_registry_server.sh --port 3031 >> /tmp/mcp_registry.log 2>&1 &
 REG_PID=$!
 echo "  PID: $REG_PID"
 
@@ -54,7 +54,7 @@ echo ""
 echo "Step 2/6: Starting Implementation Engineer Server on port 3060..."
 echo "-------------------------------------------------------------------"
 cd /root/qwen/base/mcp-std-coder/mcp-vibe-coding-agent
-nohup bash ./start_mcp_server.sh --port 3060 > /tmp/implement_eng.log 2>&1 &
+nohup bash ./start_mcp_server.sh --port 3060 >> /tmp/implement_eng.log 2>&1 &
 IMPL_PID=$!
 echo "  PID: $IMPL_PID"
 
@@ -72,7 +72,7 @@ echo ""
 echo "Step 3/6: Starting Requirements Engineer Server on port 3062..."
 echo "------------------------------------------------------------------"
 cd /root/qwen/base/requirements-engineer-mcp-server/requirement-engineer-mcp-server
-nohup bash ./start_requirement_engineer_server.sh > /tmp/req_eng.log 2>&1 &
+nohup bash ./start_requirement_engineer_server.sh >> /tmp/req_eng.log 2>&1 &
 REQ_ENG_PID=$!
 echo "  PID: $REQ_ENG_PID"
 
@@ -90,7 +90,7 @@ echo ""
 echo "Step 3/6: Starting IT Lead Server on port 3061..."
 echo "---------------------------------------------------"
 cd /root/qwen/base/it-lead-mcp-server
-nohup bash ./start_it_lead_server.sh --use-postgres --postgres-password postgres > /tmp/it_lead.log 2>&1 &
+nohup bash ./start_it_lead_server.sh --use-postgres --postgres-password postgres >> /tmp/it_lead.log 2>&1 &
 IT_LEAD_PID=$!
 echo "  PID: $IT_LEAD_PID"
 
@@ -109,7 +109,7 @@ echo "Step 5/7: Starting Team Management Server on port 3063..."
 echo "----------------------------------------------------------"
 cd /root/qwen/base/team-management-ui/team-management-mcp-server
 if [ -f "./start_team_management_server.sh" ]; then
-    nohup bash ./start_team_management_server.sh > /tmp/team_management.log 2>&1 &
+    nohup bash ./start_team_management_server.sh >> /tmp/team_management.log 2>&1 &
     TMGT_PID=$!
     echo "  PID: $TMGT_PID"
 
@@ -130,7 +130,7 @@ echo ""
 echo "Step 6/7: Starting DevOps Release Engineer Server on port 3071..."
 echo "------------------------------------------------------------------"
 cd /root/qwen/base/devops-release-engineer-mcp-server
-nohup bash ./start_devops_release_engineer_server.sh > /tmp/devops_eng.log 2>&1 &
+nohup bash ./start_devops_release_engineer_server.sh >> /tmp/devops_eng.log 2>&1 &
 DEVOPS_PID=$!
 echo "  PID: $DEVOPS_PID"
 
@@ -147,6 +147,24 @@ done
 echo ""
 echo "Step 7/7: Starting Web UI (IT Lead) on ports 8000/5173..."
 echo "----------------------------------------------------------"
+
+# CRITICAL: Kill any existing Web UI processes before starting
+echo "  Cleaning up existing Web UI processes..."
+pkill -9 -f "uvicorn.*main:app" 2>/dev/null || true
+pkill -9 -f "vite.*5173" 2>/dev/null || true
+pkill -9 -f "start_ui.sh" 2>/dev/null || true
+sleep 2
+
+# Verify ports are free
+if ss -tlnp 2>/dev/null | grep -q ":8000 "; then
+    echo "  ⚠️  Port 8000 is still in use, waiting..."
+    sleep 3
+fi
+if ss -tlnp 2>/dev/null | grep -q ":5173 "; then
+    echo "  ⚠️  Port 5173 is still in use, waiting..."
+    sleep 3
+fi
+
 cd /root/qwen/base/it-lead-mcp-server
 if [ -f "./start_ui.sh" ]; then
     nohup bash ./start_ui.sh \
@@ -168,7 +186,7 @@ if [ -f "./start_ui.sh" ]; then
     done
     echo "✓"
 else
-    echo "  ⚠ Web UI startup script (start_ui.sh) not found, skipping..."
+    echo "  ⚠️  Web UI startup script (start_ui.sh) not found, skipping..."
 fi
 
 echo ""

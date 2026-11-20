@@ -71,29 +71,24 @@ class StreamableHttpTransport:
                 )
 
         @self.app.get("/mcp")
-        async def handle_get(websocket: WebSocket):
-            """Handle GET requests - server-to-client communication via WebSocket"""
-            await websocket.accept()
-            
+        async def handle_get(request: Request):
+            """Handle GET requests - server-to-client communication via SSE"""
+            from starlette.responses import StreamingResponse
+            import asyncio
+
             # Generate a unique session ID
             session_id = f"session_{self.session_counter}"
             self.session_counter += 1
-            self.sessions[session_id] = websocket
-            
-            try:
-                # Listen for messages from the client (though in Streamable HTTP, 
-                # this is primarily for connection metadata)
-                while True:
-                    # Wait for a message (but we don't really expect any in this model)
-                    data = await websocket.receive_text()
-                    # In the Streamable HTTP model, the GET endpoint is primarily for
-                    # establishing the connection, not for receiving messages
-                    # So we'll just acknowledge receipt
-                    await websocket.send_text('{"type": "ack", "message": "connection established"}')
-            except WebSocketDisconnect:
-                # Clean up session
-                if session_id in self.sessions:
-                    del self.sessions[session_id]
+
+            async def event_stream():
+                """Stream events to the client"""
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    pass
+
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
 
         @self.app.get("/metrics")
         async def get_metrics(request: Request):

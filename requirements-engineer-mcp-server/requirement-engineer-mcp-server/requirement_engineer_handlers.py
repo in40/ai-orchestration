@@ -16,18 +16,33 @@ class RequirementEngineerHandlers(McpServerHandlers):
     """Handles requirement engineering specific MCP server methods"""
 
     def __init__(self, enable_registry: bool = False, use_postgres: bool = False,
-                 postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None):
+                 postgres_config: Optional[Dict[str, Any]] = None, client_handlers=None,
+                 llm_model: Optional[str] = None, llm_provider_url: Optional[str] = None):
         # Initialize the parent class
         super().__init__(enable_registry, use_postgres, postgres_config, client_handlers)
+
+        # Store LLM configuration - MUST come from environment, NO defaults
+        import os
+        if not llm_model:
+            llm_model = os.environ.get("LLM_MODEL")
+            if not llm_model:
+                raise ValueError("LLM_MODEL environment variable not set - must be defined in .env file")
+        self.llm_model = llm_model
         
+        if not llm_provider_url:
+            llm_provider_url = os.environ.get("LLM_PROVIDER_URL")
+            if not llm_provider_url:
+                raise ValueError("LLM_PROVIDER_URL environment variable not set - must be defined in .env file")
+        self.llm_provider_url = llm_provider_url
+
         # Clear default example tools and replace with requirement engineering tools
         self.tools = []
         self.resources = []
         self.prompts = []
-        
+
         # Add requirement engineering tools
         self._add_requirement_engineering_tools()
-        
+
         # Initialize task storage for tracking requirements tasks
         if use_postgres and postgres_config:
             self.task_storage = TaskStorage(use_postgres=True, postgres_config=postgres_config)
@@ -800,39 +815,81 @@ class RequirementEngineerHandlers(McpServerHandlers):
         Call the LLM with the given prompt.
         Uses the LM Studio endpoint as specified in the requirements.
         """
-        try:
-            # LM Studio endpoint details from the requirements
-            url = "http://192.168.51.237:1234/v1/chat/completions"
-            
-            # Prepare the payload for the LLM API
-            payload = {
-                "model": "qwen3.5-35b-a3b@q5_k_xl",  # From requirements
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                "temperature": 0.7,
-                "max_tokens": 2048
-            }
-            
-            # Make the request to the LLM
-            response = requests.post(url, json=payload, timeout=60)
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result["choices"][0]["message"]["content"]
-                
-                # Extract JSON from the response
-                return self._extract_json_from_response(content)
-            else:
-                print(f"LLM API request failed with status {response.status_code}: {response.text}")
-                return {"error": f"LLM API request failed: {response.status_code}"}
-                
-        except Exception as e:
-            print(f"Error calling LLM: {str(e)}")
-            return {"error": f"Error calling LLM: {str(e)}"}
+        # Use configured LLM endpoint and model
+        url = self.llm_provider_url
+
+        # Prepare the payload for the LLM API
+        payload = {
+            "model": self.llm_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.7
+        }
+
+        # Make the request to the LLM with LONG timeout
+        # IMPORTANT: Do NOT use short timeouts - LLM can take 5-10 minutes under load
+        # If timeout occurs, the LLM is STILL GENERATING on the server side
+        # Retrying would create duplicate requests and waste tokens!
+        max_retries = 2  # Only for transient errors, NOT timeouts
+        base_timeout = 300  # 5 minutes base timeout
+        max_timeout = 600  # 10 minutes max
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                # Use LONG timeout - LLM can take 5-10 minutes under load
+                timeout = min(base_timeout * (1.5 ** attempt), max_timeout)
+
+                print(f"🔄 LLM call attempt {attempt + 1}/{max_retries} (timeout: {timeout}s)")
+                print(f"   ⚠️  If this times out, DO NOT RETRY - LLM is still generating!")
+
+                response = requests.post(url, json=payload, timeout=timeout)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    content = result["choices"][0]["message"]["content"]
+
+                    if content:
+                        print(f"✅ LLM call succeeded on attempt {attempt + 1}")
+                        # Extract JSON from the response
+                        return self._extract_json_from_response(content)
+                    else:
+                        print(f"⚠️ LLM returned empty content on attempt {attempt + 1}")
+                        last_error = Exception("LLM returned empty content")
+                        # Empty content is a real error, safe to retry
+                else:
+                    print(f"❌ LLM API request failed with status {response.status_code}: {response.text}")
+                    last_error = Exception(f"LLM API request failed: {response.status_code}")
+                    # HTTP errors are safe to retry
+
+            except Exception as e:
+                error_str = str(e).lower()
+                last_error = e
+
+                # Check if it's a timeout - DO NOT RETRY!
+                if "timeout" in error_str or "timed out" in error_str:
+                    print(f"❌ LLM call TIMED OUT after {timeout}s - DO NOT RETRY!")
+                    print(f"   The LLM is still generating the response on the server.")
+                    print(f"   Retrying would create a duplicate request and waste tokens.")
+                    print(f"   Increase base_timeout or check LLM server health.")
+                    # Break immediately - don't waste tokens!
+                    break
+
+                # Transient errors (network, connection) - safe to retry
+                print(f"❌ LLM call failed on attempt {attempt + 1} (transient): {str(e)}")
+
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** (attempt + 1)
+                    print(f"⏳ Waiting {wait_time}s before retry (transient error)...")
+                    time.sleep(wait_time)
+
+        # All retries failed or timeout occurred
+        print(f"❌ All LLM call attempts failed")
+        return {"error": f"Error calling LLM: {str(last_error)}"}
 
     def _read_resource(self, resource: Dict[str, Any]) -> Dict[str, Any]:
         """Read content from a specific requirement engineering resource"""

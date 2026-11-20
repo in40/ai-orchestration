@@ -123,6 +123,49 @@ class ExtendedItLeadServerHandlers:
                 }
             },
             {
+                "name": "list_deployments",
+                "description": "List all deployed applications (proxies to DevOps Engineer agent via MCP)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status_filter": {"type": "string", "enum": ["running", "stopped", "all"], "default": "running", "description": "Filter deployments by status"}
+                    }
+                }
+            },
+            {
+                "name": "stop_deployment",
+                "description": "Stop a running deployment (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID of deployment to stop"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+            {
+                "name": "start_deployment",
+                "description": "Start a stopped deployment (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID to start"}
+                    },
+                    "required": ["container_id"]
+                }
+            },
+            {
+                "name": "delete_deployment",
+                "description": "Delete a deployment permanently (proxies to DevOps Engineer agent)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "container_id": {"type": "string", "description": "Container ID to delete"}
+                    },
+                    "required": ["container_id"]
+                }
+            },
+            {
                 "name": "get_task_history",
                 "description": "Get the complete status history of a specific task with timestamps",
                 "inputSchema": {
@@ -131,6 +174,20 @@ class ExtendedItLeadServerHandlers:
                         "task_id": {"type": "string", "description": "ID of the task to get history for"}
                     },
                     "required": ["task_id"]
+                }
+            },
+            {
+                "name": "resolve_permission",
+                "description": "Reply to a pending opencode permission ask that is blocking a "
+                               "task's agent session (approve once/always or reject).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "decision": {"type": "string", "enum": ["once", "always", "reject"],
+                                     "description": "How to answer the pending ask"}
+                    },
+                    "required": ["task_id", "decision"]
                 }
             },
             {
@@ -265,8 +322,7 @@ class ExtendedItLeadServerHandlers:
                 port=self.postgres_config.get("port", 5432),
                 database=self.postgres_config.get("database", "mcp_registry"),
                 user=self.postgres_config.get("user", "postgres"),
-                password=self.postgres_config.get("password", ""),
-                use_sqlite=False  # Always use PostgreSQL
+                password=self.postgres_config.get("password", "")
             )
             print("✅ Task storage initialized with PostgreSQL")
         except Exception as e:
@@ -274,9 +330,8 @@ class ExtendedItLeadServerHandlers:
             raise
 
         if self.enable_registry:
-            # Always use SQLite for service registry to share with port 3031's Registry Server
-            # Use PostgreSQL only for task storage, not service discovery
-            self._initialize_registry(use_postgres=False)
+            # Use PostgreSQL for service registry
+            self._initialize_registry()
 
         # Add registry-specific tools if enabled
         if self.enable_registry:
@@ -337,13 +392,15 @@ class ExtendedItLeadServerHandlers:
         self.quality_gate_handlers = QualityGateHandlers(
             llm_client=self.llm_client,
             agent_registry=self.enhanced_agent_registry,
-            task_storage=self.task_storage
+            task_storage=self.task_storage,
+            task_assignment_manager=self.task_assignment_manager
         )
         
         self.human_interface_handlers = HumanInterfaceHandlers(
             llm_client=self.llm_client,
             agent_registry=self.enhanced_agent_registry,
-            task_storage=self.task_storage
+            task_storage=self.task_storage,
+            task_assignment_manager=self.task_assignment_manager
         )
         
         self.advanced_orchestration_handlers = AdvancedOrchestrationHandlers(
@@ -549,10 +606,10 @@ class ExtendedItLeadServerHandlers:
         # Add all enhanced resources to the main resources list
         self.resources.extend(enhanced_resources)
 
-    def _initialize_registry(self, use_postgres: bool):
-        """Initialize the service registry with either SQLite or PostgreSQL"""
+    def _initialize_registry(self):
+        """Initialize the service registry with PostgreSQL"""
         try:
-            if use_postgres and self.postgres_config:
+            if self.postgres_config:
                 from ..utils.postgres_registry_db import PostgresServiceRegistry
                 self.service_registry = PostgresServiceRegistry(
                     host=self.postgres_config.get("host", "localhost"),
@@ -561,12 +618,7 @@ class ExtendedItLeadServerHandlers:
                     user=self.postgres_config.get("user", "postgres"),
                     password=self.postgres_config.get("password", "")
                 )
-                print("✅ PostgreSQL registry initialized (for local task storage)")
-            else:
-                from ..utils.service_registry_db import ServiceRegistryDB
-                # Use absolute path to share registry with port 3031's Registry Server
-                self.service_registry = ServiceRegistryDB(db_path="/root/qwen/base/mcp-std-skeleton/mcp_registry.db")
-                print("✅ SQLite registry initialized (for local task storage)")
+                print("✅ PostgreSQL registry initialized")
         except Exception as e:
             print(f"⚠️  Failed to initialize local registry: {e}")
             print("⚠️  Registry functionality will be disabled (will use MCP Registry Client instead)")
@@ -727,19 +779,7 @@ class ExtendedItLeadServerHandlers:
             tool_arguments = params.get("arguments", {})
             print(f"DEBUG: Processing tool: {tool_name}")
 
-            # Find the tool
-            tool = None
-            for t in self.tools:
-                if t["name"] == tool_name:
-                    tool = t
-                    break
-
-            if not tool:
-                print(f"ERROR: Tool '{tool_name}' not found in main tools list")
-                raise ValueError(f"Tool '{tool_name}' not found")
-
-            print(f"DEBUG: Tool found in main tools list, checking enhanced modules...")
-            # First, try enhanced modules
+            # First, try enhanced modules - they may have tools not in main tools list
             # Strategic Planning
             try:
                 result = self.strategic_planning_handlers.handle_tools_call(params, request_id)
@@ -812,7 +852,20 @@ class ExtendedItLeadServerHandlers:
                 import traceback
                 traceback.print_exc()
 
-            print(f"DEBUG: No enhanced module handled the tool {tool_name}, calling original implementation")
+            print(f"DEBUG: No enhanced module handled the tool {tool_name}")
+
+            # Find the tool in main tools list for original implementation
+            tool = None
+            for t in self.tools:
+                if t["name"] == tool_name:
+                    tool = t
+                    break
+
+            if not tool:
+                print(f"ERROR: Tool '{tool_name}' not found in main tools list")
+                raise ValueError(f"Tool '{tool_name}' not found")
+
+            print(f"DEBUG: Tool found in main tools list, calling original implementation")
             # If not handled by enhanced modules, use original implementation
             try:
                 original_result = self._execute_original_tool(tool, tool_arguments)
@@ -1111,6 +1164,144 @@ class ExtendedItLeadServerHandlers:
                 print("ERROR: Task storage is not available in get_all_tasks")
                 return {"result": {"tasks": [], "total_count": 0, "error": "Task storage not available"}}
 
+        # Add implementation for list_deployments - proxy to DevOps Engineer via MCP
+        elif tool_name == "list_deployments":
+            status_filter = arguments.get("status_filter", "running")
+            print(f"📋 list_deployments called with status_filter={status_filter}")
+
+            # Call DevOps Engineer's list_deployments tool via MCP directly
+            # DevOps is typically at port 3071
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            print(f"📞 Calling DevOps Engineer at {devops_endpoint}")
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "list-deployments",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "list_deployments",
+                            "arguments": {"status_filter": status_filter}
+                        }
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    deployments = result.get('result', {}).get('deployments', [])
+                    print(f"✅ DevOps returned {len(deployments)} deployments")
+                    return result.get("result", {"deployments": deployments, "count": len(deployments)})
+                else:
+                    print(f"❌ DevOps returned status {response.status_code}")
+                    return {
+                        "result": {
+                            "error": f"DevOps Engineer returned status {response.status_code}",
+                            "deployments": [],
+                            "count": 0
+                        }
+                    }
+            except requests.RequestException as e:
+                print(f"❌ Failed to call DevOps Engineer: {e}")
+                return {
+                    "result": {
+                        "error": f"Failed to call DevOps Engineer: {str(e)}",
+                        "deployments": [],
+                        "count": 0
+                    }
+                }
+
+        # Add implementation for stop_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "stop_deployment":
+            task_id = arguments.get("task_id")
+            print(f"🛑 stop_deployment called with task_id={task_id}")
+
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "stop-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "stop_deployment",
+                            "arguments": {"task_id": task_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps stop_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"result": {"error": f"DevOps Engineer returned status {response.status_code}"}}
+            except requests.RequestException as e:
+                return {"result": {"error": f"Failed to call DevOps Engineer: {str(e)}"}}
+
+        # Add implementation for start_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "start_deployment":
+            container_id = arguments.get("container_id")
+            print(f"▶️ start_deployment called with container_id={container_id}")
+
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "start-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "start_deployment",
+                            "arguments": {"container_id": container_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps start_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"result": {"error": f"DevOps Engineer returned status {response.status_code}"}}
+            except requests.RequestException as e:
+                return {"result": {"error": f"Failed to call DevOps Engineer: {str(e)}"}}
+
+        # Add implementation for delete_deployment - proxy to DevOps Engineer via MCP
+        elif tool_name == "delete_deployment":
+            container_id = arguments.get("container_id")
+            print(f"🗑️ delete_deployment called with container_id={container_id}")
+
+            devops_endpoint = "http://0.0.0.0:3071/mcp"
+            try:
+                response = requests.post(
+                    devops_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "delete-deployment",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "delete_deployment",
+                            "arguments": {"container_id": container_id}
+                        }
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"✅ DevOps delete_deployment response: {result}")
+                    return result.get("result", {})
+                else:
+                    return {"result": {"error": f"DevOps Engineer returned status {response.status_code}"}}
+            except requests.RequestException as e:
+                return {"result": {"error": f"Failed to call DevOps Engineer: {str(e)}"}}
+
         elif tool_name == "delete_task":
             task_id = arguments.get("task_id")
             if not task_id:
@@ -1132,6 +1323,13 @@ class ExtendedItLeadServerHandlers:
                     return {"result": {"success": False, "error": str(e)}}
             else:
                 return {"result": {"success": False, "error": "Task storage not available"}}
+        elif tool_name == "resolve_permission":
+            mgr = getattr(self, "task_assignment_manager", None)
+            if not mgr:
+                return {"result": {"error": "task assignment manager unavailable"}}
+            return {"result": mgr.resolve_permission(
+                arguments.get("task_id"), arguments.get("decision", "reject"))}
+
         elif tool_name == "get_task_history":
             task_id = arguments.get("task_id")
             if not task_id:
@@ -1164,6 +1362,17 @@ class ExtendedItLeadServerHandlers:
                         })
                     
                     # Add timestamp fields from the task
+                    activity = []
+                    try:
+                        activity = self.task_storage.get_task_activity(task_id) or []
+                    except Exception:
+                        activity = []
+                    md = task.get("metadata") or {}
+                    if isinstance(md, str):
+                        try:
+                            md = json.loads(md)
+                        except Exception:
+                            md = {}
                     result = {
                         "task_id": task_id,
                         "title": task.get("title", ""),
@@ -1178,6 +1387,9 @@ class ExtendedItLeadServerHandlers:
                         "started_at": task.get("started_at"),
                         "completed_at": task.get("completed_at"),
                         "status_history": history_entries,
+                        "activity": activity,
+                        "pending_permission": md.get("pending_permission"),
+                        "screenshots": md.get("screenshots"),
                         "total_status_changes": len(history_entries)
                     }
                     
@@ -1240,7 +1452,38 @@ class ExtendedItLeadServerHandlers:
         print(f"⏳ _execute_assign_task_async called for task {task_id}")
         print(f"   Task description: {task_description[:100]}...")
         print(f"   Assignee: {assignee}")
-        
+        print(f"   Arguments metadata: {arguments.get('metadata', {})}")
+
+        # Concurrency guard: a second pipeline on the same task id would race
+        # for the same build workspace and deploy route (postmortem
+        # task-1794842620157: reassign during an active rework). Checked here,
+        # BEFORE the row is re-stored as 'submitted'.
+        try:
+            existing = self.task_storage.get_task(task_id) if self.task_storage else None
+            if existing and existing.get("status") in ("in_progress", "review",
+                                                       "rework_in_progress",
+                                                       "awaiting_input"):
+                msg = (f"task {task_id} already has an active pipeline "
+                       f"(status={existing.get('status')}); wait for it to finish, "
+                       f"or request rework once it is done")
+                print(f"⛔ {msg}")
+                return {"error": msg, "success": False, "rejected": True}
+            if existing and existing.get("status") == "submitted":
+                # fresh 'submitted' = a pipeline is in flight; a stale one is a
+                # crashed run and may legitimately be re-assigned
+                from datetime import datetime as _dt
+                try:
+                    age_min = (_dt.now() - _dt.fromisoformat(
+                        str(existing.get("updated_at"))[:19])).total_seconds() / 60
+                except Exception:
+                    age_min = 999
+                if age_min < 15:
+                    msg = f"task {task_id} was submitted {age_min:.0f} min ago and is still processing"
+                    print(f"⛔ {msg}")
+                    return {"error": msg, "success": False, "rejected": True}
+        except Exception as e:
+            print(f"⚠️ concurrency guard check failed: {e}")
+
         # Store the task in the database with 'submitted' status first
         if self.task_storage:
             print(f"💾 Storing task {task_id} with 'submitted' status (async mode)")
@@ -1269,10 +1512,11 @@ class ExtendedItLeadServerHandlers:
             print("❌ task_storage is None, cannot store task")
 
         # Start background thread for LLM planning and forwarding
+        # Pass arguments so background thread has access to metadata (including deploy_after_implementation)
         print(f"🚀 Starting background thread for task {task_id}")
         threading.Thread(
             target=self._background_task_processing,
-            args=(task_id, task_description, assignee),
+            args=(task_id, task_description, assignee, arguments),
             daemon=True
         ).start()
 
@@ -1287,46 +1531,50 @@ class ExtendedItLeadServerHandlers:
             }
         }
 
-    def _background_task_processing(self, task_id: str, task_description: str, assignee: str):
+    def _background_task_processing(self, task_id: str, task_description: str, assignee: str, arguments: Dict[str, Any] = None):
         """Background thread to run LLM planning and forward task to appropriate agent"""
         try:
             print(f"DEBUG: Background task processing started for {task_id}")
-            
+
             # Use ThreadPoolExecutor for the blocking LLM call
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     self._run_llm_planning_and_forward,
-                    task_id, task_description, assignee
+                    task_id, task_description, assignee, arguments
                 )
-                result = future.result(timeout=300)  # 5 minute timeout for LLM planning
-                
+                result = future.result(timeout=900)  # 15 minute timeout for LLM planning + forwarding (matches RE's max timeout)
+
             print(f"DEBUG: Background task processing completed for {task_id}: {result}")
-            
+
         except Exception as e:
             print(f"ERROR in background task processing for {task_id}: {e}")
             import traceback
             traceback.print_exc()
 
-    def _run_llm_planning_and_forward(self, task_id: str, task_description: str, assignee: str):
+    def _run_llm_planning_and_forward(self, task_id: str, task_description: str, assignee: str, arguments: Dict[str, Any] = None):
         """Run LLM planning and forward task - called from background thread"""
         try:
             if not self.task_assignment_manager:
                 print(f"DEBUG: Task assignment manager not available for {task_id}")
                 return {"error": "Task assignment manager unavailable"}
 
-            # Run the full assignment process
+            # Run the full assignment process with original arguments to preserve metadata
+            metadata = {"tool_call": "assign_task_async", "async_mode": True}
+            if arguments:
+                metadata["original_arguments"] = arguments
+
             assignment_result = self.task_assignment_manager.assign_and_forward_task(
                 task_id=task_id,
                 task_description=task_description,
                 assignee=assignee if assignee else None,
                 priority="medium",
                 deadline=None,
-                metadata={"tool_call": "assign_task_async", "original_arguments": {}, "async_mode": True}
+                metadata=metadata
             )
-            
+
             print(f"DEBUG: LLM planning completed for {task_id}: {assignment_result.get('status', 'unknown')}")
             return assignment_result
-            
+
         except Exception as e:
             print(f"ERROR in LLM planning for {task_id}: {e}")
             import traceback
@@ -1372,6 +1620,32 @@ class ExtendedItLeadServerHandlers:
                 traceback.print_exc()
         else:
             print("DEBUG: task_storage is None, cannot store task")
+
+        # CRITICAL FIX: Forward task to proper agent via task_assignment_manager
+        # This ensures LLM planning happens and task is routed correctly
+        if self.task_assignment_manager:
+            print(f"🚀 Forwarding task {task_id} via task_assignment_manager...")
+            try:
+                # Preserve original arguments including deploy_after_implementation flag
+                metadata = {"tool_call": "assign_task", "original_arguments": arguments}
+                
+                assignment_result = self.task_assignment_manager.assign_and_forward_task(
+                    task_id=task_id,
+                    task_description=task_description,
+                    assignee=assignee if assignee != "IT Lead" else None,  # Let routing engine decide
+                    priority=priority,
+                    deadline=deadline if deadline else None,
+                    metadata=metadata
+                )
+                
+                print(f"✅ Task {task_id} forwarding result: {assignment_result.get('status', 'unknown')}")
+                result["forwarding_result"] = assignment_result
+            except Exception as e:
+                print(f"❌ Error forwarding task {task_id}: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"⚠️  task_assignment_manager not available for task {task_id}")
 
         print(f"Assigned task (simple mode): {task_id} to {assignee}, priority: {priority}, deadline: {deadline}")
         return {"result": result}

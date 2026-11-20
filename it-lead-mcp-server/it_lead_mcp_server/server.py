@@ -34,8 +34,8 @@ class ItLeadMcpServer:
                  max_concurrent_requests: int = 10,
                  enable_client_mode: bool = True, client_transport_type: str = "streamable-http",
                  client_host: str = "127.0.0.1", client_port: int = 3030, client_endpoint: Optional[str] = None,
-                 llm_provider_url: str = "http://192.168.51.237:1234/v1/chat/completions",
-                 llm_model: str = "qwen3.5-35b-a3b@q5_k_xl",
+                 llm_provider_url: str = None,  # REQUIRED from config
+                 llm_model: str = None,  # REQUIRED from config
                  prompts_dir: str = "."):
         self.transport_type = transport_type
         self.host = host
@@ -66,9 +66,9 @@ class ItLeadMcpServer:
             self.client_port = client_port
         self.client_endpoint = client_endpoint
 
-        # LLM Configuration
+        # LLM Configuration - MUST come from config, no hardcoded values
         self.llm_provider_url = llm_provider_url
-        self.llm_model = "qwen3.5-35b-a3b@q5_k_xl"
+        self.llm_model = llm_model  # Use parameter from config, NOT hardcoded
         self.prompts_dir = prompts_dir
 
         # Initialize components
@@ -181,7 +181,23 @@ class ItLeadMcpServer:
             # Determine the correct endpoint based on the transport type
             if self.transport_type == "streamable-http":
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/mcp"
-                endpoint_url = f"http://{self.host}:{self.port}/mcp"
+                import os as _os
+                # advertise a REACHABLE address, not the bind wildcard:
+                # 0.0.0.0 in the registry forced every client into a
+                # replace("0.0.0.0","127.0.0.1") hack that dies on multi-host
+                import socket as _sock
+                _adv = (_os.environ.get("MCP_ADVERTISE_HOST") or "").strip()
+                if self.host not in ("0.0.0.0", "::"):
+                    _adv = self.host
+                elif not _adv:
+                    try:
+                        _s = _sock.socket()
+                        _s.connect(("10.255.255.255", 1))
+                        _adv = _s.getsockname()[0]
+                        _s.close()
+                    except Exception:
+                        _adv = "127.0.0.1"
+                endpoint_url = f"http://{_adv}:{self.port}/mcp"
             else:
                 # For legacy transport, use the send endpoint
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/send"
@@ -211,7 +227,20 @@ class ItLeadMcpServer:
             print(f"DEBUG: Registration payload prepared: {payload['params']['id']}")
 
             print(f"DEBUG: Sending registration request to {registry_url}")
-            response = requests.post(registry_url, json=payload)
+            # Boot race: at systemd start the registry process exists but is
+            # not listening yet; a single-shot POST silently lost members
+            # from the team list until manual restart (retry ~2 min window).
+            import time as _t
+            response = None
+            for attempt in range(24):
+                try:
+                    response = requests.post(registry_url, json=payload, timeout=5)
+                    if response.status_code == 200:
+                        break
+                except Exception as e:
+                    if attempt == 23:
+                        raise
+                _t.sleep(5)
             print(f"DEBUG: Registration response status: {response.status_code}")
             print(f"DEBUG: Registration response text: {response.text}")
 
@@ -351,7 +380,15 @@ class ItLeadMcpServer:
         elif self.enable_registry and self.heartbeat_manager:
             # Start heartbeat manager for registry server
             self.heartbeat_manager.start()
-
+        # Requeue tasks orphaned in Postgres by a previous restart
+        try:
+            from .utils.stale_task_recovery import schedule_startup_recovery
+            assignment_manager = getattr(self.server_handlers, 'task_assignment_manager', None)
+            if assignment_manager is not None and assignment_manager.task_storage is not None:
+                schedule_startup_recovery(assignment_manager, assignment_manager.task_storage)
+                print("♻️ Stale-task recovery scheduled for startup")
+        except Exception as e:
+            print(f"⚠️ Could not schedule stale-task recovery: {e}")
         # Keep the server running
         last_team_discovery = time.time()
         team_discovery_interval = 30  # seconds
@@ -441,8 +478,8 @@ def main():
                        help='Registry server port to register with (default: 3031)')
     parser.add_argument('--use-postgres',
                        action='store_true',
-                       default=False,
-                       help='Use PostgreSQL for registry storage instead of SQLite (default: False)')
+                       default=True,
+                       help='Use PostgreSQL for registry storage (default: True)')
     parser.add_argument('--postgres-host',
                        default='127.0.0.1',
                        help='PostgreSQL host (default: 127.0.0.1)')
@@ -486,8 +523,8 @@ def main():
                        default='http://192.168.51.237:1234/v1/chat/completions',
                        help='URL for the LLM provider (default: http://192.168.51.237:1234/v1/chat/completions)')
     parser.add_argument('--llm-model',
-                       default='qwen3.5-35b-a3b@q5_k_xl',
-                       help='LLM model name (default: qwen3.5-35b-a3b@q5_k_xl)')
+                       default=None,  # MUST be set in .env file, no hardcoded default
+                       help='LLM model name - MUST be configured in .env file')
     parser.add_argument('--prompts-dir',
                        default='.',
                        help='Directory to keep prompts (default: current directory)')

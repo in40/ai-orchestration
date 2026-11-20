@@ -25,12 +25,15 @@ REGISTRY_HOST="${REGISTRY_HOST:-127.0.0.1}"
 REGISTRY_PORT="${REGISTRY_PORT:-3031}"
 USE_POSTGRES="${USE_POSTGRES:-true}"
 MAX_CONCURRENT_REQUESTS="${MAX_CONCURRENT_REQUESTS:-10}"
-LLM_PROVIDER_URL="${LLM_PROVIDER_URL:-http://192.168.51.237:1234/v1/chat/completions}"
+LLM_PROVIDER_URL="${LLM_PROVIDER_URL:-http://192.168.51.105:8081/v1/chat/completions}"
 LLM_MODEL="${LLM_MODEL:-qwen3-coder-next@q5_k_xl}"
 
 # Export LLM configuration for Python process
 export LLM_PROVIDER_URL
 export LLM_MODEL
+
+# Export Git repository configuration for vibe_code_async
+export MCP_GIT_REPO_URL
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do

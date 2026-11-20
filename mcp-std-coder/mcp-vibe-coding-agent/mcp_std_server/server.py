@@ -171,13 +171,17 @@ class McpServer:
             import json
 
             # Determine the correct endpoint based on the transport type
+            # CRITICAL FIX: Normalize 0.0.0.0 to 127.0.0.1 for endpoint URL
+            # 0.0.0.0 is a bind address, not a connectable address
+            connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host
+            
             if self.transport_type == "streamable-http":
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/mcp"
-                endpoint_url = f"http://{self.host}:{self.port}/mcp"
+                endpoint_url = f"http://{connect_host}:{self.port}/mcp"
             else:
                 # For legacy transport, use the send endpoint
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/send"
-                endpoint_url = f"http://{self.host}:{self.port}/send"
+                endpoint_url = f"http://{connect_host}:{self.port}/send"
 
             print(f"DEBUG: Preparing registration payload to {registry_url}")
 
@@ -203,7 +207,20 @@ class McpServer:
             print(f"DEBUG: Registration payload prepared: {payload['params']['id']}")
 
             print(f"DEBUG: Sending registration request to {registry_url}")
-            response = requests.post(registry_url, json=payload)
+            # Boot race: at systemd start the registry process exists but is
+            # not listening yet; a single-shot POST silently lost members
+            # from the team list until manual restart (retry ~2 min window).
+            import time as _t
+            response = None
+            for attempt in range(24):
+                try:
+                    response = requests.post(registry_url, json=payload, timeout=5)
+                    if response.status_code == 200:
+                        break
+                except Exception as e:
+                    if attempt == 23:
+                        raise
+                _t.sleep(5)
             print(f"DEBUG: Registration response status: {response.status_code}")
             print(f"DEBUG: Registration response text: {response.text}")
 

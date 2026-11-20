@@ -1,0 +1,48 @@
+[Unit]
+Description=MCP QA Engineer Server - Artifact validation and smoke testing
+Documentation=https://github.com/in40/ai-orchestration
+After=network.target mcp-registry.service
+Wants=mcp-registry.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/qwen/base/qa-engineer-mcp-server
+EnvironmentFile=/root/qwen/base/.env
+
+Environment="TRANSPORT=streamable-http"
+Environment="USE_POSTGRES=true"
+
+ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    export PGPASSWORD="${POSTGRES_PASSWORD:-postgres}"; \
+    python -m mcp_std_server.qa_engineer_server \
+        --transport ${TRANSPORT:-streamable-http} \
+        --host 0.0.0.0 \
+        --port 3072 \
+        --register-with-registry \
+        --registry-host ${REGISTRY_HOST:-127.0.0.1} \
+        --registry-port ${REGISTRY_PORT:-3031} \
+        --use-postgres \
+        --postgres-host ${POSTGRES_HOST:-127.0.0.1} \
+        --postgres-port ${POSTGRES_PORT:-5432} \
+        --postgres-db ${POSTGRES_DB:-mcp_registry} \
+        --postgres-user ${POSTGRES_USER:-postgres} \
+        --postgres-password ${POSTGRES_PASSWORD:-postgres}'
+
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-qa
+
+MemoryMax=512M
+CPUQuota=80%
+
+NoNewPrivileges=true
+ReadWritePaths=/tmp /root/qwen/base/logs
+
+[Install]
+WantedBy=multi-user.target

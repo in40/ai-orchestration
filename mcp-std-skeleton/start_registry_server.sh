@@ -5,12 +5,23 @@
 
 echo "Starting MCP Registry Server..."
 
-# Default values
-TRANSPORT="streamable-http"  # Use the standard transport by default (already correct)
-HOST="127.0.0.1"
-PORT=3031  # Default registry port
-USE_POSTGRES=false
-MAX_CONCURRENT_REQUESTS=10
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# Default values from .env or fallback
+TRANSPORT="streamable-http"
+HOST="${REGISTRY_HOST:-127.0.0.1}"
+PORT="${REGISTRY_PORT:-3031}"
+USE_POSTGRES="${USE_POSTGRES:-true}"
+POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+POSTGRES_DB="${POSTGRES_DB:-mcp_registry}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+MAX_CONCURRENT_REQUESTS="${MAX_CONCURRENT_REQUESTS:-10}"
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -84,7 +95,7 @@ fi
 CMD="$CMD --port $PORT"
 
 if [ "$USE_POSTGRES" = true ]; then
-  CMD="$CMD --use-postgres"
+  CMD="$CMD --use-postgres --postgres-host $POSTGRES_HOST --postgres-port $POSTGRES_PORT --postgres-db $POSTGRES_DB --postgres-user $POSTGRES_USER --postgres-password $POSTGRES_PASSWORD"
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then

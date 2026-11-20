@@ -5,16 +5,23 @@
 
 echo "Starting MCP Agent Web UI..."
 
-# Default values
-WEB_BACKEND_HOST="0.0.0.0"
-WEB_BACKEND_PORT=8000
-WEB_FRONTEND_PORT=5173
-IT_LEAD_HOST="127.0.0.1"
-IT_LEAD_PORT=3061
-REGISTRY_HOST="127.0.0.1"
-REGISTRY_PORT=3031
-LLM_PROVIDER_URL="http://asus-tus:1234/v1/chat/completions"
-LLM_MODEL="qwen3.5-35b-a3b@q5_k_xl"
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# Default values (from .env or fallback)
+WEB_BACKEND_HOST="${WEB_UI_HOST:-0.0.0.0}"
+WEB_BACKEND_PORT="${WEB_UI_BACKEND_PORT:-8000}"
+WEB_FRONTEND_PORT="${WEB_UI_FRONTEND_PORT:-5173}"
+IT_LEAD_HOST="${IT_LEAD_HOST:-127.0.0.1}"
+IT_LEAD_PORT="${IT_LEAD_PORT:-3061}"
+REGISTRY_HOST="${REGISTRY_HOST:-127.0.0.1}"
+REGISTRY_PORT="${REGISTRY_PORT:-3031}"
+# LLM Configuration - MUST come from .env, NO fallback
+LLM_PROVIDER_URL="${LLM_PROVIDER_URL}"
+LLM_MODEL="${LLM_MODEL}"
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -66,8 +73,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --it-lead-port PORT      Port for IT Lead server [default: 3061]"
       echo "  --registry-host HOST     Host for registry server [default: 127.0.0.1]"
       echo "  --registry-port PORT     Port for registry server [default: 3031]"
-      echo "  --llm-provider-url URL   URL for the LLM provider [default: http://asus-tus:1234/v1/chat/completions]"
-      echo "  --llm-model MODEL        LLM model name [default: qwen3.5-35b-a3b@q5_k_xl]"
+      echo "  --llm-provider-url URL   URL for the LLM provider [default: from .env]"
+      echo "  --llm-model MODEL        LLM model name [default: from .env (qwen3-coder-next@q5_k_xl)]"
       echo "  -h, --help              Show this help message"
       exit 0
       ;;
@@ -103,14 +110,47 @@ cleanup() {
     exit 0
 }
 
-# Trap SIGINT and SIGTERM
-trap cleanup INT TERM
+# Trap ONLY Ctrl+C (SIGINT), NOT SIGTERM - allow nohup to protect from shell exit
+# This prevents cleanup from running when shell exits, allowing disowned processes to survive
+trap cleanup INT
+
+# Check if port 8000 is already in use
+if ss -tlnp | grep -q ":${WEB_BACKEND_PORT} "; then
+    echo "⚠️  Port ${WEB_BACKEND_PORT} is already in use!"
+    echo "Checking for existing Web UI backend process..."
+    
+    # Find existing uvicorn process on our port
+    EXISTING_PID=$(lsof -t -i :${WEB_BACKEND_PORT} 2>/dev/null | head -1)
+    
+    if [ -n "$EXISTING_PID" ]; then
+        echo "Found existing backend process (PID: $EXISTING_PID)"
+        echo "Killing existing process..."
+        kill -9 $EXISTING_PID 2>/dev/null || true
+        sleep 2
+    fi
+fi
+
+# Check if port 5173 is already in use
+if ss -tlnp | grep -q ":${WEB_FRONTEND_PORT} "; then
+    echo "⚠️  Port ${WEB_FRONTEND_PORT} is already in use!"
+    echo "Checking for existing Web UI frontend process..."
+    
+    # Find existing vite process on our port
+    EXISTING_VITE_PID=$(lsof -t -i :${WEB_FRONTEND_PORT} 2>/dev/null | head -1)
+    
+    if [ -n "$EXISTING_VITE_PID" ]; then
+        echo "Found existing frontend process (PID: $EXISTING_VITE_PID)"
+        echo "Killing existing process..."
+        kill -9 $EXISTING_VITE_PID 2>/dev/null || true
+        sleep 2
+    fi
+fi
 
 # Start Web UI backend in the background with nohup to protect from signals
 echo "Starting Web UI backend on ${WEB_BACKEND_HOST}:${WEB_BACKEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/backend
 source venv/bin/activate
-nohup uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" > /tmp/backend.log 2>&1 &
+nohup uvicorn main:app --host "${WEB_BACKEND_HOST}" --port "${WEB_BACKEND_PORT}" >> /tmp/web_ui_backend.log 2>&1 &
 WEB_BACKEND_PID=$!
 
 echo "Web Backend PID: ${WEB_BACKEND_PID}"
@@ -118,23 +158,59 @@ echo "Web Backend PID: ${WEB_BACKEND_PID}"
 # Wait a moment for the backend to start
 sleep 3
 
+# Verify backend started
+if ! ps -p $WEB_BACKEND_PID > /dev/null 2>&1; then
+    echo "❌ Web UI backend failed to start!"
+    echo "Check /tmp/web_ui_backend.log for details"
+    exit 1
+fi
+
 # Start Web UI frontend in the background with nohup to protect from signals
+# FIX: Use setsid to create new session and redirect stdin to prevent process death
 echo "Starting Web UI frontend on port ${WEB_FRONTEND_PORT}..."
 cd /root/qwen/base/it-lead-mcp-server/web-ui/frontend
-nohup npm run dev -- --port "${WEB_FRONTEND_PORT}" > /tmp/frontend.log 2>&1 &
+
+# FIX: The issue is that npm run dev spawns a child process that dies when parent exits.
+# Solution: Use setsid to create new session, and redirect stdin from /dev/null
+setsid bash -c "npm run dev -- --port \"${WEB_FRONTEND_PORT}\" < /dev/null > /tmp/web_ui_frontend.log 2>&1 &" &
 WEB_FRONTEND_PID=$!
 
 echo "Web Frontend PID: ${WEB_FRONTEND_PID}"
 
+# Wait a moment for the frontend to start
+sleep 5
+
+# FIX: Check if vite is actually listening on the port, not just if process exists
+if ! ss -tlnp | grep -q ":${WEB_FRONTEND_PORT} "; then
+    echo "❌ Web UI frontend failed to start on port ${WEB_FRONTEND_PORT}!"
+    echo "Check /tmp/web_ui_frontend.log for details"
+    # Try alternative: run npm with node directly
+    echo "Attempting alternative startup..."
+    cd /root/qwen/base/it-lead-mcp-server/web-ui/frontend
+    setsid bash -c "node node_modules/vite/bin/vite.js --port \"${WEB_FRONTEND_PORT}\" < /dev/null > /tmp/web_ui_frontend.log 2>&1 &" &
+    WEB_FRONTEND_PID=$!
+    sleep 3
+    if ! ss -tlnp | grep -q ":${WEB_FRONTEND_PORT} "; then
+        echo "❌ Alternative startup also failed!"
+        cat /tmp/web_ui_frontend.log
+        exit 1
+    fi
+    echo "✅ Alternative startup succeeded"
+fi
+
+# Disown processes to prevent them from being killed when shell exits
+disown $WEB_BACKEND_PID 2>/dev/null || true
+disown $WEB_FRONTEND_PID 2>/dev/null || true
+
 echo ""
-echo "MCP Agent Web UI started successfully!"
+echo "✅ MCP Agent Web UI started successfully!"
 echo "Web Backend: http://${WEB_BACKEND_HOST}:${WEB_BACKEND_PORT}"
 echo "Web Frontend: http://localhost:${WEB_FRONTEND_PORT}"
 echo ""
 echo "Web UI is configured to connect to IT Lead Server at: http://${IT_LEAD_HOST}:${IT_LEAD_PORT}"
 echo ""
-echo "Press Ctrl+C to shut down the Web UI"
+echo "Backend logs: /tmp/web_ui_backend.log"
+echo "Frontend logs: /tmp/web_ui_frontend.log"
 echo ""
-
-# Wait for all processes
-wait $WEB_BACKEND_PID $WEB_FRONTEND_PID
+echo "PIDs: Backend=$WEB_BACKEND_PID, Frontend=$WEB_FRONTEND_PID"
+echo ""

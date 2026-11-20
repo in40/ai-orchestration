@@ -11,11 +11,13 @@ Dynamic Planning Architecture:
 import asyncio
 import json
 import logging
+import os
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import httpx
 from datetime import datetime
@@ -62,6 +64,9 @@ _planner: Optional[DynamicPlanner] = None
 # IT Lead server configuration (from settings)
 IT_LEAD_HOST = settings.IT_LEAD_HOST
 IT_LEAD_PORT = settings.IT_LEAD_PORT
+SHOTS_DIR = os.environ.get("SHOTS_DIR", "/var/www/shots")
+DEVOPS_HOST = settings.REGISTRY_HOST
+DEVOPS_PORT = settings.DEVOPS_PORT
 
 # Store active WebSocket connections for real-time updates
 active_connections: List[WebSocket] = []
@@ -92,6 +97,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MCP Agent Web UI Backend", version="1.0.0", lifespan=lifespan)
 
+# Visual evidence from the QA/deploy pipeline (V1): PNGs live outside the git
+# results repo and are served read-only. Directory is created at startup so the
+# mount never fails on a fresh host.
+os.makedirs(SHOTS_DIR, exist_ok=True)
+app.mount("/shots", StaticFiles(directory=SHOTS_DIR), name="shots")
+
 class AgentInfo(BaseModel):
     name: str
     status: str
@@ -114,6 +125,12 @@ class TaskStatusUpdate(BaseModel):
     status: str
     progress: int
     notes: Optional[str] = None
+
+
+class ReworkRequest(BaseModel):
+    issue_description: str
+    additional_comments: Optional[str] = ""
+    priority: str = "medium"
 
 class ApprovalType(str, Enum):
     code = "code"
@@ -185,7 +202,7 @@ async def refresh_agent_status_from_it_lead():
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Call the registry server directly (assuming it's on port 3031)
             registry_response = await client.post(
-                f"http://127.0.0.1:3031/mcp",  # Registry server address
+                os.environ.get("MCP_REGISTRY_URL", "http://127.0.0.1:3031/mcp"),
                 json={
                     "jsonrpc": "2.0",
                     "id": "list_services",
@@ -481,6 +498,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def handle_task_assignment_via_it_lead(task_data: dict):
     """Handle enhanced task assignment by calling IT Lead server with full context"""
     logger.info(f"Assigning task via IT Lead: {task_data}")
+    logger.info(f"Task context: {task_data.get('context', {})}")
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:  # Increased timeout for complex tasks
@@ -495,9 +513,10 @@ async def handle_task_assignment_via_it_lead(task_data: dict):
             # Add optional fields if present
             if task_data.get("dueDate"):
                 base_arguments["deadline"] = task_data.get("dueDate")
-            
+
             # Include full context metadata for intelligent routing
             context = task_data.get("context", {})
+            logger.info(f"Context received: {context}")
             if context:
                 base_arguments["metadata"] = {
                     "tags": context.get("tags", []),
@@ -505,12 +524,17 @@ async def handle_task_assignment_via_it_lead(task_data: dict):
                     "programming_language": context.get("programming_language"),
                     "framework": context.get("framework"),
                     "acceptance_criteria": context.get("acceptance_criteria"),
-                    "business_context": context.get("business_context")
+                    "business_context": context.get("business_context"),
+                    "deploy_after_implementation": context.get("deploy_after_implementation", False),
+                    "requires_client": context.get("requires_client", False)
                 }
+                logger.info(f"Built metadata with deploy_after_implementation={base_arguments['metadata'].get('deploy_after_implementation')}")
 
             # Add dependencies if present
             if task_data.get("dependencies"):
                 base_arguments["metadata"]["dependencies"] = task_data.get("dependencies")
+
+            logger.info(f"Sending to IT Lead: base_arguments={base_arguments}")
 
             response = await client.post(
                 f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
@@ -705,7 +729,13 @@ async def assign_task_endpoint(task: TaskAssignment):
     task_dict["status"] = "assigned"
     
     # Send the task assignment to IT Lead server
-    await handle_task_assignment_via_it_lead(task_dict)
+    outcome = await handle_task_assignment_via_it_lead(task_dict)
+    # Surface IT Lead's concurrency-guard rejection instead of claiming success
+    inner = ((outcome or {}).get("result") or {})
+    inner = inner.get("result", inner) if isinstance(inner, dict) else {}
+    if isinstance(inner, dict) and (inner.get("rejected") or inner.get("error")):
+        raise HTTPException(status_code=409,
+                            detail=str(inner.get("error") or "assignment rejected"))
     
     # Broadcast the task assignment to all connected clients
     await broadcast_message({
@@ -751,17 +781,193 @@ async def submit_requirement_endpoint(requirement: RequirementInput):
 async def provide_feedback_endpoint(feedback: Feedback):
     """Endpoint to provide feedback via IT Lead server"""
     logger.info(f"Providing feedback via IT Lead on {feedback.feedback_target}")
-    
+
     # Send the feedback to IT Lead server
     await handle_feedback_via_it_lead(feedback.dict())
-    
+
     # Broadcast the feedback to all connected clients
     await broadcast_message({
         "type": "feedback_provided",
         "data": feedback.dict()
     })
-    
+
     return {"message": "Feedback provided successfully", "feedback_id": f"feedback-{hash(str(feedback.dict())) % 10000}"}
+
+
+@app.post("/api/tasks/{task_id}/request-rework")
+async def request_rework_endpoint(task_id: str, rework_request: ReworkRequest):
+    """Endpoint to request task rework via IT Lead server"""
+    logger.info(f"Requesting rework for task {task_id}: {rework_request.issue_description[:50]}...")
+
+    # Validate priority
+    if rework_request.priority not in ["low", "medium", "high", "critical"]:
+        raise HTTPException(status_code=400, detail="Invalid priority. Must be: low, medium, high, critical")
+
+    # Use task_id from URL (more reliable), override any in body
+    # Build the rework arguments
+    rework_args = {
+        "task_id": task_id,  # Use URL parameter
+        "issue_description": rework_request.issue_description,
+        "additional_comments": rework_request.additional_comments,
+        "priority": rework_request.priority
+    }
+
+    # Call the request_task_rework tool on IT Lead server
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"rework-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "request_task_rework",
+                        "arguments": rework_args
+                    }
+                }
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"Rework request submitted successfully for task {task_id}")
+                return {"success": True, "message": f"Rework requested for task {task_id}", "result": result}
+            else:
+                logger.error(f"Failed to submit rework request: {response.status_code}")
+                raise HTTPException(status_code=500, detail=f"Failed to submit rework request: {response.text[:200]}")
+    except httpx.RequestError as e:
+        logger.error(f"Error submitting rework request to IT Lead: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error connecting to IT Lead: {str(e)}")
+
+
+class ClarificationAnswer(BaseModel):
+    answers: dict  # {FIELD: answer text}
+    answered_by: str = "human_operator"
+    env_fields: list = []     # answered fields to inject into container env
+    secret_fields: list = []  # answered fields that are secrets (env-only)
+
+
+async def _it_lead_tool(name: str, arguments: dict):
+    """Call an IT Lead MCP tool and unwrap the jsonrpc envelope."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+            json={"jsonrpc": "2.0", "id": f"clar-{name}", "method": "tools/call",
+                  "params": {"name": name, "arguments": arguments}})
+    if response.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"IT Lead error {response.status_code}: {response.text[:200]}")
+    return response.json().get("result", {}) or {}
+
+
+@app.get("/api/clarifications/pending")
+async def get_pending_clarifications():
+    """Questions the pipeline is waiting answers for (requestor bell)."""
+    return await _it_lead_tool("get_pending_clarifications", {})
+
+
+@app.get("/api/retro/latest")
+async def get_retro_latest():
+    """Latest nightly retro digest (team health snapshot)."""
+    return await _it_lead_tool("get_retro_digest", {})
+
+
+@app.get("/api/retro/proposals")
+async def get_retro_proposals():
+    """Improvement proposals awaiting approval + recent history."""
+    return await _it_lead_tool("get_retro_proposals", {})
+
+
+@app.post("/api/retro/proposals/{pid}/approve")
+async def approve_retro_proposal(pid: int):
+    return await _it_lead_tool("approve_retro_proposal", {"id": pid})
+
+
+@app.post("/api/retro/proposals/{pid}/reject")
+async def reject_retro_proposal(pid: int, body: dict = None):
+    return await _it_lead_tool("reject_retro_proposal",
+                               {"id": pid, "reason": (body or {}).get("reason", "")})
+
+
+@app.post("/api/tasks/{task_id}/archive")
+async def archive_task_endpoint(task_id: str, body: dict = None):
+    return await _it_lead_tool("archive_task", {
+        "task_id": task_id, "archived": (body or {}).get("archived", True)})
+
+
+@app.post("/api/tasks/{task_id}/delete")
+async def delete_task_endpoint(task_id: str, body: dict = None):
+    return await _it_lead_tool("delete_task", {
+        "task_id": task_id, "confirm": (body or {}).get("confirm", "")})
+
+
+@app.get("/api/products")
+async def list_products():
+    return await _it_lead_tool("list_products", {})
+
+
+@app.post("/api/products")
+async def import_product(body: dict):
+    return await _it_lead_tool("import_product", {
+        "name": body.get("name", ""), "description": body.get("description", ""),
+        "source_url": body.get("source_url", ""),
+        "seed_task_id": body.get("seed_task_id", "")})
+
+
+@app.post("/api/products/{pid}/publish")
+async def publish_product(pid: int, body: dict = None):
+    b = body or {}
+    return await _it_lead_tool("publish_product", {
+        "id": pid, "github_repo": b.get("github_repo", ""),
+        "private": b.get("private", True), "confirm": b.get("confirm", ""),
+        "force": b.get("force", False)})
+
+
+@app.get("/api/pipeline/alerts")
+async def get_pipeline_alerts():
+    """Recent pipeline incidents: rework rejections, self-fix failures, timeouts."""
+    return await _it_lead_tool("get_pipeline_alerts", {})
+
+
+@app.get("/api/selffix")
+async def get_selffix_queue():
+    """Self-fix items: diffs awaiting review plus recent history."""
+    return await _it_lead_tool("get_selffix_queue", {})
+
+
+@app.post("/api/selffix")
+async def file_self_fix(body: dict):
+    """File a complaint about the platform itself; team fixes a snapshot."""
+    return await _it_lead_tool("request_self_fix", {
+        "complaint": body.get("complaint", ""),
+        "area": body.get("area", "web-ui-frontend")})
+
+
+@app.get("/api/selffix/{sid}/diff")
+async def get_selffix_diff(sid: int):
+    return await _it_lead_tool("get_selffix_diff", {"id": sid})
+
+
+@app.post("/api/selffix/{sid}/approve")
+async def approve_selffix(sid: int):
+    return await _it_lead_tool("approve_selffix", {"id": sid})
+
+
+@app.post("/api/selffix/{sid}/reject")
+async def reject_selffix(sid: int, body: dict = None):
+    return await _it_lead_tool("reject_selffix",
+                               {"id": sid, "reason": (body or {}).get("reason", "")})
+
+
+@app.post("/api/tasks/{task_id}/clarify")
+async def answer_clarification_endpoint(task_id: str, body: ClarificationAnswer):
+    """Deliver the requestor's answers; the paused pipeline resumes planning."""
+    result = await _it_lead_tool("answer_clarification", {
+        "task_id": task_id, "answers": body.answers, "answered_by": body.answered_by,
+        "env_fields": body.env_fields, "secret_fields": body.secret_fields})
+    if isinstance(result, dict) and not result.get("success", True):
+        raise HTTPException(status_code=400, detail=str(result.get("error", "rejected")))
+    return result
 
 @app.post("/api/tasks/update")
 async def update_task_status_endpoint(update: TaskStatusUpdate):
@@ -839,6 +1045,7 @@ async def fetch_tasks_from_it_lead():
                 logger.info(f"Fetched tasks response: {result}")
 
                 # Extract tasks from the response
+                # Response structure: {"result": {"result": {"tasks": [...], ...}}}
                 if "result" in result and "result" in result["result"]:
                     tasks_result = result["result"]["result"]
 
@@ -850,11 +1057,13 @@ async def fetch_tasks_from_it_lead():
                             formatted_tasks.append({
                                 "id": task.get("task_id", "unknown"),
                                 "title": task.get("title", f"Task: {task.get('task_id', 'unknown')}"),
+                                "description": task.get("description", ""),  # Add original description
                                 "assignee": task.get("assigned_to", "Unknown"),
                                 "status": task.get("status", "pending"),
                                 "priority": task.get("priority", "medium"),
                                 "progress": task.get("progress_percentage", 0),
                                 "git_url": metadata.get("git_url"),
+                                "deployment_url": metadata.get("deployment_url"),
                                 "storage_type": metadata.get("storage_type")
                             })
                     return formatted_tasks
@@ -872,6 +1081,50 @@ async def fetch_tasks_from_it_lead():
         logger.error(f"Unexpected error fetching tasks: {str(e)}")
         return []
 
+async def fetch_deployments_from_it_lead(status_filter: str = "running"):
+    """Fetch deployments from IT Lead server (which proxies to DevOps Engineer)"""
+    logger.info(f"Fetching deployments from IT Lead server (status_filter={status_filter})")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Call IT Lead's list_deployments tool (which proxies to DevOps)
+            response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "fetch-deployments",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": status_filter}
+                    }
+                }
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"Fetched deployments response: {result}")
+
+                # Extract deployments from the response
+                if "result" in result:
+                    deployments_result = result["result"]
+                    deployments = deployments_result.get("deployments", [])
+                    logger.info(f"Found {len(deployments)} deployments")
+                    return deployments
+                else:
+                    logger.warning("Response doesn't contain expected structure")
+                    return []
+            else:
+                logger.error(f"Failed to fetch deployments from IT Lead: {response.status_code}")
+                return []
+
+    except httpx.RequestError as e:
+        logger.error(f"Error connecting to IT Lead server: {str(e)}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error fetching deployments: {str(e)}")
+        return []
+
 
 @app.get("/api/tasks")
 async def get_tasks():
@@ -885,6 +1138,181 @@ async def get_tasks():
         return []
 
     return tasks
+
+
+@app.get("/api/deployments")
+async def get_deployments(status_filter: str = "running"):
+    """Get list of deployed applications via IT Lead server (proxies to DevOps Engineer)"""
+    deployments = await fetch_deployments_from_it_lead(status_filter=status_filter)
+
+    # Return deployments list
+    if not deployments:
+        logger.info("No deployments retrieved, returning empty list")
+        return []
+
+    return deployments
+
+
+# ---------------------------------------------------------------------------
+# Generic deployment tester: probe any deployed artifact (MCP / OpenAPI / raw)
+# and proxy calls through the backend (CORS-free). SSRF guard: targets must be
+# a registered task_deployments URL; request paths join relative to it only.
+# ---------------------------------------------------------------------------
+import time as _time
+from urllib.parse import urljoin
+
+_TESTER_MAX_BODY = 200_000
+_mcp_sessions: Dict[str, Any] = {}  # task_id -> {"sid": str, "ts": float}
+
+
+async def _tester_base_url(task_id: str) -> str:
+    """Whitelist lookup: the deployment_url registered for this task."""
+    deps = await fetch_deployments_from_it_lead(status_filter="all")
+    for d in deps or []:
+        if d.get("task_id") == task_id and d.get("deployment_url"):
+            url = d["deployment_url"]
+            return url if url.endswith("/") else url + "/"
+    raise HTTPException(status_code=404,
+                        detail=f"no deployment registered for task {task_id}")
+
+
+def _tester_target(base: str, path: str) -> str:
+    p = (path or "").strip()
+    if "://" in p or p.startswith("//") or "@" in p:
+        raise HTTPException(status_code=400, detail="absolute target not allowed")
+    return urljoin(base, p.lstrip("/"))
+
+
+def _parse_jsonrpc(text: str):
+    """Accept plain JSON or SSE ('data: {...}') JSON-RPC bodies."""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except Exception:
+                continue
+    return None
+
+
+async def _mcp_rpc(client, base, method, params, session_id=None, rpc_id=1):
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    if session_id:
+        headers["mcp-session-id"] = session_id
+    r = await client.post(
+        base + "mcp", headers=headers,
+        json={"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params or {}})
+    sid = r.headers.get("mcp-session-id") or session_id
+    try:
+        data = r.json()
+    except Exception:
+        data = _parse_jsonrpc(r.text)
+    return r.status_code, data, sid
+
+
+async def _mcp_initialize(client, base):
+    return await _mcp_rpc(client, base, "initialize", {
+        "protocolVersion": "2024-11-05", "capabilities": {},
+        "clientInfo": {"name": "web-tester", "version": "1"}})
+
+
+@app.post("/api/tester/probe")
+async def tester_probe(payload: dict):
+    """Detect what the deployed artifact speaks: MCP > OpenAPI > raw HTTP."""
+    task_id = (payload or {}).get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+    base = await _tester_base_url(task_id)
+    out = {"task_id": task_id, "base_url": base, "mode": "raw"}
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # 1) MCP handshake + tools/list
+        try:
+            st, data, sid = await _mcp_initialize(client, base)
+            if st == 200 and isinstance(data, dict) and data.get("result", {}).get("serverInfo") is not None:
+                st2, tl, _ = await _mcp_rpc(client, base, "tools/list", {}, sid, 2)
+                tools = (tl or {}).get("result", {}).get("tools", []) if st2 == 200 else []
+                out.update({"mode": "mcp",
+                            "server_info": data["result"].get("serverInfo"),
+                            "tools": tools})
+                return out
+        except Exception as e:
+            out["mcp_probe_error"] = str(e)[:150]
+        # 2) OpenAPI self-description
+        try:
+            r = await client.get(base + "openapi.json")
+            if r.status_code == 200:
+                try:
+                    spec = r.json()
+                except Exception:
+                    spec = None
+                if isinstance(spec, dict) and "openapi" in spec:
+                    out.update({"mode": "openapi", "openapi": spec})
+                    return out
+        except Exception as e:
+            out["openapi_probe_error"] = str(e)[:150]
+        # 3) raw fallback: quick GET root for context
+        try:
+            r = await client.get(base)
+            out["root_status"] = r.status_code
+        except Exception as e:
+            out["root_error"] = str(e)[:150]
+    return out
+
+
+@app.post("/api/tester/mcp")
+async def tester_mcp(payload: dict):
+    """Run one MCP method against a deployed server; session lifecycle is ours."""
+    task_id = (payload or {}).get("task_id")
+    method = (payload or {}).get("method")
+    if not task_id or not method:
+        raise HTTPException(status_code=400, detail="task_id and method required")
+    base = await _tester_base_url(task_id)
+    sid = (_mcp_sessions.get(task_id) or {}).get("sid")
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        st, data, sid = await _mcp_rpc(client, base, method, payload.get("params"), sid)
+        if st != 200 or not isinstance(data, dict) or "error" in data:
+            # stale/absent session: re-handshake once and retry
+            st, data, sid = await _mcp_initialize(client, base)
+            st, data, sid = await _mcp_rpc(client, base, method, payload.get("params"), sid, 2)
+        _mcp_sessions[task_id] = {"sid": sid, "ts": _time.time()}
+    if isinstance(data, dict) and "error" in data:
+        raise HTTPException(status_code=502, detail=json.dumps(data["error"])[:300])
+    return {"result": data.get("result") if isinstance(data, dict) else data}
+
+
+@app.post("/api/tester/request")
+async def tester_request(payload: dict):
+    """Proxy an arbitrary HTTP call to a whitelisted deployment."""
+    task_id = (payload or {}).get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+    base = await _tester_base_url(task_id)
+    method = str((payload or {}).get("method") or "GET").upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        raise HTTPException(status_code=400, detail="bad method")
+    url = _tester_target(base, (payload or {}).get("path", ""))
+    body = (payload or {}).get("body")
+    kwargs: Dict[str, Any] = {}
+    headers: Dict[str, str] = {}
+    if isinstance(body, (dict, list)):
+        kwargs["json"] = body
+    elif isinstance(body, str) and body.strip():
+        kwargs["content"] = body
+        headers["Content-Type"] = (payload or {}).get("content_type") or "application/json"
+    t0 = _time.perf_counter()
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+        try:
+            r = await client.request(method, url, headers=headers, **kwargs)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"request failed: {e}")
+    elapsed = round((_time.perf_counter() - t0) * 1000)
+    return {"status": r.status_code,
+            "elapsed_ms": elapsed,
+            "headers": dict(r.headers),
+            "body": r.text[:_TESTER_MAX_BODY]}
 
 
 @app.get("/api/tasks/{task_id}/progress")
@@ -951,9 +1379,11 @@ async def get_task_progress(task_id: str):
 
         # Extract history from get_task_history response
         status_history = []
+        activity = []
         if "result" in history_data and "result" in history_data["result"]:
             hist_result = history_data["result"]["result"]
             status_history = hist_result.get("status_history", [])
+            activity = hist_result.get("activity", [])
 
         # Build progress report with MCP communication tracking
         progress_report = {
@@ -974,6 +1404,17 @@ async def get_task_progress(task_id: str):
                     "reason": entry.get("reason")
                 }
                 for entry in status_history
+            ],
+
+            # Team activity log: who was called, when it finished, duration
+            "activity": [
+                {
+                    "ts": entry.get("ts"),
+                    "event": entry.get("event"),
+                    "agent": entry.get("agent"),
+                    "detail": entry.get("detail")
+                }
+                for entry in activity
             ],
             
             # Metadata contains routing decisions and tool calls
@@ -1065,6 +1506,32 @@ def extract_mcp_communications(metadata: Dict[str, Any]) -> List[Dict]:
     return communications
 
 
+@app.post("/api/tasks/{task_id}/permission")
+async def resolve_task_permission(task_id: str, payload: dict):
+    """Answer a pending opencode permission ask that blocks the task's agent."""
+    decision = (payload or {}).get("decision")
+    if decision not in ("once", "always", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be once|always|reject")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={"jsonrpc": "2.0", "id": f"perm-{task_id}",
+                      "method": "tools/call",
+                      "params": {"name": "resolve_permission",
+                                 "arguments": {"task_id": task_id, "decision": decision}}}
+            )
+            data = r.json().get("result", {})
+            if isinstance(data, dict) and isinstance(data.get("result"), dict):
+                data = data["result"]
+            if isinstance(data, dict) and data.get("error"):
+                raise HTTPException(status_code=409, detail=str(data["error"])[:200])
+            logger.info(f"permission for {task_id}: {decision} -> {data}")
+            return {"ok": bool(isinstance(data, dict) and data.get("success")), "decision": decision}
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"IT Lead unreachable: {e}")
+
+
 @app.get("/api/tasks/{task_id}/history")
 async def get_task_history(task_id: str):
     """Get task history from IT Lead server"""
@@ -1105,7 +1572,10 @@ async def get_task_history(task_id: str):
                         "assigned_to": history_result.get("assigned_to", "unassigned"),
                         "created_at": history_result.get("created_at"),
                         "updated_at": history_result.get("updated_at"),
-                        "status_history": history_result.get("status_history", [])
+                        "status_history": history_result.get("status_history", []),
+                        "activity": history_result.get("activity", []),
+                        "pending_permission": history_result.get("pending_permission"),
+                        "screenshots": history_result.get("screenshots")
                     }
                     return formatted_history
                 else:
@@ -1494,6 +1964,21 @@ async def get_git_history(task_id: str):
 # HTTP Git File Access Endpoints  
 # ============================================================================
 
+def _results_dir(task_id: str) -> str:
+    """Local clone of the results repo for a task dir; refreshed best-effort
+    so the browser never shows a stale tree."""
+    import subprocess
+    repo = "/tmp/mcp-vibe-coding-git/repo"
+    try:
+        subprocess.run(["git", "-C", repo, "pull", "-q"], capture_output=True, timeout=25)
+    except Exception:
+        pass
+    d = os.path.join(repo, "results", task_id)
+    if not os.path.isdir(d):
+        d = f"/root/qwen/base/mcp-results/results/{task_id}"
+    return d
+
+
 @app.get("/api/git/files/{task_id:path}")
 async def get_git_file(task_id: str):
     """Serve files from Git repository via HTTP"""
@@ -1503,18 +1988,17 @@ async def get_git_file(task_id: str):
         if len(parts) != 2:
             raise HTTPException(status_code=400, detail="Invalid path. Use: {task_uuid}/{filename}")
         task_uuid, filename = parts
-        file_path = f"/tmp/mcp-vibe-coding-git/repo/results/{task_uuid}/{filename}"
-        import os
-        if not os.path.exists(file_path):
-            file_path = f"/root/qwen/base/mcp-results/results/{task_uuid}/{filename}"
-            if not os.path.exists(file_path):
-                raise HTTPException(status_code=404, detail="File not found")
+        task_dir = os.path.normpath(_results_dir(task_uuid))
+        file_path = os.path.normpath(os.path.join(task_dir, filename))
+        # traversal guard: must stay inside the task's results directory
+        if not file_path.startswith(task_dir + os.sep) or not os.path.isfile(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
         with open(file_path, 'rb') as f:
             content = f.read()
         ext = '.' + filename.split('.')[-1] if '.' in filename else ''
-        ct = {'.md':'text/markdown','.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.yaml':'text/yaml','.yml':'text/yaml','.py':'text/x-python','.txt':'text/plain'}.get(ext, 'application/octet-stream')
+        ct = {'.md':'text/markdown','.html':'text/html','.css':'text/css','.js':'application/javascript','.json':'application/json','.yaml':'text/yaml','.yml':'text/yaml','.py':'text/x-python','.txt':'text/plain','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.ico':'image/vnd.microsoft.icon'}.get(ext, 'application/octet-stream')
         from fastapi.responses import Response
-        return Response(content=content, media_type=ct, headers={"Content-Disposition": f"inline; filename={filename}"})
+        return Response(content=content, media_type=ct, headers={"Content-Disposition": f"inline; filename={os.path.basename(filename)}"})
     except HTTPException:
         raise
     except Exception as e:
@@ -1524,25 +2008,391 @@ async def get_git_file(task_id: str):
 
 @app.get("/api/git/browse/{task_id}")
 async def browse_git_directory(task_id: str):
-    """Browse task directory"""
+    """List every file in the task's artifact tree (recursive, relative paths)."""
     logger.info(f"Browsing Git directory: {task_id}")
     try:
-        import os
-        dir_path = f"/tmp/mcp-vibe-coding-git/repo/results/{task_id}"
-        if not os.path.exists(dir_path):
-            dir_path = f"/root/qwen/base/mcp-results/results/{task_id}"
-            if not os.path.exists(dir_path):
-                raise HTTPException(status_code=404, detail="Task not found")
+        dir_path = _results_dir(task_id)
+        if not os.path.isdir(dir_path):
+            raise HTTPException(status_code=404, detail="Task not found")
         files = []
-        for item in os.listdir(dir_path):
-            item_path = os.path.join(dir_path, item)
-            files.append({"name": item, "type": "dir" if os.path.isdir(item_path) else "file", "size": os.path.getsize(item_path) if os.path.isfile(item_path) else 0, "url": f"/api/git/files/{task_id}/{item}"})
+        for root, dirs, fs in os.walk(dir_path):
+            dirs[:] = sorted(d for d in dirs
+                             if not d.startswith(".") and d != "__pycache__")
+            for f in sorted(fs):
+                if f.startswith("."):
+                    continue
+                rel = os.path.relpath(os.path.join(root, f), dir_path).replace("\\", "/")
+                full = os.path.join(root, f)
+                files.append({"name": rel,
+                              "type": "file",
+                              "size": os.path.getsize(full),
+                              "url": f"/api/git/files/{task_id}/{rel}"})
         return {"task_id": task_id, "files": files}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error browsing directory: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tasks/{task_id}/redeploy")
+async def redeploy_task(task_id: str):
+    """Redeploy a task that has a git_url but no active deployment"""
+    logger.info(f"Redeploying task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # First get the task to fetch git_url
+            tasks_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"get-task-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_all_tasks",
+                        "arguments": {"status_filter": None}
+                    }
+                }
+            )
+            
+            if tasks_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to fetch task information")
+            
+            tasks_result = tasks_response.json()
+            inner = tasks_result.get("result", {})
+            tasks = inner.get("tasks") or inner.get("result", {}).get("tasks", [])
+            task = next((t for t in tasks if t.get("task_id") == task_id), None)
+            
+            if not task:
+                raise HTTPException(status_code=404, detail="Task not found")
+            
+            git_url = task.get("metadata", {}).get("git_url")
+            if not git_url:
+                raise HTTPException(status_code=400, detail="Task has no git_url")
+            
+            # Call DevOps directly to deploy from git
+            deploy_response = await client.post(
+                f"http://{DEVOPS_HOST}:{DEVOPS_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"deploy-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "deploy_web_application",
+                        "arguments": {
+                            "task_id": task_id,
+                            "git_url": git_url,
+                            "container_port": 5000
+                        }
+                    }
+                }
+            )
+            
+            if deploy_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to deploy")
+            
+            deploy_result = deploy_response.json()
+            
+            return {
+                "success": True,
+                "message": "Task redeployed successfully",
+                "deployment": deploy_result.get("result", {})
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error redeploying task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/deployments/{task_id}/start")
+async def start_deployment(task_id: str):
+    """Start a stopped deployment"""
+    logger.info(f"Starting deployment for task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Get deployment info from list_deployments
+            list_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"list-deployments-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            if list_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to get deployment list")
+            
+            list_result = list_response.json()
+            deployments = list_result.get("result", {}).get("deployments", [])
+            deployment = next((d for d in deployments if d.get("task_id") == task_id), None)
+            
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+            
+            container_id = deployment.get("container_id") or f"deploy-{task_id}"
+            
+            # Start the container via DevOps
+            start_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"start-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "start_deployment",
+                        "arguments": {"container_id": container_id}
+                    }
+                }
+            )
+            
+            if start_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to start deployment")
+            
+            start_result = start_response.json()
+            if "error" in start_result.get("result", {}):
+                raise HTTPException(status_code=500, detail=start_result["result"]["error"])
+            
+            return {
+                "success": True,
+                "message": "Deployment started successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting deployment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/deployments/{task_id}/stop")
+async def stop_deployment(task_id: str):
+    """Stop a running deployment"""
+    logger.info(f"Stopping deployment for task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # First try to get deployments list to find container_id
+            list_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"list-deployments-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            logger.info(f"List deployments response status: {list_response.status_code}")
+            
+            if list_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to get deployment list")
+            
+            list_result = list_response.json()
+            logger.info(f"List deployments result: {list_result}")
+            
+            deployments = list_result.get("result", {}).get("deployments", [])
+            logger.info(f"Found {len(deployments)} deployments")
+            
+            deployment = next((d for d in deployments if d.get("task_id") == task_id), None)
+            
+            if not deployment:
+                logger.warning(f"Deployment {task_id} not found in list")
+                raise HTTPException(status_code=404, detail="No container ID found")
+            
+            container_id = deployment.get("container_id") or f"deploy-{task_id}"
+            logger.info(f"Found container_id: {container_id}")
+            
+            # Stop deployment using task_id (DevOps stop_deployment expects task_id)
+            stop_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"stop-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "stop_deployment",
+                        "arguments": {"task_id": task_id}
+                    }
+                }
+            )
+            
+            logger.info(f"Stop response: {stop_response.json()}")
+            
+            if stop_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to stop deployment")
+            
+            stop_result = stop_response.json()
+            if "error" in stop_result.get("result", {}):
+                raise HTTPException(status_code=500, detail=stop_result["result"]["error"])
+            
+            return {
+                "success": True,
+                "message": "Deployment stopped successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error stopping deployment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/deployments/{task_id}")
+async def delete_deployment(task_id: str):
+    """Delete/remove a deployment"""
+    logger.info(f"Deleting deployment for task: {task_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Get deployment info from list_deployments
+            list_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"list-deployments-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            if list_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to get deployment list")
+            
+            list_result = list_response.json()
+            deployments = list_result.get("result", {}).get("deployments", [])
+            deployment = next((d for d in deployments if d.get("task_id") == task_id), None)
+            
+            if not deployment:
+                raise HTTPException(status_code=404, detail="Deployment not found")
+            
+            container_id = deployment.get("container_id") or f"deploy-{task_id}"
+            
+            # Delete the container via DevOps
+            delete_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"delete-{task_id}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "delete_deployment",
+                        "arguments": {"container_id": container_id}
+                    }
+                }
+            )
+            
+            if delete_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to delete deployment")
+            
+            delete_result = delete_response.json()
+            if "error" in delete_result.get("result", {}):
+                raise HTTPException(status_code=500, detail=delete_result["result"]["error"])
+
+            # The container is gone: clear deployment_url on the task, otherwise
+            # the Tasks-tab redeploy button (git_url && !deployment_url) never
+            # appears after a delete.
+            try:
+                await _it_lead_tool("clear_deployment_url", {"task_id": task_id})
+            except Exception as e:
+                logger.warning(f"clear_deployment_url after delete failed: {e}")
+
+            return {
+                "success": True,
+                "message": "Deployment deleted successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting deployment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tasks/refresh-status")
+async def refresh_task_status():
+    """Refresh all task statuses from IT Lead server"""
+    logger.info("Refreshing task statuses from IT Lead server")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Trigger IT Lead to refresh task statuses
+            refresh_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "refresh-tasks",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_all_tasks",
+                        "arguments": {"status_filter": None}
+                    }
+                }
+            )
+            
+            if refresh_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to refresh tasks")
+            
+            return {
+                "success": True,
+                "message": "Task statuses refreshed successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing task statuses: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/deployments/refresh")
+async def refresh_deployments():
+    """Refresh deployment list from DevOps Engineer"""
+    logger.info("Refreshing deployments from DevOps Engineer")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            refresh_response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "refresh-deployments",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list_deployments",
+                        "arguments": {"status_filter": "all"}
+                    }
+                }
+            )
+            
+            if refresh_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to refresh deployments")
+            
+            return {
+                "success": True,
+                "message": "Deployments refreshed successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing deployments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

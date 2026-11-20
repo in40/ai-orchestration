@@ -7,11 +7,14 @@ import {
   Chip,
   Avatar,
   Box,
+  Button,
   CircularProgress,
   Alert
 } from '@mui/material';
+import { Refresh as RefreshIcon } from '@mui/icons-material';
 import axios from 'axios';
 import { useWebSocket } from '../hooks/useWebSocket';
+import PageHeader from './PageHeader';
 
 const Dashboard = () => {
   const [agents, setAgents] = useState([]);
@@ -22,31 +25,31 @@ const Dashboard = () => {
   // WebSocket hook for real-time updates
   const { sendMessage, lastMessage } = useWebSocket('ws://localhost:8000/ws');
 
+  // Load initial data - use dynamic planner endpoint for all agents from registry
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [agentsResponse, tasksResponse] = await Promise.all([
+        axios.get('/api/planner/agents'),
+        axios.get('/api/tasks')
+      ]);
+
+      // Extract agents from the response (handles both formats)
+      const agentsData = agentsResponse.data.success 
+        ? agentsResponse.data.agents || []
+        : agentsResponse.data;
+      setAgents(agentsData);
+      setTasks(tasksResponse.data);
+      setError(null);
+    } catch (err) {
+      setError('Failed to load data');
+      console.error('Error loading dashboard data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    // Load initial data - use dynamic planner endpoint for all agents from registry
-    const loadData = async () => {
-      try {
-        setLoading(true);
-        const [agentsResponse, tasksResponse] = await Promise.all([
-          axios.get('/api/planner/agents'),
-          axios.get('/api/tasks')
-        ]);
-
-        // Extract agents from the response (handles both formats)
-        const agentsData = agentsResponse.data.success 
-          ? agentsResponse.data.agents || []
-          : agentsResponse.data;
-        setAgents(agentsData);
-        setTasks(tasksResponse.data);
-        setError(null);
-      } catch (err) {
-        setError('Failed to load data');
-        console.error('Error loading dashboard data:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     loadData();
 
     // Request agent list via WebSocket
@@ -87,7 +90,17 @@ const Dashboard = () => {
   const completedTasks = tasks.filter(task => task.status === 'completed').length;
 
   return (
-    <Grid container spacing={3}>
+    <>
+      <PageHeader title="Dashboard">
+        <Button
+          variant="outlined"
+          startIcon={<RefreshIcon />}
+          onClick={loadData}
+        >
+          Refresh
+        </Button>
+      </PageHeader>
+      <Grid container spacing={3}>
       {/* Stats Cards */}
       <Grid item xs={12} sm={4}>
         <Card>
@@ -177,7 +190,8 @@ const Dashboard = () => {
           </CardContent>
         </Card>
       </Grid>
-    </Grid>
+      </Grid>
+    </>
   );
 };
 

@@ -14,9 +14,11 @@ import {
   Tab,
   Divider
 } from '@mui/material';
+import { Refresh as RefreshIcon } from '@mui/icons-material';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { formatDistanceToNow } from 'date-fns';
+import PageHeader from './PageHeader';
 
 const TeamMembers = () => {
   const [agents, setAgents] = useState([]);
@@ -25,27 +27,27 @@ const TeamMembers = () => {
   const [tabValue, setTabValue] = useState(0);
 
   // Load agents from registry using dynamic discovery
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        // Use the new dynamic planning endpoint to get all agents from registry
-        const response = await axios.get('/api/planner/agents');
-        
-        if (response.data.success) {
-          setAgents(response.data.agents || []);
-          setError(null);
-        } else {
-          setError('Failed to load team members');
-        }
-      } catch (err) {
-        setError('Failed to load team members from registry');
-        console.error('Error loading team members:', err);
-      } finally {
-        setLoading(false);
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      // Use the new dynamic planning endpoint to get all agents from registry
+      const response = await axios.get('/api/planner/agents');
+      
+      if (response.data.success) {
+        setAgents(response.data.agents || []);
+        setError(null);
+      } else {
+        setError('Failed to load team members');
       }
-    };
+    } catch (err) {
+      setError('Failed to load team members from registry');
+      console.error('Error loading team members:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  useEffect(() => {
     fetchData();
   }, []);
 
@@ -64,11 +66,22 @@ const TeamMembers = () => {
   }
 
   return (
-    <Grid container spacing={3}>
-      {agents.map((agent, index) => (
-        <Grid item xs={12} md={6} lg={4} key={index}>
-          <Card>
-            <CardContent>
+    <>
+      <PageHeader title="Team">
+        <Button
+          variant="outlined"
+          startIcon={<RefreshIcon />}
+          onClick={fetchData}
+        >
+          Refresh
+        </Button>
+      </PageHeader>
+      <Grid container spacing={3}>
+        {agents.map((agent, index) => (
+          <Grid item xs={12} md={6} lg={4} key={index} sx={{ display: 'flex' }}>
+            {/* equal card heights in the row */}
+            <Card sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+              <CardContent sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <Avatar sx={{ 
                   bgcolor: agent.status === 'online' ? 'success.main' : 'grey.500', 
@@ -104,19 +117,21 @@ const TeamMembers = () => {
                 )}
               </Box>
               
-              <Button 
-                component={Link} 
-                to={`/agent/${encodeURIComponent(agent.name)}`}
-                variant="contained" 
-                fullWidth
-              >
-                View Details
-              </Button>
-            </CardContent>
-          </Card>
-        </Grid>
-      ))}
-    </Grid>
+                <Button 
+                  component={Link} 
+                  to={`/agent/${encodeURIComponent(agent.name)}`}
+                  variant="contained" 
+                  fullWidth
+                  sx={{ mt: 'auto' }}
+                >
+                  View Details
+                </Button>
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
+      </Grid>
+    </>
   );
 };
 

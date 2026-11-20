@@ -18,6 +18,11 @@ echo "Stopping Web UI Frontend..."
 pkill -f "npm run dev" 2>/dev/null || true
 pkill -f "vite" 2>/dev/null || true
 
+# Terminate processes associated with the Implementation Engineer
+echo "Stopping Implementation Engineer..."
+pkill -f "mcp_std_server.server" 2>/dev/null || true
+pkill -f "python.*mcp_std_server" 2>/dev/null || true
+
 # Also try to stop any processes on the known ports
 echo "Terminating any remaining processes on ports 3061, 8000, 5173..."
 if command -v lsof >/dev/null 2>&1; then

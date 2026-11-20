@@ -9,6 +9,7 @@ It communicates with the central MCP Registry Server (port 3031) via HTTP POST t
 following proper MCP architecture - NOT direct database access.
 """
 import json
+import os
 import time
 import requests  # Use sync HTTP client to match existing server handler pattern
 import threading  # Added for background polling
@@ -33,6 +34,15 @@ class TaskAssignmentManager:
             # Default to local MCP Registry Server on port 3031
             self.mcp_registry_client = McpRegistryClient("http://127.0.0.1:3031/mcp")
             print("✅ MCP Registry Client initialized (default: http://127.0.0.1:3031/mcp)")
+
+        # CRITICAL: Force cache refresh BEFORE initializing routing engine
+        # This ensures routing_engine gets fresh service data, not stale cache
+        try:
+            self.mcp_registry_client.list_services(use_cache=False)
+            print("✅ MCP Registry cache refreshed with fresh service data")
+        except Exception as e:
+            print(f"⚠️  Could not refresh MCP Registry cache: {e}")
+
         self.task_storage = task_storage
 
         # Initialize routing components with MCP Registry Client
@@ -63,8 +73,87 @@ class TaskAssignmentManager:
                         self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
                     elif "requirement" in service_name and endpoint:
                         self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
+                    elif "devops" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["devops-engineer"] = endpoint
             except Exception as e:
                 print(f"Error updating agent endpoints from registry: {e}")
+
+        # Restart resilience: pipeline threads live only inside this process,
+        # so any task still marked in_progress/rework_in_progress at startup
+        # was orphaned by the previous shutdown. Surface them as needs_revision
+        # (actionable in the UI) instead of letting them hang forever.
+        try:
+            if self.task_storage:
+                from . import task_lifecycle
+                task_lifecycle._sql(self.task_storage.connection)
+                cur = self.task_storage.connection.cursor()
+                cur.execute(
+                    "UPDATE task_registry SET status='needs_revision', "
+                    "status_reason='pipeline thread lost on IT Lead restart; "
+                    "request rework to resume' "
+                    "WHERE status IN ('in_progress','rework_in_progress') "
+                    "OR (status='review' AND COALESCE(metadata->>'selffix_area','')='') "
+                    "RETURNING task_id")
+                orphans = [r[0] for r in cur.fetchall()]
+                self.task_storage.connection.commit()
+                cur.close()
+                for tid in orphans:
+                    if self._recover_git_url(tid):
+                        # reuse the requestor's own rework text when present,
+                        # so a restart does not silently downgrade the task
+                        prompt = ("Конвейер оборвался из-за рестарта сервиса; "
+                                  "дерево артефакта восстановлено из results-репозитория. "
+                                  "Код не меняй, если сборка не падает: прогони "
+                                  "верификацию артефакта (компиляция/запуск/smoke) "
+                                  "и заверши работу.")
+                        try:
+                            with self.task_storage.connection.cursor() as c2:
+                                c2.execute("SELECT metadata->>'rework_issue_description' "
+                                           "FROM task_registry WHERE task_id=%s", (tid,))
+                                r2 = c2.fetchone()
+                            self.task_storage.connection.commit()
+                            if r2 and r2[0]:
+                                prompt = r2[0]
+                        except Exception:
+                            pass
+                        print(f"🩹 orphan self-heal: re-running gates for {tid}")
+                        threading.Thread(
+                            target=self._trigger_rework_workflow,
+                            args=(tid, prompt, "", "medium"),
+                            daemon=True).start()
+                    else:
+                        # nothing pushed to adopt: re-run the original
+                        # pipeline from scratch instead of dead-ending in
+                        # needs_revision (a rework there would be rejected
+                        # for lack of git_url)
+                        restarted = False
+                        try:
+                            with self.task_storage.connection.cursor() as c3:
+                                c3.execute("SELECT description, priority, metadata "
+                                           "FROM task_registry WHERE task_id=%s", (tid,))
+                            row = c3.fetchone()
+                            self.task_storage.connection.commit()
+                            if row and row[0]:
+                                desc, prio = row[0], (row[1] or "medium")
+                                raw = row[2] if isinstance(row[2], dict) else {}
+                                orig = ((raw.get("original_arguments") or {})
+                                        .get("metadata") or {})
+                                meta = {k: orig[k] for k in
+                                        ("deploy_after_implementation", "requires_client")
+                                        if k in orig}
+                                print(f"🩹 orphan re-run from scratch: {tid}")
+                                threading.Thread(
+                                    target=self.assign_and_forward_task,
+                                    args=(tid, desc),
+                                    kwargs={"priority": prio, "metadata": meta},
+                                    daemon=True).start()
+                                restarted = True
+                        except Exception as e:
+                            print(f"⚠️ orphan re-run failed for {tid}: {e}")
+                        if not restarted:
+                            print(f"⚠️ orphaned task swept to needs_revision: {tid}")
+        except Exception as e:
+            print(f"⚠️ orphan sweep failed: {e}")
 
     def _init_result_router(self):
         """Initialize result router for storing agent results"""
@@ -78,14 +167,1176 @@ class TaskAssignmentManager:
         except Exception as e:
             print(f"⚠️ Error initializing result router: {e}")
 
-    def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 120) -> Optional[Dict[str, Any]]:
+    def _invalidate_qa_contract(self, task_id):
+        """Ask QA to drop its cached run contract via MCP (QA owns that cache);
+        local file removal only as a fallback for older QA builds."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+            ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                       for s in services if isinstance(s, dict)
+                       and "qa engineer" in (s.get("name") or "").lower()
+                       and s.get("endpoint")), None)
+            if ep:
+                requests.post(ep, json={"jsonrpc": "2.0", "id": f"inval-{task_id}",
+                                        "method": "tools/call",
+                                        "params": {"name": "invalidate_contract",
+                                                   "arguments": {"task_id": task_id}}},
+                              timeout=15)
+                return
+        except Exception as e:
+            print(f"⚠️ invalidate_contract via MCP failed: {e}")
+        try:
+            os.remove(f"/tmp/qa-contracts/{task_id}.json")
+        except OSError:
+            pass
+
+    def _run_qa_gate(self, task_id: str, git_url: str, async_task_id: str,
+                     answers_text: str = ""):
+        """Run QA validate_artifact + smoke_run on a coder artifact.
+
+        Returns (passed, info). Fails open (passed=True) when QA is
+        unreachable so a missing QA server never blocks delivery.
+        answers_text: requestor's clarification answers, forwarded to the
+        contract planner so it stops asking for known config.
+        """
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception as e:
+            print(f"⚠️ QA gate: registry lookup failed: {e}")
+            return True, {"skipped": str(e)}
+        qa_endpoint = None
+        for s in services if isinstance(services, list) else []:
+            name = (s.get("name") or "").lower()
+            ep = s.get("endpoint") or ""
+            if "qa engineer" in name and ep:
+                qa_endpoint = ep.replace("0.0.0.0", "127.0.0.1")
+                break
+        if not qa_endpoint:
+            print("⚠️ QA gate: QA Engineer not registered, skipping")
+            return True, {"skipped": "qa not registered"}
+        results = {}
+        for tool in ("validate_artifact", "smoke_run"):
+            try:
+                resp = requests.post(qa_endpoint, json={
+                    "jsonrpc": "2.0", "id": f"qa-{tool}-{task_id}",
+                    "method": "tools/call",
+                    "params": {"name": tool,
+                               "arguments": {"task_id": async_task_id, "git_url": git_url,
+                                             "requestor_answers": answers_text}}
+                }, timeout=120)
+                out = resp.json().get("result", {})
+                if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                    out = out["result"]
+                results[tool] = out if isinstance(out, dict) else {}
+            except Exception as e:
+                print(f"⚠️ QA gate {tool} error: {e}")
+                return True, {"skipped": f"{tool} error: {e}"}
+        passed = bool(results.get("validate_artifact", {}).get("valid")) and \
+            bool(results.get("smoke_run", {}).get("passed"))
+        return passed, results
+
+    @staticmethod
+    def _parse_manifest_lines(raw: str):
+        """Parse JSONL manifest (one {path,spec} object per line); tolerate bad lines."""
+        out = []
+        for line in (raw or "").splitlines():
+            line = line.strip().rstrip(",")
+            if not line.startswith("{"):
+                continue
+            try:
+                e = json.loads(line)
+                if isinstance(e, dict) and e.get("path") and e.get("spec") is not None:
+                    out.append({"path": str(e["path"]), "spec": str(e["spec"])})
+            except json.JSONDecodeError:
+                continue
+        if out:
+            return out
+        try:  # legacy whole-JSON fallback
+            s, t = (raw or "").find("{"), (raw or "").rfind("}")
+            if s != -1 and t > s:
+                p = json.loads(raw[s:t + 1])
+                m = p.get("file_manifest")
+                if isinstance(m, list) and m and all(isinstance(x, dict) and x.get("path") for x in m):
+                    return m
+        except Exception:
+            pass
+        return None
+
+    def _ensure_file_manifest(self, task_description: str, llm_plan: dict):
+        """Return file_manifest from the plan, or derive one with a dedicated LLM
+        call when the task is clearly multi-file but the planner omitted it."""
+        manifest = llm_plan.get("file_manifest") if isinstance(llm_plan, dict) else None
+        if isinstance(manifest, list) and manifest:
+            return manifest
+        import re as _re
+        if not _re.search(r"(?i)template|framework|sdk|library|multi-?file|README|requirements\.txt|service skeleton", task_description):
+            return None
+        if not self.llm_client:
+            return None
+        print("🧩 Planner omitted file_manifest for multi-file task -> dedicated manifest call")
+        base = ("Decompose this deliverable into the files to generate.\n"
+                "Output JSONL: one JSON object per line, no array wrapper, no prose, no code fences.\n"
+                'Each line: {"path": "relative/path", "spec": "plain text, no quotes, no newlines, under 80 words"}\n'
+                "List every file (entry module, helpers, README.md, requirements.txt as needed).\n"
+                "Keep each file small: under 150 lines - split large modules into more files.\n"
+                "Each spec MUST pin the contract: exact top-level names the file exports and\n"
+                "exact sibling imports it uses, so independently generated files fit together.\n"
+                "Specs may rely only on the stdlib or packages explicitly listed in the deliverable;\n"
+                "never assume a third-party SDK API.\n\n"
+                "Deliverable task: " + task_description)
+        for attempt in range(2):
+            try:
+                prompt = base if attempt == 0 else base + "\n\nIMPORTANT: your previous output was invalid. Emit ONLY valid JSONL lines."
+                raw = self.llm_client.call_llm(prompt, temperature=0.2, timeout=240)
+                m = self._parse_manifest_lines(raw)
+                if m:
+                    print(f"🧩 Derived manifest: {[e['path'] for e in m]}")
+                    return m
+                print(f"⚠️ manifest derivation attempt {attempt + 1}: no valid lines")
+            except Exception as e:
+                print(f"⚠️ manifest derivation failed (attempt {attempt + 1}): {e}")
+        return None
+
+    def _generate_one(self, coder_endpoint, task_id, path, spec, manifest_str, task_description):
+        try:
+            r = requests.post(coder_endpoint, json={
+                "jsonrpc": "2.0", "id": f"gen-{task_id}-{path}",
+                "method": "tools/call",
+                "params": {"name": "generate_file", "arguments": {
+                    "task_id": task_id, "path": path, "spec": spec,
+                    "manifest": manifest_str, "project_description": task_description}}},
+                timeout=3600)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            if not isinstance(out, dict):
+                out = {}
+            if not out:
+                print(f"⚠️ generate_file {path}: empty result; raw: {r.text[:300]}", flush=True)
+            return out
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _patch_one(self, coder_endpoint, task_id, path, error_text):
+        sid = f"ses-fix-{task_id}"
+        import threading as _thr
+        stop = _thr.Event()
+        watcher = _thr.Thread(target=self._watch_session, args=(task_id, sid, stop),
+                              daemon=True)
+        watcher.start()
+        _thr.Event().wait(3)  # let the SSE stream connect before the session starts
+        try:
+            r = requests.post(coder_endpoint, json={
+                "jsonrpc": "2.0", "id": f"patch-{task_id}-{path}", "method": "tools/call",
+                "params": {"name": "patch_file", "arguments": {
+                    "task_id": task_id, "path": path, "error": error_text}}}, timeout=3600)
+        except Exception as e:
+            stop.set()
+            return {"error": str(e)}
+        stop.set()
+        out = r.json().get("result", {})
+        if isinstance(out, dict) and isinstance(out.get("result"), dict):
+            out = out["result"]
+        if isinstance(out, dict) and str(out.get("via", "")).startswith("fixed via opencode"):
+            stats = self._session_stats(sid)
+            if stats:
+                prev = {}
+                try:
+                    t = self.task_storage.get_task(task_id) or {}
+                    prev = (t.get("metadata") or {}).get("opencode_usage", {})
+                except Exception:
+                    pass
+                self._merge_metadata(task_id, {"opencode_usage": {**prev, "fix": stats}})
+        return out if isinstance(out, dict) else {}
+
+    def _repair_and_recheck(self, task_id, task_description, file_manifest,
+                            coder_endpoint, git_url, manifest_str, qa_info):
+        """One repair pass: parse smoke ImportError, regenerate the target file, re-QA."""
+        import re as _re
+        smoke = qa_info.get("smoke_run", {}) if isinstance(qa_info, dict) else {}
+        err = str(smoke.get("stderr") or "") + str(smoke.get("errors") or "")
+        target = None
+        fix_note = ""
+        m = _re.search(r"cannot import name '(\w+)' from '([\w.]+)'", err)
+        if m:
+            module = m.group(2).rsplit(".", 1)[-1]
+            target = next((f for f in file_manifest
+                           if f.get("path", "").rsplit("/", 1)[-1].rsplit(".", 1)[0] == module), None)
+            fix_note = (f"this module MUST define top-level '{m.group(1)}' imported by siblings")
+        else:
+            tb = _re.findall(r'File "[^"]*/([\w.]+\.py)", line \d+', err)
+            lines = err.strip().splitlines()
+            last = next((l for l in reversed(lines)
+                         if "Error" in l or "Exception" in l), "")
+            if tb and last and ("Error" in last or "Exception" in last):
+                target = next((f for f in file_manifest
+                               if f.get("path", "").endswith("/" + tb[-1])
+                               or f.get("path", "") == tb[-1]), None)
+                fix_note = f"fix runtime error: {last}. Traceback tail: {err[-300:]}"
+        if not target:
+            return False, qa_info
+        print(f"🔧 Repair: patching {target['path']}")
+        out = self._patch_one(coder_endpoint, task_id, target["path"], err[-2000:])
+        if not out.get("success"):
+            print(f"🔧 patch failed ({str(out)[:120]}), regenerating {target['path']}")
+            spec = target.get("spec", "") + ". FIX REQUIRED: " + fix_note
+            out = self._generate_one(coder_endpoint, task_id, target["path"], spec,
+                                     manifest_str, task_description)
+        if not out.get("success"):
+            return False, qa_info
+        return self._run_qa_gate(task_id, git_url, task_id)
+
+    def _security_repair(self, task_id, coder_endpoint, git_url, sec_info):
+        """One automatic security repair pass (mirrors the QA repair loop):
+        hand each flagged file to the coder with its findings, then re-scan
+        once. Mechanical issues (exec in a test) get fixed; behavior that is
+        the file's intended purpose gets documented, not removed. If the
+        rescan is still dirty the decision escalates to the requestor -
+        auto-fixing further risks gaming the scanner instead of the finding."""
+        findings = (sec_info or {}).get("findings") or []
+        files = []
+        for f in findings:
+            if isinstance(f, dict) and f.get("file") and f["file"] not in files:
+                files.append(f["file"])
+        if not files:
+            return False, sec_info
+        for path in files[:4]:
+            detail = json.dumps([f for f in findings
+                                 if isinstance(f, dict) and f.get("file") == path])[:2000]
+            note = ("Security review flagged this file. Fix the flagged pattern when it "
+                    "is a real risk (e.g. replace exec() in tests with a direct call). "
+                    "When the flagged behavior IS the file's intended purpose, keep it "
+                    "working but tighten it (validate input, e.g. file extension) and add "
+                    "a short code comment + README note why it is safe. "
+                    f"Findings for this file: {detail}")
+            out = self._patch_one(coder_endpoint, task_id, path, note)
+            if not out.get("success"):
+                print(f"⚠️ security repair failed for {path}: {str(out)[:120]}", flush=True)
+        return self._security_gate(task_id, git_url)
+
+    def _security_gate(self, task_id, git_url):
+        """Security Reviewer scan; fails open when the reviewer is unavailable."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception:
+            return True, {}
+        ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                   for s in services if isinstance(s, dict)
+                   and "security reviewer" in (s.get("name") or "").lower()
+                   and s.get("endpoint")), None)
+        if not ep:
+            return True, {"skipped": "security reviewer not registered"}
+        try:
+            r = requests.post(ep, json={
+                "jsonrpc": "2.0", "id": f"sec-{task_id}", "method": "tools/call",
+                "params": {"name": "scan_artifact",
+                           "arguments": {"task_id": task_id, "git_url": git_url}}}, timeout=180)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            out = out if isinstance(out, dict) else {}
+            return bool(out.get("safe", True)), out
+        except Exception as e:
+            print(f"⚠️ security gate error: {e}")
+            return True, {"skipped": str(e)}
+
+    def _advisory_review(self, task_id):
+        """Non-blocking code review; verdict stored in task metadata.
+        opencode reviewer agent first (full repo access), single-shot blob fallback."""
+        if not self.task_storage:
+            return
+        import shutil
+        import subprocess
+        import tempfile
+        work = os.path.join(tempfile.gettempdir(), f"review-{task_id}")
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+            subprocess.run(["git", "clone", "--depth", "1",
+                            os.environ.get("MCP_GIT_REPO_URL",
+                                           "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"),
+                            work], check=True, capture_output=True, timeout=90)
+            root = os.path.join(work, "results", task_id)
+            review = None
+            if os.environ.get("OPENCODE_REVIEW", "1") != "0":
+                try:
+                    from .opencode_run import opencode_agent, extract_json
+                    ok, text, err = opencode_agent(
+                        "code-reviewer", root, "Review this project.",
+                        session=f"ses-review-{task_id}", timeout=420)
+                    review = extract_json(text) if ok else None
+                    if review and review.get("quality") not in ("good", "minor", "major"):
+                        review = None
+                    if not review:
+                        print(f"⚠️ advisory review opencode fell back: {(err or 'bad json')[:150]}", flush=True)
+                except Exception as e:
+                    print(f"⚠️ advisory review opencode error: {str(e)[:150]}", flush=True)
+            if review is None:
+                if not self.llm_client:
+                    return
+                blob = ""
+                for dp, _, fs in os.walk(root):
+                    for f in sorted(fs):
+                        if f.endswith((".py", ".js", ".html")):
+                            blob += f"\n--- {f} ---\n" + \
+                                open(os.path.join(dp, f), errors="ignore").read()[:3000]
+                        if len(blob) > 12000:
+                            break
+                    if len(blob) > 12000:
+                        break
+                verdict = self.llm_client.call_llm(
+                    "You are a code reviewer. Assess correctness risks, error handling, "
+                    'security smells, structure. Return JSON only: {"quality": '
+                    '"good|minor|major", "notes": ["up to 5 short notes"]}\n\n' + blob[:12000],
+                    temperature=0.2, timeout=240)
+                s, e = verdict.find("{"), verdict.rfind("}")
+                if s == -1 or e <= s:
+                    return
+                review = json.loads(verdict[s:e + 1])
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "UPDATE task_registry SET metadata = COALESCE(metadata::jsonb,'{}') "
+                "|| %s::jsonb WHERE task_id = %s",
+                (json.dumps({"code_review": review}), task_id))
+            self.task_storage.connection.commit()
+            cursor.close()
+            print(f"🔍 advisory review: {review.get('quality')}")
+        except Exception as e:
+            print(f"⚠️ advisory review skipped: {str(e)[:150]}")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _deploy_multifile(self, task_id, git_url):
+        """Call DevOps deploy_web_application for a fan-out tree. Returns result dict."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception as e:
+            return {"error": f"registry lookup failed: {e}"}
+        ep = None
+        for s in services if isinstance(services, list) else []:
+            if "devops" in (s.get("name") or "").lower() and s.get("endpoint"):
+                ep = s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                break
+        if not ep:
+            return {"error": "devops not registered"}
+        contract = {}
+        try:
+            qa_ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                          for s in services if "qa engineer" in (s.get("name") or "").lower()
+                          and s.get("endpoint")), None)
+            if qa_ep:
+                cr = requests.post(qa_ep, json={
+                    "jsonrpc": "2.0", "id": f"contract-{task_id}", "method": "tools/call",
+                    "params": {"name": "plan_run_contract",
+                               "arguments": {"task_id": task_id, "git_url": git_url}}},
+                    timeout=300)
+                out = cr.json().get("result", {})
+                if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                    out = out["result"]
+                contract = (out or {}).get("contract", {}) if isinstance(out, dict) else {}
+        except Exception as e:
+            print(f"⚠️ run contract lookup failed: {e}")
+        try:
+            r = requests.post(ep, json={
+                "jsonrpc": "2.0", "id": f"deploy-{task_id}", "method": "tools/call",
+                "params": {"name": "deploy_web_application",
+                           "arguments": {"task_id": task_id, "git_url": git_url,
+                                         "container_port": 5000,
+                                         "run_contract": contract}}}, timeout=600)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            return out if isinstance(out, dict) else {}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _serve_auth(self):
+        url = (os.environ.get("OPENCODE_SERVE_URL") or "").rstrip("/")
+        pw = os.environ.get("OPENCODE_SERVE_PASSWORD") or ""
+        return (url, ("opencode", pw)) if url and pw else (None, None)
+
+    def _watch_session(self, task_id, sid, stop, agent_label="implementation-engineer",
+                       max_events=50):
+        """Mirror an opencode session's tool steps into the task activity log (SSE)."""
+        url, auth = self._serve_auth()
+        if not url:
+            return
+        n = 0
+        names = {}
+        try:
+            r = requests.get(url + "/api/event", auth=auth, stream=True, timeout=3600)
+            for line in r.iter_lines():
+                if stop.is_set() or n >= max_events:
+                    break
+                if not line or not line.startswith(b"data:"):
+                    continue
+                try:
+                    ev = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                d = ev.get("data") or {}
+                if d.get("sessionID") != sid:
+                    continue
+                ty = ev.get("type", "")
+                if ty == "permission.asked":
+                    self._on_permission_asked(task_id, d)
+                elif ty == "session.tool.input.started":
+                    names[d.get("id")] = d.get("name")
+                elif ty == "session.tool.input.ended":
+                    self._log_activity(task_id, "agent_step", agent=agent_label,
+                                       detail=f"{names.get(d.get('id'), d.get('name'))}: "
+                                              f"{str(d.get('text', ''))[:90]}")
+                    n += 1
+                elif ty in ("session.execution.succeeded", "session.execution.failed",
+                            "session.execution.interrupted"):
+                    break
+        except Exception:
+            pass
+
+    def _on_permission_asked(self, task_id, d):
+        """A session blocked on an 'ask' permission: record it, notify, arm auto-reject."""
+        rid, sid = d.get("id"), d.get("sessionID")
+        if not rid or not sid:
+            return
+        res = ",".join(str(x)[:60] for x in (d.get("resources") or []))[:180]
+        self._log_activity(task_id, "permission_asked", agent="implementation-engineer",
+                           detail=f"{d.get('action')}: {res}")
+        self._merge_metadata(task_id, {"pending_permission": {
+            "request_id": rid, "session_id": sid, "action": d.get("action"),
+            "resources": d.get("resources"), "asked_at": time.time()}})
+        import threading as _thr
+        _thr.Timer(int(os.environ.get("OPENCODE_PERM_TIMEOUT", "180")),
+                   self._auto_reject_permission, args=(task_id, sid, rid)).start()
+
+    def _auto_reject_permission(self, task_id, sid, rid):
+        """If a human hasn't resolved the ask in time, reject it (safe default)."""
+        try:
+            t = self.task_storage.get_task(task_id) if self.task_storage else None
+            pending = ((t or {}).get("metadata") or {}).get("pending_permission") or {}
+            if pending.get("request_id") != rid:
+                return  # already resolved by a human
+            url, auth = self._serve_auth()
+            if url:
+                requests.post(url + f"/api/session/{sid}/permission/{rid}/reply",
+                              auth=auth, timeout=10, json={"decision": "reject"})
+            self._merge_metadata(task_id, {"pending_permission": None})
+            self._log_activity(task_id, "permission_auto_rejected",
+                               agent="implementation-engineer", detail=f"request {rid}")
+        except Exception:
+            pass
+
+    def resolve_permission(self, task_id, decision="reject"):
+        """MCP-facing: reply to the task's pending opencode permission ask."""
+        if decision not in ("once", "always", "reject"):
+            return {"error": "decision must be once|always|reject"}
+        try:
+            t = self.task_storage.get_task(task_id) if self.task_storage else None
+            pending = ((t or {}).get("metadata") or {}).get("pending_permission") or {}
+            rid, sid = pending.get("request_id"), pending.get("session_id")
+            if not rid or not sid:
+                return {"error": "no pending permission for task"}
+            url, auth = self._serve_auth()
+            if not url:
+                return {"error": "opencode serve unavailable"}
+            r = requests.post(url + f"/api/session/{sid}/permission/{rid}/reply",
+                              auth=auth, timeout=10, json={"decision": decision})
+            self._merge_metadata(task_id, {"pending_permission": None})
+            self._log_activity(task_id, "permission_resolved",
+                               agent="implementation-engineer",
+                               detail=f"{decision} (request {rid})")
+            return {"success": r.status_code in (200, 204), "decision": decision}
+        except Exception as e:
+            return {"error": str(e)[:200]}
+
+    def _session_stats(self, sid):
+        """Cumulative tokens/cost of an opencode session ({} if unavailable)."""
+        url, auth = self._serve_auth()
+        if not url:
+            return {}
+        try:
+            s = requests.get(url + f"/api/session/{sid}", auth=auth,
+                             timeout=10).json().get("data", {}) or {}
+            t = s.get("tokens") or {}
+            return {"tokens_in": t.get("input", 0), "tokens_out": t.get("output", 0),
+                    "reasoning": t.get("reasoning", 0), "cost": s.get("cost", 0)}
+        except Exception:
+            return {}
+
+    def _merge_metadata(self, task_id, patch):
+        try:
+            if not self.task_storage:
+                return
+            cursor = self.task_storage.connection.cursor()
+            cursor.execute(
+                "UPDATE task_registry SET metadata = COALESCE(metadata::jsonb,'{}') "
+                "|| %s::jsonb WHERE task_id = %s",
+                (json.dumps(patch), task_id))
+            self.task_storage.connection.commit()
+            cursor.close()
+        except Exception:
+            pass
+
+    def _run_client_acceptance(self, task_id, base_url):
+        """If the artifact ships client.py, run it against the public URL.
+        Returns (None, '') when absent, (True/False, output) otherwise."""
+        import shutil
+        import subprocess
+        import tempfile
+        work = os.path.join(tempfile.gettempdir(), f"accept-{task_id}")
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+            subprocess.run(["git", "clone", "--depth", "1",
+                            os.environ.get("MCP_GIT_REPO_URL",
+                                           "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"),
+                            work], check=True, capture_output=True, timeout=90)
+            root = os.path.join(work, "results", task_id)
+            client = next((os.path.join(dp, f) for dp, _, fs in os.walk(root)
+                           for f in fs if f == "client.py"), None)
+            if not client:
+                return None, ""
+            p = subprocess.run(["python3", client, base_url.rstrip("/") + "/"],
+                               cwd=os.path.dirname(client),
+                               capture_output=True, text=True, timeout=120)
+            out = ((p.stdout or "") + (p.stderr or ""))[-600:]
+            return p.returncode == 0, out
+        except Exception as e:
+            return None, f"acceptance skipped: {str(e)[:150]}"
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    @staticmethod
+    def _md_flag(metadata, name):
+        """Flag lookup that tolerates nesting (context lands under
+        original_arguments.original_arguments.metadata depending on the path)."""
+        return ('"%s": true' % name) in json.dumps(metadata or {}).lower()
+
+    def _route_policy(self, task_description, metadata, llm_plan):
+        """Deterministic routing policy: which pipeline a task takes.
+
+        'gated'  = multi-file flow: build_project (or fan-out fallback) + QA
+                   + security + deploy + client acceptance. Everything that
+                   runs on a network or spans files belongs here.
+        'simple' = build flow without deploy/security gates: plain scripts and
+                   utilities; a single-file manifest is synthesized when the
+                   planner omits one.
+        First matching rule wins; the decision is logged to the activity feed.
+        """
+        md = metadata or {}
+        desc = (task_description or "").lower()
+        if self._md_flag(md, "requires_client") or self._md_flag(md, "deploy_after_implementation"):
+            return "gated", "deploy/client flags force the gated pipeline"
+        if isinstance(llm_plan, dict) and llm_plan.get("file_manifest"):
+            return "gated", "planner emitted a multi-file manifest"
+        if any(k in desc for k in ("service", "server", "api", "endpoint", "http",
+                                   "mcp", "website", "microservice", "web ",
+                                   "deploy", "publish", "url")):
+            return "gated", "task describes a network service - must pass QA/security gates"
+        if any(k in desc for k in ("template", "sdk", "library", "package")):
+            return "gated", "multi-file deliverable keywords"
+        return "simple", "plain script/utility - build flow, no deploy gates"
+
+    def _gated_manifest_synth(self):
+        """Minimal manifest for deployable/client tasks the planner gave no manifest for."""
+        return [
+            {"path": "main.py",
+             "spec": "HTTP service entry point implementing exactly what the task "
+                     "describes; bind 0.0.0.0, port from env PORT (default 5000); "
+                     "stdlib only unless requirements.txt lists packages"},
+            {"path": "requirements.txt",
+             "spec": "third-party packages actually imported, or "
+                     "'# dependencies (stdlib only)'"},
+            {"path": "README.md",
+             "spec": "run command (python main.py) and every endpoint: method, path, "
+                     "request and response example"},
+        ]
+
+    def _single_manifest_synth(self, llm_plan):
+        """One-file manifest for plain script/utility tasks (unified build flow)."""
+        fname = str((llm_plan or {}).get("single_file_path") or "main.py").strip("/") or "main.py"
+        return [{"path": fname,
+                 "spec": "Implement exactly what the task describes in this single "
+                         "file. Stdlib only unless the task explicitly names "
+                         "third-party packages; add a __main__ guard for CLIs."}]
+
+    def _deployment_healthy(self, url, timeout_s=60):
+        """Poll the edge URL: any HTTP answer (even 4xx) means the app is up;
+        502/504/connection errors mean crash-loop or dead container.
+        A bare 404 right after deploy is usually the nginx reload race (e2e-u5:
+        404 at gate time, 200 a minute later) - re-poll a few times before
+        accepting it."""
+        deadline = time.time() + timeout_s
+        last, grace = "no attempt", 3
+        while time.time() < deadline:
+            try:
+                r = requests.get(url, timeout=5)
+                if r.status_code not in (502, 504):
+                    if r.status_code == 404 and grace > 0:
+                        grace -= 1
+                        last = "HTTP 404"
+                        time.sleep(5)
+                        continue
+                    return True, f"HTTP {r.status_code}"
+                last = f"HTTP {r.status_code}"
+            except Exception as e:
+                last = str(e)[:100]
+            time.sleep(5)
+        return False, last
+
+    def _retro_conventions_text(self):
+        """Retro skill library travels with the build request (MCP argument),
+        so the coder host needs no shared filesystem with IT Lead."""
+        try:
+            with open("/root/qwen/base/retro/conventions.md") as f:
+                return f.read()[:4000]
+        except Exception:
+            return ""
+
+    def _build_via_opencode(self, task_id, task_description, file_manifest,
+                            coder_endpoint, metadata, base_tree=None):
+        """Phase A: one opencode coder session for the whole manifest.
+        Returns git_url on success, None to fall back to per-file fan-out.
+        base_tree: rework mode - coder fixes the seeded existing tree instead
+        of creating files from the manifest."""
+        try:
+            manifest_str = "\n".join(f"- {f.get('path')}: {f.get('spec', '')}"
+                                     for f in file_manifest)
+            self._log_activity(task_id, "build_project", agent="implementation-engineer",
+                               detail=f"opencode coder session, {len(file_manifest)} files"
+                                      + (" (rework of existing tree)" if base_tree else ""))
+            sid = f"ses-build-{task_id}"
+            import threading as _thr
+            stop = _thr.Event()
+            watcher = _thr.Thread(target=self._watch_session, args=(task_id, sid, stop),
+                                  daemon=True)
+            watcher.start()
+            _thr.Event().wait(3)  # let the SSE stream connect before the session starts
+            try:
+                r = requests.post(coder_endpoint, json={
+                    "jsonrpc": "2.0", "id": f"build-{task_id}", "method": "tools/call",
+                    "params": {"name": "build_project", "arguments": {
+                        "task_id": task_id, "manifest": manifest_str,
+                        "project_description": task_description,
+                        "spec_context": (metadata or {}).get("spec_context", ""),
+                        "conventions": self._retro_conventions_text(),
+                        **({"base_tree": base_tree,
+                            "fix_instructions": task_description} if base_tree else {})}}},
+                    timeout=3600)
+            finally:
+                stop.set()
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            # V2: coder paused mid-build on unguessable values. Ask the
+            # requestor, then resume the SAME session - its context (files
+            # already written, reasoning) survives the pause.
+            for _round in range(3):
+                need = out.get("need_info") if isinstance(out, dict) else None
+                if not (isinstance(need, list) and need):
+                    break
+                added = self._create_clarifications(
+                    task_id, need, asked_by="implementation-engineer")
+                fields = [a["field"] for a in added] or \
+                         [str(n.get("field")) for n in need if isinstance(n, dict)]
+                self._update_task_status(task_id, "awaiting_input",
+                                         "coder needs details: " + ", ".join(fields))
+                self._log_activity(task_id, "clarification_requested",
+                                   agent="implementation-engineer",
+                                   detail="; ".join(str(n.get("question", n.get("field")))[:80]
+                                                    for n in need if isinstance(n, dict)))
+                if not self._wait_for_clarifications(task_id):
+                    self._update_task_status(task_id, "needs_revision",
+                                             "clarification timeout during build")
+                    self._log_activity(task_id, "clarification_timeout", agent="it-lead")
+                    return None
+                self._log_activity(task_id, "clarification_resumed", agent="it-lead",
+                                   detail="coder session resumed with requestor answers")
+                self._update_task_status(task_id, "in_progress",
+                                         "build resumed after clarification")
+                resume_msg = ("CLARIFICATIONS FROM THE REQUESTOR (authoritative, use them, "
+                              "do not ask again):\n" + self._answers_text(task_id) +
+                              "\nContinue the build from where you stopped: implement the "
+                              "remaining manifest files, verify, and finish. Delete "
+                              ".need_info.json if it still exists.")
+                r = requests.post(coder_endpoint, json={
+                    "jsonrpc": "2.0", "id": f"resume-{task_id}", "method": "tools/call",
+                    "params": {"name": "resume_build",
+                               "arguments": {"task_id": task_id, "message": resume_msg}}},
+                    timeout=3600)
+                out = r.json().get("result", {})
+                if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                    out = out["result"]
+            if isinstance(out, dict) and out.get("success") and out.get("git_url"):
+                stats = self._session_stats(sid)
+                if stats:
+                    self._merge_metadata(task_id, {"opencode_usage": {"build": stats}})
+                print(f"🧩 build_project {task_id}: ok via {out.get('session')} "
+                      f"({len(out.get('files', []))} files, {stats})", flush=True)
+                return out["git_url"]
+            print(f"⚠️ build_project {task_id} fell back to fan-out: "
+                  f"{str(out.get('error') if isinstance(out, dict) else out)[:200]}", flush=True)
+        except Exception as e:
+            print(f"⚠️ build_project {task_id} error, falling back: {str(e)[:200]}", flush=True)
+        return None
+
+    # ------------------------------------------------------------------
+    # Clarifications: pipeline -> requestor Q&A (pause / answer / resume).
+    # Any stage (planner, QA contract planner, later coder) may emit
+    # need_info items instead of guessing critical config. The pipeline
+    # pauses with status awaiting_input; the requestor answers via the UI
+    # (answer_clarification tool); answers are injected into re-planning.
+    # ------------------------------------------------------------------
+    def _md_of(self, task_id):
+        task = self.task_storage.get_task(task_id) if self.task_storage else {}
+        task = task or {}
+        md = task.get("metadata") or {}
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except Exception:
+                md = {}
+        return task, md
+
+    def _create_clarifications(self, task_id, items, asked_by):
+        """Normalize need_info items into metadata.clarifications. Fields that
+        are already pending or answered are skipped: never re-ask the requestor
+        the same question."""
+        _, md = self._md_of(task_id)
+        cl = md.get("clarifications") or []
+        known = {c.get("field") for c in cl}
+        added = []
+        for i, it in enumerate(items[:5]):
+            if not isinstance(it, dict):
+                continue
+            field = str(it.get("field") or "").strip().upper().replace(" ", "_")[:60]
+            if not field or field in known:
+                continue
+            entry = {"id": f"clr-{int(time.time())}-{i}", "field": field,
+                     "question": str(it.get("question") or field)[:500],
+                     "why": str(it.get("why") or "")[:300],
+                     "asked_by": asked_by, "status": "pending",
+                     "asked_at": time.time()}
+            cl.append(entry)
+            added.append(entry)
+        if added:
+            self._merge_metadata(task_id, {"clarifications": cl})
+        return added
+
+    def _pending_clarifications(self, task_id):
+        _, md = self._md_of(task_id)
+        return [c for c in (md.get("clarifications") or []) if c.get("status") == "pending"]
+
+    def _answers_text(self, task_id):
+        _, md = self._md_of(task_id)
+        lines = []
+        for c in (md.get("clarifications") or []):
+            if c.get("status") != "answered":
+                continue
+            if c.get("is_secret"):
+                # V3: secrets never travel through prompts/code - the value
+                # lives only in the container env (deploy_env, merged by devops)
+                lines.append(f"- {c.get('field')}: <SECRET: provided at runtime via env "
+                             f"variable {c.get('field')}; read it with os.environ, "
+                             f"never hardcode or print it>")
+            else:
+                lines.append(f"- {c.get('field')}: {c.get('answer')}")
+        return "\n".join(lines)
+
+    def _wait_for_clarifications(self, task_id, deadline_hours=24):
+        """Block until every pending question is answered (poll the registry).
+        Returns True on resume, False on timeout."""
+        deadline = time.time() + deadline_hours * 3600
+        while time.time() < deadline:
+            if not self._pending_clarifications(task_id):
+                return True
+            time.sleep(5)
+        return False
+
+    def _await_clarifications(self, task_id):
+        """Watcher for a pipeline paused BEFORE the build (planner-side):
+        once answered, re-enter assign_and_forward_task with the answers
+        injected into the task text; the planner re-plans with real values."""
+        if not self._wait_for_clarifications(task_id):
+            self._update_task_status(task_id, "needs_revision",
+                                     "clarification timeout: no answer from the requestor")
+            self._log_activity(task_id, "clarification_timeout", agent="it-lead")
+            return
+        task, md = self._md_of(task_id)
+        ctx = md.get("clarification_context") or {}
+        desc = ctx.get("task_description") or task.get("description") or ""
+        answers = self._answers_text(task_id)
+        self._log_activity(task_id, "clarification_resumed", agent="it-lead",
+                           detail=f"{len(answers.splitlines())} answer(s) injected, re-planning")
+        # 'submitted' passes the secondary guard: this IS the same pipeline resuming
+        self._update_task_status(task_id, "submitted", "clarification answered, re-planning")
+        try:
+            self.assign_and_forward_task(
+                task_id,
+                desc + "\n\nCLARIFICATIONS FROM THE REQUESTOR (authoritative values, "
+                       "use them, do not ask again):\n" + answers,
+                assignee=ctx.get("assignee"), priority=ctx.get("priority", "medium"),
+                metadata=ctx.get("metadata"))
+        except Exception as e:
+            print(f"❌ clarification resume failed for {task_id}: {e}", flush=True)
+            self._update_task_status(task_id, "needs_revision",
+                                     f"clarification resume error: {str(e)[:150]}")
+
+    def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list,
+                                llm_plan: dict = None, metadata: dict = None, route: str = "gated",
+                                prebuilt_git_url: str = None, deploy_task_id: str = None):
+        """Fan-out: one coder generate_file call per manifest file, then QA gate on the tree.
+        route='simple' skips the security gate (plain scripts have no network surface).
+        prebuilt_git_url: skip the build phase entirely (rework: tree already built);
+        deploy_task_id: deploy under a different task's edge route (rework -> parent)."""
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            coder_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
+        except Exception as e:
+            coder_endpoint = None
+            print(f"⚠️ fan-out endpoint lookup failed: {e}")
+        if not coder_endpoint:
+            self._update_task_status(task_id, "failed", "implementation-engineer unavailable for fan-out")
+            return
+        coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
+        # "Requires client": guarantee a verification client regardless of planner mood
+        if not prebuilt_git_url and self._md_flag(metadata, "requires_client") and \
+                not any(str(f.get("path", "")).endswith("client.py") for f in file_manifest):
+            file_manifest = list(file_manifest) + [{
+                "path": "client.py",
+                "spec": "standalone stdlib verification client. Usage: python client.py "
+                        "<BASE_URL>. Exercises EVERY endpoint documented in README (for MCP: "
+                        "POST /mcp initialize, tools/list, and one tools/call). Prints "
+                        "'PASS <check>' or 'FAIL <check>' per check and exits 0 only if all pass.",
+            }]
+        # Derived boilerplate (requirements.txt is built from sibling .py imports)
+        # must run AFTER the parallel code wave, not inside it.
+        def _is_deferred(f):
+            import os as _os
+            return _os.path.basename(str(f.get("path", "")).lower()) in ("requirements.txt", ".env.example")
+        deferred_files = [f for f in file_manifest if _is_deferred(f)]
+        main_files = [f for f in file_manifest if not _is_deferred(f)]
+        manifest_str = "\n".join(f"- {f.get('path')}: {f.get('spec', '')}" for f in file_manifest)
+
+        def gen_one(entry):
+            path = entry.get("path")
+            last = {}
+            for attempt in range(3):  # transient engine contention is real (batch-1 GPU)
+                out = self._generate_one(coder_endpoint, task_id, path,
+                                         entry.get("spec", ""), manifest_str, task_description)
+                if out.get("success"):
+                    return path, out
+                last = out
+                if attempt < 2:
+                    import time as _t
+                    _t.sleep(10 * (attempt + 1))
+            return path, last
+
+        # Phase A: one self-verifying opencode coder session for the whole manifest;
+        # per-file fan-out remains the fallback. prebuilt_git_url skips building (rework).
+        git_url = prebuilt_git_url
+        results = None
+        if not git_url and os.environ.get("OPENCODE_BUILD", "1") != "0":
+            git_url = self._build_via_opencode(task_id, task_description, file_manifest,
+                                               coder_endpoint, metadata)
+        if git_url is None:
+            results = {}
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                for path, out in ex.map(gen_one, main_files):
+                    results[path] = out
+                    self._log_activity(task_id, "file_generated", agent="implementation-engineer",
+                                       detail=f"{path}: {'ok' if out.get('success') else 'FAILED'}")
+                    print(f"🧩 fan-out {task_id} {path}: "
+                          f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+            for entry in deferred_files:  # deterministic, needs siblings on disk
+                path, out = gen_one(entry)
+                results[path] = out
+                self._log_activity(task_id, "file_generated", agent="implementation-engineer",
+                                   detail=f"{path}: {'ok' if out.get('success') else 'FAILED'}")
+                print(f"🧩 fan-out {task_id} {path} (deferred): "
+                      f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+            failed = [p for p, o in results.items() if not o.get("success")]
+            for p in list(failed):  # sequential second pass after parallel burst
+                entry = next((f for f in file_manifest if f.get("path") == p), None)
+                if entry:
+                    print(f"🧩 fan-out retry {task_id} {p}", flush=True)
+                    _, out = gen_one(entry)
+                    results[p] = out
+                    print(f"🧩 fan-out {task_id} {p} (retry): "
+                          f"{'ok' if out.get('success') else str(out)[:120]}", flush=True)
+            failed = [p for p, o in results.items() if not o.get("success")]
+            if failed:
+                self._update_task_status(task_id, "failed", f"generate_file failed for: {failed}")
+                return
+            git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
+                            if o.get("git_url")), "")
+        if git_url and self.task_storage:
+            # persist the artifact location BEFORE gates run: if this thread
+            # ever dies (service restart), the tree is not orphaned and a
+            # rework can still be requested against it
+            try:
+                self._merge_metadata(task_id, {"git_url": git_url, "path": git_url,
+                                               "storage_type": "git"})
+            except Exception:
+                pass
+        qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id)
+        # QA-side clarification: the contract planner could not decide how to
+        # run/test this artifact without requestor input (backend URL, creds,
+        # test target). Pause THIS thread, wait for answers, re-plan the
+        # contract from scratch (the cached one was made without the answers).
+        need = ((qa_info.get("smoke_run") or {}).get("contract") or {}).get("need_info") \
+            if isinstance(qa_info, dict) else None
+        if isinstance(need, list) and need:
+            added = self._create_clarifications(task_id, need, asked_by="qa-engineer")
+            if added:
+                self._update_task_status(
+                    task_id, "awaiting_input",
+                    "QA needs details: " + ", ".join(a["field"] for a in added))
+                self._log_activity(task_id, "clarification_requested", agent="qa-engineer",
+                                   detail="; ".join(a["question"][:80] for a in added))
+                if not self._wait_for_clarifications(task_id):
+                    self._update_task_status(task_id, "needs_revision",
+                                             "clarification timeout at QA gate")
+                    self._log_activity(task_id, "clarification_timeout", agent="it-lead")
+                    return
+                self._log_activity(task_id, "clarification_resumed", agent="it-lead",
+                                   detail="QA contract re-planned with requestor answers")
+                self._invalidate_qa_contract(task_id)
+                qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id,
+                                                   answers_text=self._answers_text(task_id))
+        self._log_activity(task_id, "qa_gate", agent="qa-engineer",
+                           detail="PASS" if qa_ok else f"FAIL: {json.dumps(qa_info)[:200]}")
+        if not qa_ok:
+            qa_ok, qa_info = self._repair_and_recheck(
+                task_id, task_description, file_manifest, coder_endpoint,
+                git_url, manifest_str, qa_info)
+        if not qa_ok:
+            self._update_task_status(task_id, "needs_revision",
+                                     f"QA gate failed: {json.dumps(qa_info)[:400]}")
+            return
+        if self.task_storage and git_url:
+            # store git_url without flipping status to done mid-pipeline
+            self._merge_metadata(task_id, {"git_url": git_url, "path": git_url,
+                                                   "storage_type": "git"})
+            self._update_task_status(task_id, "review", "QA passed, gates in progress")
+        if route == "gated":
+            sec_ok, sec_info = self._security_gate(task_id, git_url)
+            self._log_activity(task_id, "security_gate", agent="security-reviewer",
+                               detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_info)[:200]}")
+            if not sec_ok:
+                # one automatic repair pass before escalating to the requestor
+                self._log_activity(task_id, "security_repair", agent="it-lead",
+                                   detail=f"feeding {len(sec_info.get('findings') or [])} "
+                                          f"finding(s) back to the coder, then rescan")
+                sec_ok, sec_rescan = self._security_repair(
+                    task_id, coder_endpoint, git_url, sec_info)
+                self._log_activity(task_id, "security_gate_rescan", agent="security-reviewer",
+                                   detail="PASS" if sec_ok else f"FAIL: {json.dumps(sec_rescan)[:200]}")
+            if not sec_ok:
+                self._update_task_status(task_id, "needs_revision",
+                                         f"security scan failed: {json.dumps(sec_info)[:400]}")
+                return
+            self._advisory_review(task_id)  # non-blocking; verdict in metadata
+        else:
+            self._log_activity(task_id, "security_gate", agent="security-reviewer",
+                               detail="skipped (simple route)")
+        wf_join = " ".join((llm_plan or {}).get("workflow_sequence", []) if isinstance(llm_plan, dict) else [])
+        want_deploy = "devops" in wf_join or \
+            "deploy_after_implementation\": true" in json.dumps(metadata or {}).lower()
+        if want_deploy and git_url:
+            dep_tid = deploy_task_id or task_id
+            self._log_activity(task_id, "deploy", agent="devops-release-engineer", detail="started")
+            dep = self._deploy_multifile(dep_tid, git_url)
+            url = dep.get("deployment_url")
+            self._log_activity(task_id, "deploy_done", agent="devops-release-engineer",
+                               detail=url or f"error: {str(dep.get('error'))[:200]}")
+            if not url and dep.get("error"):
+                # container crash after green QA: feed traceback into repair, redeploy once
+                fake_qa = {"smoke_run": {"stderr": str(dep["error"])[-1500:]}}
+                fixed, _ = self._repair_and_recheck(
+                    task_id, task_description, file_manifest, coder_endpoint,
+                    git_url, manifest_str, fake_qa)
+                if fixed:
+                    dep = self._deploy_multifile(dep_tid, git_url)
+                    url = dep.get("deployment_url")
+            if url:
+                healthy, why = self._deployment_healthy(url)
+                self._log_activity(task_id, "deploy_health", agent="it-lead",
+                                   detail=why if healthy else f"unhealthy: {why}")
+                if not healthy:
+                    self._update_task_status(task_id, "needs_revision",
+                                             f"deployed container unhealthy at {url}: {why}")
+                    return
+                shot = self._capture_screenshot(task_id, url)
+                if shot:
+                    self._merge_metadata(task_id, {"screenshots": [
+                        {"stage": "deploy", "url": shot, "ts": time.time()}]})
+                    self._log_activity(task_id, "screenshot", agent="it-lead", detail=shot)
+                    self._visual_gate(task_id, task_description)
+                acc_ok, acc_out = self._run_client_acceptance(task_id, url)
+                self._log_activity(task_id, "client_acceptance", agent="qa-engineer",
+                                   detail=("PASS" if acc_ok else f"FAIL: {acc_out[:200]}")
+                                   if acc_ok is not None else "skipped (no client.py)")
+                if acc_ok is False:
+                    self._update_task_status(task_id, "needs_revision",
+                                             f"client acceptance failed against {url}: {acc_out[:300]}")
+                    return
+                if self._finalize_selffix(task_id):
+                    return
+                self._generate_docs(task_id)
+                self._update_task_status(task_id, "done",
+                                         ("Rework deliverable: gates passed, redeployed at " + url
+                                          if prebuilt_git_url else
+                                          f"Multi-file deliverable: {len(results or file_manifest)} files, "
+                                          f"QA passed, deployed at {url}"))
+                return
+            self._update_task_status(task_id, "needs_revision",
+                                     f"deploy failed: {str(dep)[:200]}")
+            return
+        if self._finalize_selffix(task_id):
+            return
+        self._generate_docs(task_id)
+        self._update_task_status(task_id, "done",
+                                 ("Rework deliverable: gates passed (no deploy expected)"
+                                  if prebuilt_git_url else
+                                  f"Multi-file deliverable: {len(results or file_manifest)} files, QA passed"))
+
+    def _generate_docs(self, task_id):
+        """Post-gates best-effort: documentation-engineer writes
+        docs/REQUIREMENTS.md + docs/ARCHITECTURE.md into the results tree.
+        Fire-and-forget: never affects the task status."""
+        def _run():
+            try:
+                services = self.mcp_registry_client.list_services(use_cache=True)
+                ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                           for s in services if isinstance(s, dict)
+                           and "documentation" in (s.get("name") or "").lower()
+                           and s.get("endpoint")), None)
+                if not ep:
+                    self._log_activity(task_id, "docs", agent="it-lead",
+                                       detail="skipped (documentation-engineer not registered)")
+                    return
+                import requests as _rq
+                r = _rq.post(ep, json={"jsonrpc": "2.0", "id": f"docs-{task_id}",
+                                       "method": "tools/call",
+                                       "params": {"name": "generate_task_docs",
+                                                  "arguments": {"task_id": task_id}}},
+                             timeout=300)
+                ok = r.status_code == 200 and "error" not in r.json()
+                self._log_activity(task_id, "docs", agent="documentation-engineer",
+                                   detail="ok" if ok else f"skipped (http {r.status_code})")
+            except Exception as e:
+                try:
+                    self._log_activity(task_id, "docs", agent="documentation-engineer",
+                                       detail=f"skipped ({str(e)[:80]})")
+                except Exception:
+                    pass
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _finalize_selffix(self, task_id) -> bool:
+        """M6: if this rework was a self-fix over a snapshot, compute the
+        review diff and park the task in 'review' for the human instead of
+        closing it as done."""
+        try:
+            with self.task_storage.connection.cursor() as cur:
+                cur.execute("SELECT metadata->>'selffix_area' FROM task_registry "
+                            "WHERE task_id=%s", (task_id,))
+                row = cur.fetchone()
+            self.task_storage.connection.commit()
+            area = row and row[0]
+        except Exception:
+            area = None
+        if not area:
+            return False
+        try:
+            from . import self_fix
+            res = self_fix.finalize(self.task_storage.connection, task_id)
+        except Exception as e:
+            self._log_activity(task_id, "selffix_error", agent="it-lead",
+                               detail=str(e)[:200])
+            res = None
+        if res == "review":
+            self._update_task_status(
+                task_id, "review", "self-fix diff ready for human review (bell)")
+            self._log_activity(task_id, "selffix_review", agent="it-lead",
+                               detail=f"area={area}, awaiting approval")
+        elif res == "failed":
+            self._update_task_status(task_id, "needs_revision",
+                                     "self-fix produced no diff")
+            self._log_activity(task_id, "selffix_no_diff", agent="it-lead",
+                               detail=f"area={area}")
+        return res is not None
+
+    def _capture_screenshot(self, task_id, url, stage="deploy"):
+        """V1 visual evidence: headless screenshot of a live URL. PNGs live
+        outside git (/var/www/shots, served by web-ui at /shots/)."""
+        import subprocess
+        binp = os.environ.get("HEADLESS_SHELL",
+                              "/root/.cache/ms-playwright/chromium_headless_shell-1255"
+                              "/chrome-headless-shell-linux64/chrome-headless-shell")
+        if not os.path.exists(binp):
+            self._log_activity(task_id, "screenshot", agent="it-lead",
+                               detail="skipped (headless shell not found)")
+            return None
+        try:
+            d = f"/var/www/shots/{task_id}"
+            os.makedirs(d, exist_ok=True)
+            out = os.path.join(d, f"{stage}.png")
+            subprocess.run([binp, "--headless", "--no-sandbox", "--disable-gpu",
+                            f"--screenshot={out}", "--window-size=1280,900",
+                            "--virtual-time-budget=5000", url],
+                           capture_output=True, timeout=90)
+            if os.path.exists(out) and os.path.getsize(out) > 1000:
+                return f"/shots/{task_id}/{stage}.png"
+        except Exception as e:
+            print(f"⚠️ screenshot failed: {e}")
+        self._log_activity(task_id, "screenshot", agent="it-lead", detail="failed")
+        return None
+
+    def _visual_gate(self, task_id, task_description):
+        """V2 advisory visual QA over the deploy screenshot. Never blocks:
+        the rubric verdict lands in metadata.visual_review + activity feed.
+        Promotion to a blocking gate is a separate, measured decision."""
+        try:
+            services = self.mcp_registry_client.list_services(use_cache=False)
+        except Exception:
+            return
+        ep = next((s["endpoint"].replace("0.0.0.0", "127.0.0.1")
+                   for s in services if isinstance(s, dict)
+                   and "qa engineer" in (s.get("name") or "").lower()
+                   and s.get("endpoint")), None)
+        if not ep:
+            self._log_activity(task_id, "visual_gate", agent="qa-engineer",
+                               detail="skipped (qa not registered)")
+            return
+        try:
+            r = requests.post(ep, json={
+                "jsonrpc": "2.0", "id": f"vis-{task_id}", "method": "tools/call",
+                "params": {"name": "visual_review", "arguments": {
+                    "task_id": task_id,
+                    "image_path": f"/var/www/shots/{task_id}/deploy.png",
+                    "task_description": (task_description or "")[:4000]}}},
+                timeout=300)
+            out = r.json().get("result", {})
+            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                out = out["result"]
+            if not isinstance(out, dict):
+                out = {}
+            verdict = str(out.get("verdict", "skipped")).lower()
+            detail = f"{verdict.upper()} (advisory)"
+            if verdict == "fail":
+                detail += ": " + "; ".join(str(x) for x in (out.get("issues") or []))[:200]
+            self._merge_metadata(task_id, {"visual_review": out})
+            self._log_activity(task_id, "visual_gate", agent="qa-engineer", detail=detail)
+        except Exception as e:
+            self._log_activity(task_id, "visual_gate", agent="qa-engineer",
+                               detail=f"error (advisory): {str(e)[:120]}")
+
+    def _poll_async_task_result(self, agent_endpoint: str, task_id: str, max_retries: int = 7200) -> Optional[Dict[str, Any]]:
         """
         Poll the agent's tasks/result endpoint to get async task result.
 
         Args:
             agent_endpoint: Agent's MCP endpoint
             task_id: Async task ID from the agent's response
-            max_retries: Maximum number of poll attempts (increased to 120 for 60s+ timeouts)
+            max_retries: Maximum number of poll attempts (default: 7200 = 4 hours at 2s intervals)
 
         Returns:
             Result dict with git_url or None if polling failed
@@ -110,6 +1361,9 @@ class TaskAssignmentManager:
 
                 if response.status_code == 200:
                     result = response.json()
+                    # Log full response for debugging
+                    if attempt < 3:
+                        print(f"📡 Poll attempt {attempt + 1}: response={result}", flush=True)
                     if "result" in result and isinstance(result["result"], dict):
                         result_data = result["result"]
                         # Check if result contains git_url (from git_push_llm_response)
@@ -119,18 +1373,31 @@ class TaskAssignmentManager:
                         # Check for error
                         if result_data.get("error"):
                             error_msg = result_data.get("error", "")
-                            # Only return None if it's a real error, not "working" status
-                            if "not completed" in error_msg.lower() or "working" in error_msg.lower():
-                                print(f"⏳ Task still {error_msg}, continuing to poll...")
+                            low = error_msg.lower()
+                            if "failed" in low:
+                                print(f"❌ Async task failed at agent: {error_msg}")
+                                return None
+                            # Only return None if it's a real error, not "working" or "submitted" status
+                            if "not completed" in low or "working" in low or "submitted" in low:
+                                print(f"⏳ Task still processing ({error_msg}), continuing to poll...")
                             else:
                                 print(f"❌ Async task error: {error_msg}")
                                 return None
                         # Task still working, continue polling
                         task_status = result_data.get("status", "unknown")
-                        if task_status == "working" and attempt < max_retries - 1:
-                            wait_time = min(2 + (attempt * 2), 10)  # Exponential backoff, max 10s
-                            print(f"⏳ Task still {task_status}, waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                        if task_status == "failed":
+                            print(f"❌ Async task {task_id} failed at agent")
+                            return None
+                        if task_status in ("working", "submitted") and attempt < max_retries - 1:
+                            wait_time = min(2 + (attempt * 0.5), 10)  # Exponential backoff, max 10s
+                            print(f"⏳ Task status: {task_status}, waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                             time.sleep(wait_time)
+                    else:
+                        # Response doesn't have expected structure
+                        print(f"⚠️ Poll attempt {attempt + 1}: unexpected response structure: {result}", flush=True)
+                else:
+                    # Non-200 response
+                    print(f"⚠️ Poll attempt {attempt + 1}: status_code={response.status_code}, body={response.text[:200]}", flush=True)
             except Exception as e:
                 print(f"⚠️ Poll attempt {attempt + 1} failed: {e}")
 
@@ -160,6 +1427,27 @@ class TaskAssignmentManager:
         Returns:
             Assignment result with status and details
         """
+        print(f"🔥🔥🔥 assign_and_forward_task CALLED for {task_id} 🔥🔥🔥")
+        print(f"   metadata received: {metadata}")
+
+        # Secondary guard (defense in depth): by this point a legitimate fresh
+        # assignment has stored itself as 'submitted'; active states still mean
+        # a concurrent pipeline owns this task.
+        try:
+            existing = self.task_storage.get_task(task_id) if self.task_storage else None
+            if existing and existing.get("status") in ("in_progress", "review",
+                                                       "rework_in_progress",
+                                                       "awaiting_input"):
+                msg = (f"task {task_id} already has an active pipeline "
+                       f"(status={existing.get('status')}); refusing concurrent run")
+                print(f"⛔ {msg}")
+                return {"task_id": task_id, "status": "rejected", "message": msg,
+                        "assigned_to": None, "forwarded_to_agent": False,
+                        "agent_response": None, "requires_llm_planning": False,
+                        "llm_plan": None}
+        except Exception as e:
+            print(f"⚠️ concurrency guard check failed: {e}")
+
         result = {
             "task_id": task_id,
             "status": "unknown",
@@ -192,41 +1480,130 @@ class TaskAssignmentManager:
         primary_agent = routing_decision.assign_to
         print(f"DEBUG: effective_assignee={effective_assignee}, primary_agent={primary_agent}")
 
-        # Step 2: Handle LLM planning if needed
-        if routing_decision.requires_llm_planning:
-            print(f"🔍 LLM planning REQUIRED for task {task_id}")
-            print(f"   Reason: {routing_decision.llm_reason}")
-            print(f"   Confidence: {routing_decision.confidence}")
+        # Step 2: LLM planning is MANDATORY. Rule matches are advisory hints
+        # only (logged + passed to the planner); they never select a tool.
+        # The old rule->vibe_code_async short-circuit produced single-file
+        # junk for complex web deliverables (task-1794818260746 postmortem).
+        if True:
+            print(f"🔍 LLM planning for task {task_id} "
+                  f"(rule hint: {routing_decision.matched_rule_id}, "
+                  f"reason: {routing_decision.llm_reason})")
 
-            llm_plan = self.llm_planner.plan_task_assignment(
-                task_description,
-                {
-                    "llm_reason": routing_decision.llm_reason,
-                    "failure_reasons": routing_decision.metadata.get("failure_reasons", []),
-                    "matched_rule": routing_decision.metadata.get("matched_rule"),
-                    "confidence": routing_decision.confidence,
-                    "matched_rules": routing_decision.metadata.get("matched_rules", []),
-                    "conflicting_assignees": routing_decision.metadata.get("conflicting_assignees", [])
-                }
-            )
+            try:
+                llm_plan = self.llm_planner.plan_task_assignment(
+                    task_description,
+                    {
+                        "llm_reason": routing_decision.llm_reason or "MANDATORY_PLANNING",
+                        "failure_reasons": routing_decision.metadata.get("failure_reasons", []),
+                        "matched_rule": routing_decision.metadata.get("matched_rule"),
+                        "confidence": routing_decision.confidence,
+                        "matched_rules": routing_decision.metadata.get("matched_rules", []),
+                        "conflicting_assignees": routing_decision.metadata.get("conflicting_assignees", [])
+                    }
+                )
+                print(f"✅ LLM planner returned, llm_plan type: {type(llm_plan)}")
+            except Exception as e:
+                print(f"❌ LLM planner ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback plan - check deployment flag FIRST
+                llm_plan = {"primary_agent": "implementation-engineer",
+                            "workflow_sequence": ["requirements-engineer", "implementation-engineer"],
+                            "tools": {"implementation-engineer": "build_project"}}
+
+                # Check if deployment is required even in fallback
+                deploy_flag = False
+                if metadata and metadata.get("deploy_after_implementation", False):
+                    deploy_flag = True
+                elif metadata and metadata.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                elif metadata and metadata.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+
+                if deploy_flag:
+                    llm_plan["workflow_sequence"].append("devops-engineer")
+                    llm_plan["tools"]["devops-engineer"] = "deploy_web_application"
+                    print(f"🚀 Fallback plan: Added devops-engineer for deployment workflow")
 
             result["requires_llm_planning"] = True
             result["llm_plan"] = llm_plan
 
+            # Clarification gate (planner side): critical unknowns (endpoint,
+            # model name, API key, test target...) pause the pipeline and ask
+            # the requestor instead of building a stub around guessed config.
+            need = llm_plan.get("need_info") if isinstance(llm_plan, dict) else None
+            if isinstance(need, list) and need:
+                added = self._create_clarifications(task_id, need, asked_by="planner")
+                if added:  # dedup: all fields already known -> continue silently
+                    self._merge_metadata(task_id, {"clarification_context": {
+                        "task_description": task_description, "assignee": assignee,
+                        "priority": priority, "metadata": metadata}})
+                    self._update_task_status(
+                        task_id, "awaiting_input",
+                        "need details from the requestor: "
+                        + ", ".join(a["field"] for a in added))
+                    self._log_activity(task_id, "clarification_requested", agent="planner",
+                                       detail="; ".join(a["question"][:80] for a in added))
+                    threading.Thread(target=self._await_clarifications,
+                                     args=(task_id,), daemon=True).start()
+                    result["status"] = "awaiting_input"
+                    result["message"] = (f"Pipeline paused: {len(added)} question(s) for the "
+                                         f"requestor ({', '.join(a['field'] for a in added)})")
+                    return result
+
             print(f"✅ LLM planning completed for task {task_id}")
             print(f"   LLM plan keys: {list(llm_plan.keys())}")
-            print(f"   LLM plan content: {json.dumps(llm_plan, indent=2)}")
+            try:
+                print(f"   LLM plan content: {json.dumps(llm_plan, indent=2)}")
+            except Exception as e:
+                print(f"   LLM plan content (str): {str(llm_plan)[:500]}...")
+                print(f"   JSON dump error: {e}")
 
             # Try to get primary_agent (with fallback to recommended_agent)
             primary_agent = llm_plan.get("primary_agent") or llm_plan.get("recommended_agent")
             print(f"   primary_agent from LLM: {primary_agent}")
 
-            # Use vibe_code_async for async LLM processing
-            tool = llm_plan.get("tools", {}).get(primary_agent, "vibe_code_async")
-            print(f"   tool: {tool}")
-            priority = llm_plan.get("priority", priority)
-            print(f"   priority: {priority}")
-            
+            # Fan-out flow: multi-file deliverable -> one generate_file call per file
+            # Honor workflow order: if the plan starts with an analysis step
+            # (requirements-engineer), forward there first — the "coding belongs
+            # to implementation-engineer" rule scopes to execution, not ordering.
+            wf_seq = (llm_plan.get("workflow_sequence") or []) if isinstance(llm_plan, dict) else []
+            if wf_seq and wf_seq[0] == "requirements-engineer" and primary_agent != "requirements-engineer":
+                print(f"↪️ Honoring workflow order: starting with requirements-engineer (was {primary_agent})")
+                primary_agent = "requirements-engineer"
+                tool = llm_plan.get("tools", {}).get("requirements-engineer", "analyze_requirements")
+
+            file_manifest = self._ensure_file_manifest(task_description, llm_plan)
+            route, route_reason = self._route_policy(task_description, metadata, llm_plan)
+            self._log_activity(task_id, "route", agent="it-lead",
+                               detail=f"{route}: {route_reason}")
+            print(f"🧭 route={route} ({route_reason})")
+            if route == "gated" and not file_manifest:
+                # deploy/client/service tasks need the gated flow even when the
+                # planner classified them as single-file
+                file_manifest = self._gated_manifest_synth()
+                print("🧩 deployable/client task without planner manifest -> "
+                      "synthesized minimal manifest (gated flow)")
+            if not file_manifest and primary_agent == "implementation-engineer":
+                # Unified build flow: single-file deliverables go through
+                # build_project too - the legacy vibe_code_async path is retired.
+                file_manifest = self._single_manifest_synth(llm_plan)
+                print(f"🧩 single-file deliverable -> synthesized manifest "
+                      f"[{file_manifest[0]['path']}] (build flow, simple)")
+            if file_manifest:
+                print(f"🧩 Multi-file deliverable: {len(file_manifest)} files planned -> fan-out")
+                if self.task_storage:
+                    self._update_task_status(task_id, "in_progress",
+                                             f"Multi-file plan: {len(file_manifest)} files")
+                threading.Thread(target=self._execute_multifile_plan,
+                                 args=(task_id, task_description, file_manifest,
+                                       llm_plan, metadata, route),
+                                 daemon=True).start()
+                result["status"] = "in_progress"
+                result["message"] = f"Multi-file plan: {len(file_manifest)} files generated in parallel"
+                result["forwarded_to_agent"] = True
+                return result
+
             # Extract detected language from LLM plan
             detected_language = llm_plan.get("language")
             if detected_language:
@@ -235,13 +1612,91 @@ class TaskAssignmentManager:
                 if metadata is None:
                     metadata = {}
                 metadata["language"] = detected_language
-        else:
-            print(f"✅ LLM planning NOT required for task {task_id}")
-            primary_agent = routing_decision.assign_to
-            tool = routing_decision.tool
-            priority = routing_decision.priority or priority
-            print(f"DEBUG: routing_decision: assign_to={primary_agent}, tool={tool}, priority={priority}")
-            llm_plan = None
+
+            # CHECK FOR DEPLOYMENT FLAG (legacy path for non-implementation
+            # primary agents, e.g. requirements-engineer workflows)
+            # Check in multiple locations - the flag can be deeply nested!
+            print(f"🔍 DEBUG: About to check for deployment flag...")
+            print(f"   metadata type: {type(metadata)}, metadata is None: {metadata is None}")
+            print(f"   llm_plan type: {type(llm_plan)}, llm_plan is None: {llm_plan is None}")
+            print(f"🔍 DEBUG: Checking for deployment flag in metadata...")
+            print(f"   metadata keys: {list(metadata.keys()) if metadata else 'None'}")
+            deploy_flag = False
+            
+            # Level 1: In original_arguments.original_arguments.metadata (Web UI sends it here)
+            # This is the MOST COMMON case - check FIRST!
+            # Structure: metadata -> original_arguments -> original_arguments -> metadata -> deploy_after_implementation
+            if metadata and metadata.get("original_arguments"):
+                orig_args = metadata.get("original_arguments", {})
+                print(f"   original_arguments keys: {list(orig_args.keys())}")
+                
+                # Go one level deeper: original_arguments.original_arguments
+                inner_args = orig_args.get("original_arguments", {})
+                print(f"   inner original_arguments keys: {list(inner_args.keys()) if inner_args else 'None'}")
+                
+                # Check in inner original_arguments.metadata
+                if inner_args.get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.metadata")
+                elif inner_args.get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments directly")
+
+                # Level 2.5: Check for THREE levels of nesting (Web UI double-wraps)
+                # Structure: metadata -> original_arguments -> original_arguments -> original_arguments -> metadata -> deploy_after_implementation
+                elif inner_args.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.original_arguments.metadata")
+                elif inner_args.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.original_arguments.original_arguments.original_arguments.metadata")
+
+                # Level 2: In original_arguments.metadata (fallback - one level less nesting)
+                elif orig_args.get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments.metadata")
+                elif orig_args.get("deploy_after_implementation", False):
+                    deploy_flag = True
+                    print(f"   ✅ Found deploy_after_implementation in original_arguments directly")
+            
+            # Level 3: Direct in metadata (fallback - rare case)
+            if not deploy_flag and metadata and metadata.get("deploy_after_implementation", False):
+                deploy_flag = True
+                print(f"   ✅ Found deploy_after_implementation in metadata directly")
+
+            print(f"   deploy_flag = {deploy_flag}")
+            print(f"🔍 DEBUG: Deployment flag check completed, deploy_flag={deploy_flag}")
+
+            if deploy_flag:
+                print(f"🚀 DEPLOYMENT FLAG DETECTED: deploy_after_implementation=True")
+                workflow_sequence = llm_plan.get("workflow_sequence", [])
+                # Use correct agent name: devops-engineer (not devops-release-engineer)
+                if "devops-engineer" not in workflow_sequence and "devops-release-engineer" not in workflow_sequence:
+                    workflow_sequence.append("devops-engineer")
+                    llm_plan["workflow_sequence"] = workflow_sequence
+                    # Ensure devops has the right tool
+                    if "tools" not in llm_plan:
+                        llm_plan["tools"] = {}
+                    llm_plan["tools"]["devops-engineer"] = "deploy_web_application"
+                    print(f"🔧 Added devops-engineer to workflow: {workflow_sequence}")
+                else:
+                    print(f"✅ DevOps already in workflow")
+
+            # Get tool from LLM plan - try multiple formats
+            # Format 1: Direct recommended_tool field
+            # Format 2: tools dict keyed by agent name
+            # NOTE: implementation-engineer never reaches this point - the
+            # unified build flow returns via fan-out above. The legacy
+            # vibe_code_async forcing blocks were removed with it.
+            tool = llm_plan.get("recommended_tool") or \
+                   llm_plan.get("tools", {}).get(primary_agent, "analyze_requirements")
+            
+            print(f"   tool: {tool}")
+            priority = llm_plan.get("priority", priority) if llm_plan else priority
+            print(f"   priority: {priority}")
+        # (The legacy rule-based else-branch that routed straight to
+        # vibe_code_async/deploy_web_application was removed: the planner is
+        # now the single decision point, rules are hints only.)
 
         # Step 3: Store task in database with initial status
         if self.task_storage:
@@ -250,6 +1705,23 @@ class TaskAssignmentManager:
                 "timestamp": time.time(),
                 "reason": f"Task assigned via assign_task tool, routed to {primary_agent}"
             }
+
+            # Build metadata - preserve original_arguments if it exists in input metadata
+            task_metadata = {
+                "tool_call": "assign_task",
+                "routing_decision": {
+                    "matched_rule_id": routing_decision.matched_rule_id,
+                    "confidence": routing_decision.confidence,
+                    "requires_llm_planning": routing_decision.requires_llm_planning
+                },
+                "llm_plan": llm_plan
+            }
+            # Preserve original_arguments from input metadata if present
+            if metadata and metadata.get("original_arguments"):
+                task_metadata["original_arguments"] = metadata["original_arguments"]
+            elif metadata:
+                # If metadata exists but no original_arguments, include all metadata
+                task_metadata.update(metadata)
 
             self.task_storage.store_received_task(
                 task_id=task_id,
@@ -262,36 +1734,50 @@ class TaskAssignmentManager:
                 priority=priority,
                 deadline=deadline if deadline else None,
                 source_server="internal",
-                metadata={
-                    "tool_call": "assign_task",
-                    "routing_decision": {
-                        "matched_rule_id": routing_decision.matched_rule_id,
-                        "confidence": routing_decision.confidence,
-                        "requires_llm_planning": routing_decision.requires_llm_planning
-                    },
-                    "llm_plan": llm_plan
-                },
+                metadata=task_metadata,
                 status="received",
                 status_reason=f"Task received, routing to {primary_agent}"
             )
 
+            print(f"DEBUG: After Step 3 task storage, before Step 4 forwarding")
+
         # Step 4: Forward task to agent if agent is available
+        print(f"DEBUG: Step 4 - Checking primary_agent: {primary_agent}")
         if primary_agent:
-            # Validate that primary_agent is a known agent
-            known_agents = ["implementation-engineer", "requirements-engineer", "code-reviewer",
-                           "qa-test-engineer", "security-engineer", "devops-engineer", "it-lead"]
+            print(f"DEBUG: Step 4 - Entering forwarding logic for {primary_agent}")
+            # Get agent endpoint from the dynamic agent list (NOT hardcoded)
+            # First, try to get the agent list from routing_engine's mcp_registry_client
+            agent_endpoint = None
+            
+            if hasattr(self.routing_engine, 'mcp_registry_client') and self.routing_engine.mcp_registry_client:
+                # Get the dynamic agent list
+                agents_list = self.routing_engine.mcp_registry_client.discover_all_agents_with_tools(use_cache=True)
+                
+                # Find the agent by matching agent_id or name
+                # Normalize primary_agent for comparison: "Requirements Engineer" -> "requirements-engineer"
+                primary_agent_normalized = primary_agent.lower().replace(" ", "-").replace("_", "-")
 
-            # Normalize primary_agent for comparison
-            normalized_agent = primary_agent.lower().replace(" ", "-").replace("_", "-")
+                for agent in agents_list:
+                    agent_id = agent.get("agent_id", agent.get("name", ""))
+                    agent_name = agent.get("name", "")
+                    endpoint = agent.get("endpoint")
 
-            if normalized_agent not in known_agents:
-                print(f"⚠️  Warning: Unknown agent '{primary_agent}' - falling back to implementation-engineer")
-                primary_agent = "implementation-engineer"
-                tool = "vibe_code_async"
+                    # Normalize agent_id for comparison (in case it's not already normalized)
+                    agent_id_normalized = agent_id.lower().replace(" ", "-").replace("_", "-") if agent_id else ""
+
+                    # Match by normalized agent_id or by normalized name
+                    if (agent_id and (agent_id_normalized == primary_agent_normalized or agent_id.lower() == primary_agent.lower())) or \
+                       (agent_name and agent_name.lower().replace(" ", "-").replace("_", "-") == primary_agent_normalized):
+                        agent_endpoint = endpoint
+                        print(f"✅ Found endpoint for {primary_agent}: {agent_endpoint}")
+                        break
+            
+            # Fallback to routing_engine.get_agent_endpoint() if dynamic lookup failed
+            if not agent_endpoint:
                 agent_endpoint = self.routing_engine.get_agent_endpoint(primary_agent)
-            else:
-                agent_endpoint = self.routing_engine.get_agent_endpoint(primary_agent)
-                print(f"DEBUG: agent_endpoint for {primary_agent}: {agent_endpoint}")
+                print(f"⚠️  Using fallback endpoint for {primary_agent}: {agent_endpoint}")
+            
+            print(f"DEBUG: agent_endpoint for {primary_agent}: {agent_endpoint}")
 
             # Initialize forward_result for later use
             forward_result = {"success": False, "error": "No agent endpoint available"}
@@ -328,42 +1814,123 @@ class TaskAssignmentManager:
                         async_task_id = result_data.get("taskId")
                         if async_task_id and result_data.get("status") == "submitted":
                             print(f"⏳ Async task submitted: {async_task_id}, starting background polling...")
-                            
+
                             def background_poller():
-                                """Background thread to poll for async task result"""
+                                """Background thread to poll for async task result and handle workflow sequence"""
                                 print(f"🔄 Background thread started for task {task_id}, polling for {async_task_id}...")
-                                async_result = self._poll_async_task_result(agent_endpoint, async_task_id, max_retries=120)
+                                # Increased polling to 360 retries (12 minutes) to handle longer-running tasks
+                                async_result = self._poll_async_task_result(agent_endpoint, async_task_id, max_retries=360)
+                                
                                 if async_result and async_result.get("git_url"):
                                     git_url = async_result["git_url"]
                                     print(f"✅ Background thread found Git URL for task {task_id}: {git_url}")
+                                    qa_ok, qa_info = self._run_qa_gate(task_id, git_url, async_task_id)
+                                    if not qa_ok:
+                                        print(f"❌ QA gate failed for {task_id}: {str(qa_info)[:200]}")
+                                        self._update_task_status(
+                                            task_id, "needs_revision",
+                                            f"QA gate failed: {json.dumps(qa_info)[:400]}")
+                                        return
                                     # Update task with Git URL
                                     self.task_storage.update_task_with_git_url(task_id, git_url)
+                                    
+                                    # Check if there's a workflow sequence and forward to next agent
+                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, git_url, prev_result=async_result)
+                                    
                                 elif async_result:
                                     print(f"⚠️ Background thread completed but no Git URL found for task {task_id}")
+                                    # Still check workflow sequence even without git_url
+                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, None, prev_result=async_result)
                                 else:
                                     print(f"❌ Background thread failed to get result for task {task_id}")
-                            
+                                    self._update_task_status(
+                                        task_id, "failed",
+                                        "Agent task failed or polling timed out without result")
+
                             threading.Thread(target=background_poller, daemon=True).start()
                             print(f"✅ Background polling thread spawned for task {task_id}")
                         else:
                             # Sync task or error, handle inline
                             print(f"⚠️ Task {task_id} is not async or already completed, handling inline")
-                            if self.task_storage:
-                                storage_ref = {
-                                    "storage_type": "inline",
-                                    "result": str(result_data)[:500] if result_data else "No result"
-                                }
-                                self.task_storage.update_task_result_reference(
-                                    task_id=task_id,
-                                    storage_ref=storage_ref,
-                                    metadata={
-                                        "routing_decision": {
-                                            "matched_rule_id": routing_decision.matched_rule_id,
-                                            "confidence": routing_decision.confidence,
-                                            "requires_llm_planning": routing_decision.requires_llm_planning
+                            print(f"   forward_result keys: {list(forward_result.keys())}")
+                            print(f"   forward_result.success: {forward_result.get('success')}")
+                            print(f"   forward_result.error: {forward_result.get('error')}")
+                            
+                            # Extract result_data from response
+                            agent_response = forward_result.get("response", {})
+                            result_data = agent_response.get("result", {})
+                            
+                            # ✅ CRITICAL FIX: Check for workflow sequence even if agent returned error or unexpected response
+                            workflow_sequence = llm_plan.get("workflow_sequence", []) if llm_plan else []
+                            
+                            if workflow_sequence and len(workflow_sequence) > 1:
+                                print(f"🔄 Task {task_id} has workflow sequence: {workflow_sequence}")
+                                print(f"   Checking if we should forward to next agent...")
+                                
+                                # Extract git_url from result_data if available
+                                sync_git_url = None
+                                if isinstance(result_data, dict):
+                                    sync_git_url = result_data.get("git_url")
+                                
+                                # Check if agent returned success OR if we have a git_url
+                                if forward_result.get("success") or sync_git_url:
+                                    print(f"   ✅ Agent completed successfully, git_url={sync_git_url}")
+                                    # Store result if we have one
+                                    if result_data and self.task_storage:
+                                        storage_ref = {
+                                            "storage_type": "inline" if not sync_git_url else "git",
+                                            "result": str(result_data)[:500] if result_data else "No result",
+                                            "git_url": sync_git_url
                                         }
+                                        # ✅ CRITICAL FIX: Don't update status to 'done' for workflow sequences!
+                                        # Keep status as 'in_progress' until ALL agents in workflow complete
+                                        self.task_storage.update_task_result_reference(
+                                            task_id=task_id,
+                                            storage_ref=storage_ref,
+                                            metadata={
+                                                "routing_decision": {
+                                                    "matched_rule_id": routing_decision.matched_rule_id,
+                                                    "confidence": routing_decision.confidence,
+                                                    "requires_llm_planning": routing_decision.requires_llm_planning
+                                                }
+                                            },
+                                            update_status=False  # Don't set to 'done' - workflow still in progress!
+                                        )
+
+                                    # ✅ Forward to next agent in workflow
+                                    self._handle_workflow_sequence(task_id, task_description, primary_agent, llm_plan, sync_git_url, prev_result=result_data)
+                                else:
+                                    # Agent failed but we have workflow sequence - log and mark task for manual review
+                                    error_msg = forward_result.get("error", "Unknown error")
+                                    print(f"   ❌ Agent failed but workflow sequence exists: {error_msg}")
+                                    print(f"   ⚠️  Task requires manual intervention")
+                                    
+                                    if self.task_storage:
+                                        self.task_storage.update_task_status(
+                                            task_id, "failed",
+                                            f"Agent {primary_agent} failed in workflow: {error_msg}. Manual review required."
+                                        )
+                            else:
+                                # No workflow sequence, handle as simple sync task
+                                if result_data and self.task_storage:
+                                    storage_ref = {
+                                        "storage_type": "inline",
+                                        "result": str(result_data)[:500] if result_data else "No result"
                                     }
-                                )
+                                    self.task_storage.update_task_result_reference(
+                                        task_id=task_id,
+                                        storage_ref=storage_ref,
+                                        metadata={
+                                            "routing_decision": {
+                                                "matched_rule_id": routing_decision.matched_rule_id,
+                                                "confidence": routing_decision.confidence,
+                                                "requires_llm_planning": routing_decision.requires_llm_planning
+                                            }
+                                        }
+                                    )
+                                    print(f"✅ Sync task {task_id} result stored")
+                                
+                                # Mark as done
                                 status_value = "done"
                                 self._update_task_status(
                                     task_id, status_value,
@@ -373,13 +1940,13 @@ class TaskAssignmentManager:
                                 print(f"✅ Sync task {task_id} marked as done")
 
                 else:
-                    result["status"] = "assigned_pending"
+                    result["status"] = "assigned"
                     result["assigned_to"] = primary_agent
                     result["message"] = f"Task assigned to {primary_agent} but forwarding failed: {forward_result.get('error')}"
 
                     if self.task_storage:
                         self._update_task_status(
-                            task_id, "assigned_pending",
+                            task_id, "assigned",
                             f"Agent forwarding failed: {forward_result.get('error')}"
                         )
             else:
@@ -405,6 +1972,126 @@ class TaskAssignmentManager:
 
         return result
 
+    def _handle_sync_implementation_with_deployment_workflow(self, task_id: str):
+        """
+        Handle sync Implementation results when deployment is required.
+
+        When Implementation processes synchronously (no async_task_id), the code
+        is returned inline. This method extracts it, stores it in git, and forwards
+        to DevOps for deployment.
+
+        Args:
+            task_id: Task identifier
+        """
+        print(f"🔧 Handling sync implementation with deployment workflow for {task_id}")
+
+        try:
+            # Get task from storage
+            task = self.task_storage.get_task(task_id)
+            if not task:
+                print(f"❌ Task {task_id} not found")
+                return
+
+            # Get LLM plan with workflow sequence
+            llm_plan = task.get("metadata", {}).get("llm_plan")
+            if not llm_plan:
+                print(f"⚠️ No LLM plan found for task {task_id}")
+                return
+
+            workflow_sequence = llm_plan.get("workflow_sequence", [])
+            if "devops-engineer" not in workflow_sequence:
+                print(f"⚠️ DevOps not in workflow sequence for {task_id}")
+                return
+
+            # Get inline result from task
+            result_reference = task.get("result_reference", {})
+            if not result_reference:
+                print(f"⚠️ No result_reference found for task {task_id}")
+                return
+
+            storage_type = result_reference.get("storage_type", "")
+            if storage_type != "inline":
+                print(f"⚠️ Result already stored in git (storage_type={storage_type})")
+                return
+
+            # Extract code from inline result
+            result_data = result_reference.get("result", "")
+            if not result_data:
+                print(f"⚠️ No inline result content found")
+                return
+
+            # Try to extract code from JSON string
+            try:
+                if isinstance(result_data, str):
+                    # Try to parse as JSON
+                    import json
+                    try:
+                        parsed = json.loads(result_data)
+                        if isinstance(parsed, dict):
+                            result_data = parsed.get("code") or parsed.get("result", result_data)
+                    except:
+                        pass  # Keep as string
+            except:
+                pass
+
+            if not result_data or len(str(result_data)) < 10:
+                print(f"⚠️ Code content too short or invalid: {str(result_data)[:100]}")
+                return
+
+            print(f"📝 Extracted {len(str(result_data))} bytes of code from inline result")
+
+            # Store code in git
+            import subprocess
+            import uuid
+            import os
+
+            result_uuid = str(uuid.uuid4())
+            git_workdir = "/tmp/mcp-vibe-coding-git/repo"
+
+            # Ensure git workdir exists
+            if not os.path.exists(git_workdir):
+                os.makedirs(git_workdir, exist_ok=True)
+                subprocess.run(["git", "init"], cwd=git_workdir, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "mcp@local"], cwd=git_workdir, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "MCP Agent"], cwd=git_workdir, check=True, capture_output=True)
+
+            # Get git repo URL
+            git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+
+            # Clone/pull repo
+            if not os.path.exists(os.path.join(git_workdir, ".git")):
+                subprocess.run(["git", "clone", git_repo_url, "."], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+            subprocess.run(["git", "pull"], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+
+            # Create result file
+            result_dir = os.path.join(git_workdir, "results", result_uuid)
+            os.makedirs(result_dir, exist_ok=True)
+            result_file = os.path.join(result_dir, "result.py")
+            with open(result_file, "w") as f:
+                f.write(str(result_data))
+
+            # Commit and push
+            subprocess.run(["git", "add", "."], cwd=git_workdir, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", f"Result for {task_id} (sync extraction)"], cwd=git_workdir, check=True, capture_output=True)
+            subprocess.run(["git", "push", git_repo_url, "main"], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+
+            # Construct git_url
+            git_url = f"{git_repo_url}/tree/main/results/{result_uuid}/result.py"
+            print(f"✅ Code stored in git: {git_url}")
+
+            # Update task with git_url
+            self.task_storage.update_task_with_git_url(task_id, git_url, None)
+
+            # Forward to DevOps
+            print(f"🔄 Forwarding to DevOps for deployment...")
+            task_description = task.get("description", "")
+            self._handle_workflow_sequence(task_id, task_description, "implementation-engineer", llm_plan, git_url)
+
+        except Exception as e:
+            print(f"❌ Error handling sync implementation: {e}")
+            import traceback
+            traceback.print_exc()
+
     def _forward_task_to_agent(self, task_id: str, task_description: str,
                                      agent_id: str, tool: str,
                                      priority: str, deadline: Optional[str],
@@ -418,45 +2105,72 @@ class TaskAssignmentManager:
             return {"success": False, "error": f"Agent {agent_id} endpoint not found"}
 
         # Build tool arguments based on agent and tool
-        tool_arguments = self._build_tool_arguments(agent_id, tool, task_description, metadata)
+        tool_arguments = self._build_tool_arguments(agent_id, tool, task_description, metadata, task_id)
 
-        try:
-            # Use sync requests to match existing server handler pattern
-            response = requests.post(
-                agent_endpoint,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": f"forward-{task_id}",
-                    "method": "tools/call",
-                    "params": {
-                        "name": tool,
-                        "arguments": tool_arguments
+        # Retry configuration for failed forwarding
+        max_retries = 5
+        base_delay = 5  # seconds
+
+        self._log_activity(task_id, "agent_call", agent=agent_id,
+                           detail=f"tool={tool} endpoint={agent_endpoint}")
+        _t0 = time.time()
+        for attempt in range(max_retries):
+            try:
+                # Use sync requests to match existing server handler pattern
+                response = requests.post(
+                    agent_endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": f"forward-{task_id}",
+                        "method": "tools/call",
+                        "params": {
+                            "name": tool,
+                            "arguments": tool_arguments
+                        }
+                    },
+                    timeout=720.0  # 12 minutes timeout for LLM processing (matches RE's max 600s + headroom)
+                )
+
+                if response.status_code == 200:
+                    response_data = response.json()
+                    self._log_activity(task_id, "agent_done", agent=agent_id,
+                                       detail=f"tool={tool} in {time.time() - _t0:.0f}s")
+                    return {
+                        "success": True,
+                        "response": response_data,
+                        "agent_id": agent_id,
+                        "tool": tool
                     }
-                },
-                timeout=120.0  # Increased from 30 to 120 seconds for LLM processing time
-            )
+                else:
+                    if attempt == max_retries - 1:
+                        self._log_activity(task_id, "agent_error", agent=agent_id,
+                                           detail=f"status {response.status_code} after {time.time() - _t0:.0f}s")
+                        return {
+                            "success": False,
+                            "error": f"Agent returned status {response.status_code}: {response.text}"
+                        }
+                    # Retry on non-200 status
+                    print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed with status {response.status_code}, retrying in {base_delay}s...")
+                    time.sleep(base_delay * (2 ** attempt))
 
-            if response.status_code == 200:
-                response_data = response.json()
-                return {
-                    "success": True,
-                    "response": response_data,
-                    "agent_id": agent_id,
-                    "tool": tool
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Agent returned status {response.status_code}: {response.text}"
-                }
+            except requests.RequestException as e:
+                if attempt == max_retries - 1:
+                    self._log_activity(task_id, "agent_error", agent=agent_id,
+                                       detail=f"request failed after {time.time() - _t0:.0f}s: {str(e)[:200]}")
+                    return {"success": False, "error": f"Request failed: {str(e)}"}
+                # Retry on timeout/connection errors
+                print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed: {e}, retrying in {base_delay}s...")
+                time.sleep(base_delay * (2 ** attempt))
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    return {"success": False, "error": f"Unexpected error: {str(e)}"}
+                print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed: {e}, retrying in {base_delay}s...")
+                time.sleep(base_delay * (2 ** attempt))
 
-        except requests.RequestException as e:
-            return {"success": False, "error": f"Request failed: {str(e)}"}
-        except Exception as e:
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+        return {"success": False, "error": f"Max retries ({max_retries}) exceeded"}
 
     def _build_tool_arguments(self, agent_id: str, tool: str, task_description: str,
-                             metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                             metadata: Optional[Dict[str, Any]], task_id: Optional[str] = None) -> Dict[str, Any]:
         """Build appropriate tool arguments for an agent"""
 
         # Common arguments for all tools
@@ -466,8 +2180,14 @@ class TaskAssignmentManager:
         if agent_id == "implementation-engineer":
             # Use vibe_code_async for async processing with LLM
             if tool == "vibe_code_async":
+                desc = task_description
+                spec_ctx = (metadata or {}).get("spec_context")
+                if spec_ctx:
+                    desc = (task_description +
+                            "\n\nTECHNICAL SPECIFICATION from requirements analysis "
+                            "(authoritative - follow it):\n" + str(spec_ctx)[:4000])
                 return {
-                    "task_description": task_description,
+                    "task_description": desc,
                     "language": metadata.get("language", "python") if metadata else "python",
                     "vibe_level": metadata.get("vibe_level", 5) if metadata else 5,
                     "style_guide": metadata.get("style_guide", "") if metadata else ""
@@ -530,6 +2250,12 @@ class TaskAssignmentManager:
                     "deployment_target": metadata.get("deployment_target", "production") if metadata else "production",
                     "infrastructure_as_code": metadata.get("infrastructure_as_code", False) if metadata else False
                 }
+            elif tool == "deploy_web_application":
+                # deploy_web_application needs task_id and git_url
+                return {
+                    "task_id": metadata.get("task_id", task_id) if metadata else task_id,
+                    "git_url": metadata.get("git_url", "") if metadata else ""
+                }
 
         # Default
         return {"description": task_description}
@@ -582,3 +2308,1093 @@ class TaskAssignmentManager:
             import traceback
             traceback.print_exc()
             return False
+
+    def _log_activity(self, task_id: str, event: str, agent: Optional[str] = None,
+                      detail: Optional[str] = None):
+        """Best-effort team-activity log entry (who was called, when it finished)."""
+        try:
+            if self.task_storage:
+                self.task_storage.log_activity(task_id, event, agent, detail)
+        except Exception:
+            pass
+
+    def _handle_workflow_sequence(self, task_id: str, task_description: str, current_agent: str, llm_plan: Optional[Dict[str, Any]], git_url: Optional[str], prev_result=None):
+        """
+        Handle workflow sequence - forward task to next agent in sequence if applicable.
+
+        Args:
+            task_id: Task identifier
+            task_description: Original task description
+            current_agent: Agent that just completed
+            llm_plan: LLM planning result with workflow_sequence
+            git_url: Git URL from completed agent (if any)
+        """
+        if not llm_plan:
+            print(f"⚠️  No LLM plan available for workflow sequence check")
+            return
+
+        # Get workflow sequence from LLM plan
+        workflow_sequence = llm_plan.get("workflow_sequence") or llm_plan.get("sequence", [])
+
+        # AUTO-ADD DEVOPS: If task mentions deployment OR has deploy_after_implementation flag
+        task_lower = task_description.lower()
+        deployment_keywords = ["deploy", "deployment", "accessible via url", "publish", "run as website", "make it available"]
+        current_agent_normalized = current_agent.lower().replace("_", "-").replace(" ", "-")
+
+        # Check for deploy_after_implementation flag in task metadata (deeply nested!)
+        deploy_flag_enabled = False
+        try:
+            task_obj = self.task_storage.get_task(task_id)
+            if task_obj:
+                metadata = task_obj.get("metadata", {}) or {}
+                # Check multiple locations for the flag
+                if metadata.get("deploy_after_implementation", False):
+                    deploy_flag_enabled = True
+                elif metadata.get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag_enabled = True
+                elif metadata.get("original_arguments", {}).get("original_arguments", {}).get("metadata", {}).get("deploy_after_implementation", False):
+                    deploy_flag_enabled = True
+                if deploy_flag_enabled:
+                    print(f"✅ Deployment flag enabled for task {task_id} (from UI checkbox)")
+        except Exception as e:
+            print(f"⚠️  Could not check deployment flag: {e}")
+
+        if (any(kw in task_lower for kw in deployment_keywords) or deploy_flag_enabled) and "implementation-engineer" in current_agent_normalized:
+            if not workflow_sequence or workflow_sequence[-1] != "devops-engineer":
+                # Add devops-engineer to the end of workflow (use correct agent name!)
+                if not workflow_sequence:
+                    workflow_sequence = ["devops-engineer"]
+                else:
+                    workflow_sequence.append("devops-engineer")
+                print(f"🔧 Auto-added devops-engineer to workflow (task mentions deployment or UI checkbox enabled)")
+                # Update llm_plan with new workflow
+                llm_plan["workflow_sequence"] = workflow_sequence
+                if "tools" not in llm_plan:
+                    llm_plan["tools"] = {}
+                llm_plan["tools"]["devops-engineer"] = "deploy_web_application"
+
+        if not workflow_sequence or len(workflow_sequence) < 2:
+            # No sequence or only one agent - task is complete
+            print(f"✅ Task {task_id} workflow complete (no sequence or single agent)")
+            return
+        
+        # Find current agent position in sequence
+        current_index = -1
+        for i, agent in enumerate(workflow_sequence):
+            agent_normalized = agent.lower().replace(" ", "-").replace("_", "-")
+            current_normalized = current_agent.lower().replace(" ", "-").replace("_", "-")
+            if agent_normalized == current_normalized:
+                current_index = i
+                break
+        
+        if current_index < 0:
+            print(f"⚠️  Current agent {current_agent} not found in workflow sequence: {workflow_sequence}")
+            return
+        
+        # Check if there's a next agent
+        if current_index >= len(workflow_sequence) - 1:
+            # Current agent is the last in sequence - task is complete
+            print(f"✅ Task {task_id} workflow complete (agent {current_agent} is last in sequence)")
+            return
+        
+        # Get next agent in sequence
+        next_agent = workflow_sequence[current_index + 1]
+        print(f"🔄 Forwarding task {task_id} to next agent in sequence: {next_agent}")
+
+        # ✅ CRITICAL: Refresh agent endpoints from registry BEFORE looking up next agent
+        # This prevents race conditions where IT Lead started before other agents registered
+        print(f"   Refreshing agent endpoints from registry before forwarding...")
+        try:
+            if hasattr(self, 'mcp_registry_client') and self.mcp_registry_client:
+                services = self.mcp_registry_client.list_services(use_cache=False)
+                print(f"   📋 Refreshed: {len(services)} services from registry")
+                
+                # Update routing engine with fresh endpoints
+                for service in services:
+                    service_name = service.get("name", "").lower()
+                    endpoint = service.get("endpoint")
+                    
+                    if "registry" in service_name and "mcp registry" in service_name:
+                        continue
+                    
+                    if "devops" in service_name and endpoint:
+                        old = self.routing_engine.agent_endpoints.get("devops-engineer")
+                        self.routing_engine.agent_endpoints["devops-engineer"] = endpoint
+                        if old != endpoint:
+                            print(f"   ✅ Updated devops-engineer: {endpoint} (was: {old})")
+                    elif "implementation" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["implementation-engineer"] = endpoint
+                    elif "requirement" in service_name and endpoint:
+                        self.routing_engine.agent_endpoints["requirements-engineer"] = endpoint
+        except Exception as e:
+            print(f"   ⚠️  Could not refresh endpoints: {e}")
+
+        # Get next agent's endpoint (now with refreshed data)
+        next_agent_endpoint = self.routing_engine.get_agent_endpoint(next_agent)
+        if not next_agent_endpoint:
+            print(f"❌ Could not find endpoint for next agent: {next_agent}")
+            print(f"   Available endpoints: {self.routing_engine.agent_endpoints}")
+            return
+        
+        if next_agent == "implementation-engineer":
+            # vibe_code_async retired: an implementation step inside a workflow
+            # (e.g. after requirements analysis) also goes through the build flow.
+            wf = " ".join(llm_plan.get("workflow_sequence", []) if isinstance(llm_plan, dict) else [])
+            r2 = "gated" if "devops" in wf else "simple"
+            manifest = (self._gated_manifest_synth() if r2 == "gated"
+                        else self._single_manifest_synth(llm_plan))
+            self._log_activity(task_id, "route", agent="it-lead",
+                               detail=f"{r2}: workflow continuation via build flow")
+            self._update_task_status(task_id, "in_progress",
+                                     f"Build flow continuation: {len(manifest)} files")
+            threading.Thread(target=self._execute_multifile_plan,
+                             args=(task_id, task_description, manifest,
+                                   llm_plan, {}, r2),
+                             daemon=True).start()
+            return
+
+        # Get tool for next agent from LLM plan
+        tools = llm_plan.get("tools", {})
+        next_tool = tools.get(next_agent, "analyze_requirements")
+
+        # Forward task to next agent
+        print(f"   Forwarding to {next_agent} at {next_agent_endpoint} with tool {next_tool}")
+
+        # Build context from previous agent's result
+        context_for_next = {
+            "previous_agent": current_agent,
+            "previous_git_url": git_url,
+            "workflow_position": f"{current_index + 2}/{len(workflow_sequence)}"
+        }
+        if prev_result:
+            try:
+                spec_text = prev_result if isinstance(prev_result, str) else json.dumps(prev_result, default=str)
+            except Exception:
+                spec_text = str(prev_result)
+            context_for_next["spec_context"] = spec_text[:4000]
+            print(f"📋 Passing requirements spec ({len(spec_text[:4000])} chars) to {next_agent}")
+
+        # Special handling for devops-release-engineer - pass git_url and result path
+        next_agent_normalized = next_agent.lower().replace("_", "-")
+        if "devops" in next_agent_normalized:
+            # Extract UUID from git_url for devops
+            import re
+            uuid_match = re.search(r'/results/([a-f0-9-]+)/', git_url) if git_url else None
+            if uuid_match:
+                context_for_next["result_uuid"] = uuid_match.group(1)
+                context_for_next["git_url"] = git_url
+                # Use deploy_web_application tool for devops
+                next_tool = "deploy_web_application"
+                print(f"   DevOps deployment: UUID={context_for_next['result_uuid']}, GitURL={git_url}")
+
+        # Forward to next agent
+        forward_result = self._forward_task_to_agent(
+            task_id, task_description, next_agent, next_tool,
+            "medium", None, context_for_next
+        )
+        
+        if forward_result.get("success"):
+            print(f"✅ Task {task_id} forwarded to {next_agent} in workflow sequence")
+
+            # Update assigned_to to next agent
+            try:
+                import json
+                cursor = self.task_storage.connection.cursor()
+                cursor.execute(
+                    "UPDATE task_registry SET assigned_to = %s WHERE task_id = %s",
+                    (next_agent, task_id)
+                )
+                self.task_storage.connection.commit()
+                cursor.close()
+                print(f"✅ Task {task_id} assigned_to updated to {next_agent}")
+
+                # CRITICAL FIX: Also update agent_endpoint in metadata for the poller
+                # The poller uses agent_endpoint from metadata to poll for async results
+                # Without this, poller keeps using the stale endpoint from previous agent
+                try:
+                    cursor = self.task_storage.connection.cursor()
+                    cursor.execute(
+                        "SELECT metadata FROM task_registry WHERE task_id = %s",
+                        (task_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        import json
+                        metadata = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                        if isinstance(metadata, dict):
+                            metadata['agent_endpoint'] = next_agent_endpoint
+                            cursor.execute(
+                                "UPDATE task_registry SET metadata = %s WHERE task_id = %s",
+                                (json.dumps(metadata), task_id)
+                            )
+                            self.task_storage.connection.commit()
+                            print(f"✅ Task {task_id} agent_endpoint updated to {next_agent_endpoint} in metadata")
+                    cursor.close()
+                except Exception as e:
+                    print(f"⚠️  Could not update agent_endpoint in metadata: {e}")
+            except Exception as e:
+                print(f"⚠️  Could not update assigned_to: {e}")
+
+            # Update status_history to show workflow handoff
+            try:
+                task = self.task_storage.get_task(task_id)
+                if task:
+                    status_history = task.get("status_history", [])
+                    if isinstance(status_history, str):
+                        import json as json_module
+                        try:
+                            status_history = json_module.loads(status_history)
+                        except:
+                            status_history = []
+
+                    status_history_entry = {
+                        "status": "in_progress",
+                        "timestamp": time.time(),
+                        "reason": f"Task forwarded from {current_agent} to {next_agent} (step {current_index + 2}/{len(workflow_sequence)} in workflow)"
+                    }
+                    status_history.append(status_history_entry)
+
+                    cursor = self.task_storage.connection.cursor()
+                    cursor.execute(
+                        "UPDATE task_registry SET status_history = %s WHERE task_id = %s",
+                        (json.dumps(status_history), task_id)
+                    )
+                    self.task_storage.connection.commit()
+                    cursor.close()
+                    print(f"✅ Task {task_id} status_history updated with workflow handoff")
+            except Exception as e:
+                print(f"⚠️  Could not update status_history: {e}")
+            
+            agent_response = forward_result.get("response", {})
+            result_data = agent_response.get("result", {})
+
+            # Check if task is async (has taskId) or sync (completed inline)
+            async_task_id = result_data.get("taskId") if isinstance(result_data, dict) else None
+
+            if async_task_id and result_data.get("status") == "submitted":
+                print(f"⏳ Async task submitted to {next_agent}: {async_task_id}, starting background polling...", flush=True)
+
+                def workflow_poller():
+                    """Background thread to poll for async task result in workflow"""
+                    import sys
+                    import traceback
+                    # Log to file for debugging
+                    try:
+                        with open("/tmp/poller_debug.log", "a") as f:
+                            f.write(f"[{time.time()}] Poller started for task {task_id}, async_task_id={async_task_id}\n")
+                    except:
+                        pass
+                    
+                    print(f"🔄 Workflow poller started for task {task_id}, polling for {async_task_id}...", flush=True)
+                    sys.stdout.flush()
+                    
+                    print(f"🔍 Starting to poll async task result...", flush=True)
+                    # Increased polling to 1800 retries (1 hour minimum) to handle longer-running tasks
+                    # With 2s base wait + exponential backoff, this allows tasks up to 1+ hour to complete
+                    async_result = self._poll_async_task_result(next_agent_endpoint, async_task_id, max_retries=1800)
+                    
+                    # Log result to file
+                    try:
+                        with open("/tmp/poller_debug.log", "a") as f:
+                            f.write(f"[{time.time()}] Poller result: async_result type={type(async_result)}, has_git_url={bool(async_result and async_result.get('git_url'))}\n")
+                            if async_result:
+                                f.write(f"[{time.time()}] async_result keys: {list(async_result.keys()) if isinstance(async_result, dict) else 'N/A'}\n")
+                    except:
+                        pass
+                    
+                    print(f"📬 Poller returned: async_result type={type(async_result)}, has_git_url={bool(async_result and async_result.get('git_url'))}", flush=True)
+
+                    if async_result and async_result.get("git_url"):
+                        git_url = async_result["git_url"]
+                        deployment_url = async_result.get("deployment_url")
+                        print(f"✅ Workflow poller found Git URL for task {task_id}: {git_url}", flush=True)
+                        
+                        # Log to file
+                        try:
+                            with open("/tmp/poller_debug.log", "a") as f:
+                                f.write(f"[{time.time()}] Found git_url: {git_url}\n")
+                        except:
+                            pass
+                        
+                        # Update task with Git URL and mark as done
+                        self.task_storage.update_task_with_git_url(task_id, git_url, deployment_url)
+                        msg = f"✅ Task {task_id} completed in workflow"
+                        if deployment_url:
+                            msg += f", deployment: {deployment_url}"
+                        print(msg, flush=True)
+
+                        # Check if there's a next agent in workflow BEFORE marking as done
+                        # CRITICAL FIX: Only mark task as "done" when ALL agents have completed
+                        should_mark_done = True  # Default to marking done unless we find a next agent
+
+                        print(f"🔍 Checking for next agent in workflow...", flush=True)
+                        if llm_plan:
+                            updated_workflow = llm_plan.get("workflow_sequence", [])
+
+                            # CRITICAL FIX APPLIED: Handle sync tasks with deployment workflow
+                            # Check if deployment is required from the llm_plan metadata
+                            deploy_flag = llm_plan.get("deploy_after_implementation", False) if llm_plan else False
+                            print(f"   Checking critical conditions: deploy_flag={deploy_flag}, async_task_id={async_task_id}")
+                            
+                            # If deployment required but Implementation processed synchronously (no async_task_id)
+                            implementation_agent = "implementation-engineer"
+                            next_agent_normalized = next_agent.lower().replace("_", "-").replace(" ", "-") if next_agent else ""
+                            is_implementation_step = "implementation" in next_agent_normalized
+                            needs_devops_deployment = deploy_flag and is_implementation_step
+                            
+                            print(f"   Critical conditions met: needs_devops_deployment={needs_devops_deployment}")
+                            
+                            # Manually handle sync Implementation results when deployment required
+                            if needs_devops_deployment:
+                                self._handle_sync_implementation_with_deployment_workflow(task_id)
+                            
+                            # CRITICAL FIX: Recalculate current_index based on next_agent
+                            actual_current_index = -1
+                            for i, agent in enumerate(updated_workflow):
+                                agent_normalized = agent.lower().replace(" ", "-").replace("_", "-")
+                                if agent_normalized == next_agent_normalized:
+                                    actual_current_index = i
+                                    break
+
+                            # Use actual_current_index if found, otherwise fall back to captured value
+                            effective_index = actual_current_index if actual_current_index >= 0 else current_index
+
+                            print(f"   Workflow: {updated_workflow}, actual_current_index: {actual_current_index}, effective_index: {effective_index}, len-1: {len(updated_workflow) - 1}", flush=True)
+                            if effective_index < len(updated_workflow) - 1:
+                                # There's another agent after this one - DO NOT mark as done yet!
+                                should_mark_done = False
+                                print(f"🔄 Workflow poller: next agent exists after {next_agent}, keeping task in_progress", flush=True)
+                                print(f"   effective_index={effective_index}, workflow_length={len(updated_workflow)}, workflow={updated_workflow}", flush=True)
+
+                                # Log to file
+                                try:
+                                    with open("/tmp/poller_debug.log", "a") as f:
+                                        f.write(f"[{time.time()}] Calling _handle_workflow_sequence for next agent\n")
+                                except:
+                                    pass
+
+                                self._handle_workflow_sequence(task_id, task_description, next_agent, llm_plan, git_url)
+                                print(f"✅ _handle_workflow_sequence called successfully", flush=True)
+                            else:
+                                print(f"⚠️ No more agents in workflow (current_index={current_index}, len={len(updated_workflow)})", flush=True)
+                        else:
+                            print(f"⚠️ llm_plan is None, cannot check for next agent", flush=True)
+
+                        # Only mark task as done if there's no next agent
+                        if should_mark_done:
+                            print(f"✅ Task {task_id} workflow complete, marking as done", flush=True)
+                            try:
+                                import json
+
+                                # CRITICAL FIX: Calculate effective_index BEFORE using it
+                                # This must happen before status_history update
+                                updated_workflow_for_index = llm_plan.get("workflow_sequence", []) if llm_plan else []
+                                actual_current_index_for_status = -1
+                                for i, agent in enumerate(updated_workflow_for_index):
+                                    agent_normalized = agent.lower().replace(" ", "-").replace("_", "-")
+                                    next_agent_normalized = next_agent.lower().replace(" ", "-").replace("_", "-")
+                                    if agent_normalized == next_agent_normalized:
+                                        actual_current_index_for_status = i
+                                        break
+                                effective_index_for_status = actual_current_index_for_status if actual_current_index_for_status >= 0 else current_index
+
+                                task = self.task_storage.get_task(task_id)
+                                if task:
+                                    status_history = task.get("status_history", [])
+                                    if isinstance(status_history, str):
+                                        import json as json_module
+                                        try:
+                                            status_history = json_module.loads(status_history)
+                                        except:
+                                            status_history = []
+
+                                    status_history_entry = {
+                                        "status": "done",
+                                        "timestamp": time.time(),
+                                        "reason": f"Task completed by {next_agent} (step {effective_index_for_status + 2}/{len(updated_workflow_for_index)} in workflow)"
+                                    }
+                                    status_history.append(status_history_entry)
+
+                                    cursor = self.task_storage.connection.cursor()
+                                    cursor.execute(
+                                        "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                                        ('done', json.dumps(status_history), task_id)
+                                    )
+                                    self.task_storage.connection.commit()
+                                    cursor.close()
+                                    print(f"✅ Task {task_id} marked as done in workflow poller", flush=True)
+                            except Exception as e:
+                                print(f"⚠️  Could not update status_history in workflow poller: {e}", flush=True)
+                                import traceback
+                                traceback.print_exc()
+                    elif async_result:
+                        print(f"⚠️ Workflow poller completed but no Git URL for task {task_id}", flush=True)
+
+                        # ✅ CHECK FOR PYTHON SYNTAX ERROR - Trigger automatic regeneration
+                        error_message = async_result.get("error", "") or async_result.get("message", "")
+                        if "python syntax error" in error_message.lower():
+                            print(f"🔧 Detected Python syntax error in DevOps response - triggering automatic code regeneration", flush=True)
+                            print(f"   Error: {error_message}", flush=True)
+                            self._trigger_code_regeneration(task_id, task_description, error_message, workflow_sequence, llm_plan)
+
+                import threading
+                threading.Thread(target=workflow_poller, daemon=True).start()
+                print(f"✅ Workflow polling thread spawned for task {task_id}")
+            else:
+                # Sync task - handle inline
+                print(f"⚠️ Task {task_id} is not async or already completed, handling inline")
+                git_url = None
+                deployment_url = None
+
+                if isinstance(result_data, dict):
+                    git_url = result_data.get("git_url")
+                    deployment_url = result_data.get("deployment_url")
+                    
+                    # SPECIAL CASE: DevOps returns deployment_url directly
+                    # But we should NOT overwrite git_url with deployment_url!
+                    # The git_url should come from the task's existing metadata
+                    if deployment_url and not git_url:
+                        # DevOps completed - get git_url from existing task metadata
+                        task_obj = self.task_storage.get_task(task_id)
+                        if task_obj:
+                            metadata = task_obj.get("metadata", {})
+                            git_url = metadata.get("git_url")
+                        print(f"🚀 DevOps sync task completed with deployment_url: {deployment_url}, git_url: {git_url}")
+                    
+                    if git_url:
+                        print(f"✅ Sync task {task_id} completed with git_url: {git_url}")
+                        if deployment_url:
+                            print(f"🚀 Deployment URL: {deployment_url}")
+                        self.task_storage.update_task_with_git_url(task_id, git_url, deployment_url)
+
+                        # ✅ CHECK FOR PYTHON SYNTAX ERROR in sync result
+                        error_message = result_data.get("error", "") or result_data.get("message", "")
+                        if "python syntax error" in error_message.lower():
+                            print(f"🔧 Detected Python syntax error in sync DevOps response - triggering automatic code regeneration", flush=True)
+                            print(f"   Error: {error_message}", flush=True)
+                            self._trigger_code_regeneration(task_id, task_description, error_message, workflow_sequence, llm_plan)
+                    elif deployment_url:
+                        # Only deployment_url, no git_url - still save it
+                        print(f"🚀 DevOps task completed with deployment_url only: {deployment_url}")
+                        self.task_storage.update_task_with_git_url(task_id, None, deployment_url)
+                    else:
+                        print(f"⚠️ Sync task {task_id} completed but no git_url or deployment_url")
+                        # Check if DevOps is in workflow - if so, we need to store code in git first
+                        if workflow_sequence and "devops-engineer" in workflow_sequence:
+                            print(f"🔧 DevOps in workflow but no git_url - extracting code from inline result")
+                        # Extract code from result_data if available
+                        code_content = None
+                        language = "python"
+                        if isinstance(result_data, dict):
+                            code_content = result_data.get("code") or result_data.get("result", "")
+                            language = result_data.get("language", "python")
+                        
+                        if code_content:
+                            # Store code in git manually
+                            print(f"📝 Storing inline code to git for DevOps deployment")
+                            try:
+                                import subprocess
+                                import uuid
+                                import os
+                                
+                                # Generate UUID for this result
+                                result_uuid = str(uuid.uuid4())
+                                git_workdir = f"/tmp/mcp-vibe-coding-git/repo"
+                                
+                                # Ensure git workdir exists
+                                if not os.path.exists(git_workdir):
+                                    os.makedirs(git_workdir, exist_ok=True)
+                                    subprocess.run(["git", "init"], cwd=git_workdir, check=True, capture_output=True)
+                                    subprocess.run(["git", "config", "user.email", "mcp@local"], cwd=git_workdir, check=True, capture_output=True)
+                                    subprocess.run(["git", "config", "user.name", "MCP Agent"], cwd=git_workdir, check=True, capture_output=True)
+                                
+                                # Get the git_url from metadata or use default
+                                task_obj = self.task_storage.get_task(task_id)
+                                metadata = task_obj.get("metadata", {}) if task_obj else {}
+                                original_args = metadata.get("original_arguments", {})
+                                inner_metadata = original_args.get("original_arguments", {}).get("metadata", {})
+                                deploy_flag = inner_metadata.get("deploy_after_implementation", False)
+                                
+                                # Use the configured git repo URL
+                                git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                                
+                                # Clone/pull repo
+                                if not os.path.exists(os.path.join(git_workdir, ".git")):
+                                    subprocess.run(["git", "pull", git_repo_url, "main"], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+                                else:
+                                    subprocess.run(["git", "pull"], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+                                
+                                # Create result file
+                                result_dir = os.path.join(git_workdir, "results", result_uuid)
+                                os.makedirs(result_dir, exist_ok=True)
+                                result_file = os.path.join(result_dir, f"result.{language if language != 'python' else 'py'}")
+                                with open(result_file, "w") as f:
+                                    f.write(code_content)
+                                
+                                # Commit and push
+                                subprocess.run(["git", "add", "."], cwd=git_workdir, check=True, capture_output=True)
+                                subprocess.run(["git", "commit", "-m", f"Result for {task_id}"], cwd=git_workdir, check=True, capture_output=True)
+                                subprocess.run(["git", "push", git_repo_url, "main"], cwd=git_workdir, check=True, capture_output=True, timeout=30)
+                                
+                                # Construct git_url
+                                git_url = f"{git_repo_url}/tree/main/results/{result_uuid}/result.{language if language != 'python' else 'py'}"
+                                print(f"✅ Code stored in git: {git_url}")
+                                
+                                # Update task with git_url
+                                self.task_storage.update_task_with_git_url(task_id, git_url, None)
+                                
+                            except Exception as e:
+                                print(f"❌ Failed to store inline code to git: {e}")
+                                import traceback
+                                traceback.print_exc()
+
+                # Update status history for workflow completion
+                if self.task_storage:
+                    task = self.task_storage.get_task(task_id)
+                    if task:
+                        metadata = task.get("metadata", {})
+                        status_history = task.get("status_history", [])
+                        if isinstance(status_history, str):
+                            import json as json_module
+                            try:
+                                status_history = json_module.loads(status_history)
+                            except:
+                                status_history = []
+
+                        status_history_entry = {
+                            "status": "done",
+                            "timestamp": time.time(),
+                            "reason": f"Task completed by {next_agent} (step {current_index + 2}/{len(workflow_sequence)} in workflow)"
+                        }
+                        status_history.append(status_history_entry)
+
+                        try:
+                            import json
+                            cursor = self.task_storage.connection.cursor()
+                            cursor.execute(
+                                "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                                ('done', json.dumps(status_history), task_id)
+                            )
+                            self.task_storage.connection.commit()
+                            cursor.close()
+                            print(f"✅ Task {task_id} marked as done in workflow")
+                        except Exception as e:
+                            print(f"⚠️  Could not update status: {e}")
+        else:
+            print(f"❌ Failed to forward task {task_id} to {next_agent}: {forward_result.get('error')}")
+
+            # ✅ CHECK FOR PYTHON SYNTAX ERROR in forward failure - Trigger automatic regeneration
+            error_message = forward_result.get("error", "")
+            if error_message and "python syntax error" in error_message.lower():
+                print(f"🔧 Detected Python syntax error in forward result - triggering automatic code regeneration", flush=True)
+                print(f"   Error: {error_message}", flush=True)
+                self._trigger_code_regeneration(task_id, task_description, error_message, workflow_sequence, llm_plan)
+
+    def _trigger_code_regeneration(self, task_id: str, task_description: str, syntax_error: str, workflow_sequence: List[str], llm_plan: Dict[str, Any]):
+        """
+        Trigger automatic code regeneration when deployment fails with Python syntax error.
+
+        This method:
+        1. Creates a new sub-task for Requirements Engineer to regenerate the code
+        2. Includes the original task, syntax error details, and original code
+        3. Sets up a new workflow: Requirements Engineer → Implementation Engineer → DevOps (retry)
+
+        Args:
+            task_id: Original task identifier
+            task_description: Original task description
+            syntax_error: The Python syntax error message from DevOps
+            workflow_sequence: Original workflow sequence
+            llm_plan: Original LLM plan with workflow configuration
+        """
+        try:
+            print(f"🔄 Starting code regeneration workflow for task {task_id}", flush=True)
+
+            # Get original code from git_url in task metadata
+            task_obj = self.task_storage.get_task(task_id)
+            original_git_url = None
+            if task_obj:
+                metadata = task_obj.get("metadata", {}) or {}
+                original_git_url = metadata.get("git_url")
+
+            if not original_git_url:
+                print(f"⚠️  No git_url found in task metadata - cannot regenerate code", flush=True)
+                return
+
+            # Get original language from task metadata or git_url filename
+            original_language = "python"  # Default
+            if task_obj:
+                task_metadata = task_obj.get("metadata", {}) or {}
+                original_language = task_metadata.get("language", "python")
+
+            # Create regeneration prompt for Requirements Engineer
+            regeneration_prompt = f"""I need you to regenerate the code for a deployment task that failed with a syntax error.
+
+ORIGINAL TASK:
+{task_description}
+
+SYNTAX ERROR FROM DEPLOYMENT:
+{syntax_error}
+
+ORIGINAL CODE LOCATION:
+{original_git_url}
+
+LANGUAGE: {original_language}
+
+Please analyze the original code, fix the syntax error, and generate corrected code in {original_language}. The code will be deployed as a web application.
+
+After you provide the corrected code, it will go through the Implementation Engineer and then be redeployed by the DevOps Engineer.
+
+Please generate the complete, corrected code with proper syntax in {original_language}."""
+
+            # Create a new sub-task for Requirements Engineer
+            regeneration_task_id = f"{task_id}-regenerate"
+
+            # Store the regeneration task
+            self.task_storage.create_task(
+                task_id=regeneration_task_id,
+                task_description=regeneration_prompt,
+                priority="high",
+                assigned_to="requirements-engineer",
+                metadata={
+                    "parent_task_id": task_id,
+                    "regeneration_type": "python_syntax_fix",
+                    "original_git_url": original_git_url,
+                    "syntax_error": syntax_error,
+                    "workflow_sequence": workflow_sequence,
+                    "retry_attempt": 1
+                }
+            )
+
+            print(f"✅ Created regeneration task: {regeneration_task_id}", flush=True)
+
+            # Update the original task status to reflect regeneration in progress
+            try:
+                import json
+                task = self.task_storage.get_task(task_id)
+                if task:
+                    status_history = task.get("status_history", [])
+                    if isinstance(status_history, str):
+                        status_history = json.loads(status_history)
+
+                    status_history_entry = {
+                        "status": "regeneration_in_progress",
+                        "timestamp": time.time(),
+                        "reason": f"Python syntax error detected - code regeneration requested: {syntax_error[:100]}..."
+                    }
+                    status_history.append(status_history_entry)
+
+                    cursor = self.task_storage.connection.cursor()
+                    cursor.execute(
+                        "UPDATE task_registry SET status = %s, status_history = %s WHERE task_id = %s",
+                        ("regeneration_in_progress", json.dumps(status_history), task_id)
+                    )
+                    self.task_storage.connection.commit()
+                    cursor.close()
+                    print(f"✅ Updated task {task_id} status to regeneration_in_progress")
+            except Exception as e:
+                print(f"⚠️  Could not update task status: {e}")
+
+            # Forward the regeneration task to Requirements Engineer
+            requirements_endpoint = self.routing_engine.get_agent_endpoint("requirements-engineer")
+            if requirements_endpoint:
+                print(f"📤 Forwarding regeneration task to Requirements Engineer at {requirements_endpoint}", flush=True)
+
+                forward_result = self._forward_task_to_agent(
+                    regeneration_task_id,
+                    regeneration_prompt,
+                    "requirements-engineer",
+                    "vibe_code_async",
+                    "high",
+                    None,
+                    {"regeneration_context": True, "parent_task_id": task_id}
+                )
+
+                if forward_result.get("success"):
+                    print(f"✅ Regeneration task forwarded to Requirements Engineer", flush=True)
+
+                    # If async, start polling for the result
+                    async_task_id = forward_result.get("response", {}).get("result", {}).get("taskId")
+                    if async_task_id:
+                        print(f"⏳ Starting polling for regeneration task result: {async_task_id}", flush=True)
+
+                        def regeneration_poller():
+                            """Background thread to poll for regeneration result"""
+                            try:
+                                # Poll for the regenerated code
+                                regenerated_result = self._poll_async_task_result(
+                                    requirements_endpoint,
+                                    async_task_id,
+                                    max_retries=360
+                                )
+
+                                if regenerated_result and regenerated_result.get("git_url"):
+                                    print(f"✅ Regenerated code available at: {regenerated_result['git_url']}", flush=True)
+
+                                    # Update parent task with new git_url
+                                    self.task_storage.update_task_with_git_url(
+                                        task_id,
+                                        regenerated_result["git_url"],
+                                        None  # Will be redeployed in next step
+                                    )
+
+                                    # Trigger new workflow with regenerated code
+                                    # Re-forward to Implementation Engineer for processing
+                                    print(f"🔄 Forwarding regenerated code to Implementation Engineer", flush=True)
+
+                                    # Get original language from task metadata
+                                    original_language = "python"
+                                    task_obj = self.task_storage.get_task(task_id)
+                                    if task_obj:
+                                        task_metadata = task_obj.get("metadata", {}) or {}
+                                        original_language = task_metadata.get("language", "python")
+
+                                    implementation_prompt = f"""A previous deployment attempt failed with a syntax error. The Requirements Engineer has now regenerated the code with the fix.
+
+PARENT TASK: {task_description}
+
+REGENERATED CODE LOCATION: {regenerated_result['git_url']}
+
+LANGUAGE: {original_language}
+
+Please implement this corrected code in {original_language} and prepare it for deployment. After implementation, the DevOps Engineer will redeploy the application."""
+
+                                    implementation_task_id = f"{task_id}-implement"
+                                    self.task_storage.create_task(
+                                        task_id=implementation_task_id,
+                                        task_description=implementation_prompt,
+                                        priority="high",
+                                        assigned_to="implementation-engineer",
+                                        metadata={
+                                            "parent_task_id": task_id,
+                                            "regeneration_workflow": True,
+                                            "git_url": regenerated_result["git_url"]
+                                        }
+                                    )
+
+                                    implementation_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
+                                    if implementation_endpoint:
+                                        self._forward_task_to_agent(
+                                            implementation_task_id,
+                                            implementation_prompt,
+                                            "implementation-engineer",
+                                            "vibe_code_async",
+                                            "high",
+                                            None,
+                                            {"regeneration_workflow": True, "parent_task_id": task_id}
+                                        )
+
+                                        # Update parent task status
+                                        try:
+                                            import json
+                                            cursor = self.task_storage.connection.cursor()
+                                            cursor.execute(
+                                                "UPDATE task_registry SET status = %s WHERE task_id = %s",
+                                                ("in_progress", task_id)
+                                            )
+                                            self.task_storage.connection.commit()
+                                            cursor.close()
+                                        except Exception as e:
+                                            print(f"⚠️  Could not update parent task status: {e}")
+
+                                else:
+                                    print(f"⚠️  Regeneration task completed but no code generated", flush=True)
+
+                            except Exception as e:
+                                print(f"❌ Error in regeneration poller: {e}", flush=True)
+
+                        import threading
+                        threading.Thread(target=regeneration_poller, daemon=True).start()
+                else:
+                    print(f"❌ Failed to forward regeneration task: {forward_result.get('error')}", flush=True)
+            else:
+                print(f"❌ Could not find Requirements Engineer endpoint", flush=True)
+
+        except Exception as e:
+            print(f"❌ Error triggering code regeneration: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+
+    def _recover_git_url(self, task_id):
+        """Self-heal: the coder pushes results/<task_id> before the pipeline
+        records git_url, so an interrupted task's tree may exist anyway. Probe
+        the results repo and adopt the tree if found."""
+        import subprocess
+        repo = "/tmp/mcp-vibe-coding-git/repo"
+        url = "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"
+        try:
+            if not os.path.isdir(os.path.join(repo, ".git")):
+                subprocess.run(["git", "clone", "-q", "--filter=blob:none",
+                                "--no-checkout", url, repo],
+                               capture_output=True, timeout=300)
+            else:
+                subprocess.run(["git", "-C", repo, "fetch", "-q", "origin"],
+                               capture_output=True, timeout=300)
+            r = subprocess.run(["git", "-C", repo, "ls-tree", "--name-only",
+                                "origin/main", f"results/{task_id}/"],
+                               capture_output=True, text=True, timeout=60)
+            if r.stdout.strip():
+                tree = f"{url[:-4]}/tree/main/results/{task_id}"
+                self._merge_metadata(task_id, {"git_url": tree, "path": tree,
+                                               "storage_type": "git"})
+                self._log_activity(task_id, "git_url_recovered", agent="it-lead",
+                                   detail=f"adopted results/{task_id} from results repo")
+                print(f"🩹 git_url recovered for {task_id}", flush=True)
+                return tree
+        except Exception as e:
+            print(f"⚠️ git_url recovery probe failed for {task_id}: {e}", flush=True)
+        return None
+
+    def _trigger_rework_workflow(self, task_id: str, issue_description: str, additional_comments: str, priority: str = "medium"):
+        """
+        Trigger rework workflow when a task in 'done' status is found to have issues.
+
+        This method:
+        1. Updates the original task status to 'needs_revision'
+        2. Creates a new sub-task for Implementation Engineer (and optionally Code Reviewer)
+        3. Sets up a new workflow based on whether Code Reviewer is needed
+
+        Args:
+            task_id: Original task identifier
+            issue_description: Description of the issue(s) found
+            additional_comments: Optional additional comments from the user
+            priority: Priority for the rework task
+        """
+        try:
+            print(f"🔄 Starting rework workflow for task {task_id}", flush=True)
+            print(f"   Issue: {issue_description[:100]}...", flush=True)
+
+            # Get original task details
+            task_obj = self.task_storage.get_task(task_id)
+            if not task_obj:
+                print(f"❌ Task not found: {task_id}", flush=True)
+                return
+            if task_obj.get("status") in ("in_progress", "review", "rework_in_progress",
+                                           "awaiting_input"):
+                print(f"⛔ rework rejected: {task_id} already active "
+                      f"(status={task_obj.get('status')})", flush=True)
+                self._log_activity(task_id, "rework_rejected", agent="it-lead",
+                                   detail=f"active pipeline status={task_obj.get('status')}")
+                return
+
+            # Get original task description and metadata
+            original_description = task_obj.get("description", "")
+            metadata = task_obj.get("metadata", {}) or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+            if not metadata.get("git_url"):
+                recovered = self._recover_git_url(task_id)
+                if recovered:
+                    metadata["git_url"] = recovered
+                else:
+                    print(f"⛔ rework rejected: {task_id} has no artifact tree (git_url)", flush=True)
+                    self._log_activity(task_id, "rework_rejected", agent="it-lead",
+                                       detail="no git_url - nothing to fix in place")
+                    return
+
+            # Check if code review is needed based on issue type
+            # Issues related to code quality, architecture, or patterns suggest needing review
+            needs_code_review = any(keyword in issue_description.lower() for keyword in [
+                "code quality", "architecture", "design pattern", "best practices",
+                "refactor", "structure", "organization", "maintainability"
+            ])
+
+            # Create rework prompt
+            if needs_code_review:
+                rework_prompt = f"""I need you to implement corrected code for a task that was deployed but has issues.
+
+ORIGINAL TASK:
+{original_description}
+
+ISSUES FOUND:
+{issue_description}
+
+ADDITIONAL COMMENTS:
+{additional_comments}
+
+LANGUAGE: {metadata.get('language', 'python')}
+
+ORIGINAL CODE LOCATION: {metadata.get('git_url', metadata.get('result_reference', {}).get('path', 'N/A'))}
+
+IMPORTANT: Please review the original code and address all the issues mentioned above. Ensure:
+1. The code quality issues are fixed
+2. The architecture/design problems are addressed
+3. The solution follows best practices for {metadata.get('language', 'python')}
+
+After you provide the corrected code, it will go through the Code Reviewer and then be redeployed by the DevOps Engineer.
+
+Please generate the complete, corrected code with proper {metadata.get('language', 'python')} syntax."""
+            else:
+                rework_prompt = f"""I need you to implement corrected code for a task that was deployed but has issues.
+
+ORIGINAL TASK:
+{original_description}
+
+ISSUES FOUND:
+{issue_description}
+
+ADDITIONAL COMMENTS:
+{additional_comments}
+
+LANGUAGE: {metadata.get('language', 'python')}
+
+ORIGINAL CODE LOCATION: {metadata.get('git_url', metadata.get('result_reference', {}).get('path', 'N/A'))}
+
+Please analyze the original code, fix all the issues mentioned above, and generate corrected code in {metadata.get('language', 'python')}.
+
+After you provide the corrected code, it will be deployed by the DevOps Engineer.
+
+Please generate the complete, corrected code with proper {metadata.get('language', 'python')} syntax."""
+
+            # Rework is an operation ON THE SAME TASK ROW (no second task):
+            # the parent flips to rework_in_progress and one thread runs the
+            # fix-build + full gate sequence under the parent's own id.
+            # (The old <task>-rework sub-task raced for the same deploy route
+            # and split git_url ownership - postmortem task-1794842620157.)
+            self._log_activity(task_id, "rework_requested", agent="it-lead",
+                               detail=issue_description[:150])
+            self._merge_metadata(task_id, {
+                "rework_issue_description": issue_description,
+                "rework_additional_comments": additional_comments,
+                "original_git_url": metadata.get("git_url")})
+            try:
+                cursor = self.task_storage.connection.cursor()
+                cursor.execute("UPDATE task_registry SET status = %s WHERE task_id = %s",
+                               ("rework_in_progress", task_id))
+                self.task_storage.connection.commit()
+                cursor.close()
+                print(f"✅ Task {task_id} status -> rework_in_progress")
+            except Exception as e:
+                print(f"⚠️  Could not update task status: {e}")
+
+            import threading
+            # rework must not invent a deploy for tasks that never had one
+            want_deploy = bool(metadata.get("deployment_url")) or \
+                self._md_flag(metadata, "deploy_after_implementation")
+            threading.Thread(target=self._execute_rework_plan,
+                             args=(task_id, rework_prompt, metadata.get("git_url"),
+                                   want_deploy),
+                             daemon=True).start()
+
+        except Exception as e:
+            print(f"❌ Error triggering rework workflow: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+
+    def _execute_rework_plan(self, task_id, rework_prompt, base_git_url, want_deploy=True):
+        """In-place rework: fix the existing artifact tree (or rebuild from the
+        task text when no tree is recorded), then run the standard gate
+        sequence under the same task id. want_deploy must mirror the ORIGINAL
+        task's nature: a component/library rework has nothing to deploy and a
+        forced deploy would fail the health gate (postmortem
+        task-1794919400099: Langflow component, container had no server).
+        The stale run contract is invalidated: the tree is about to
+        change and the old launch command must not be reused."""
+        try:
+            try:
+                coder_endpoint = self.routing_engine.get_agent_endpoint("implementation-engineer")
+            except Exception:
+                coder_endpoint = None
+            if not coder_endpoint:
+                self._update_task_status(task_id, "needs_revision",
+                                         "rework failed: implementation-engineer unavailable")
+                return
+            coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
+            self._invalidate_qa_contract(task_id)
+            self._log_activity(task_id, "contract_invalidated", agent="it-lead",
+                               detail="stale run contract dropped before rework")
+            if base_git_url:
+                git_url = self._build_via_opencode(task_id, rework_prompt, [],
+                                                   coder_endpoint, {}, base_tree=base_git_url)
+                if not git_url:
+                    self._update_task_status(task_id, "needs_revision",
+                                             "rework failed: fix build error")
+                    return
+                manifest = []
+            else:
+                git_url, manifest = None, self._gated_manifest_synth()
+            wf = ["implementation-engineer", "qa-engineer"]
+            if want_deploy:
+                wf.append("devops-engineer")
+            self._execute_multifile_plan(
+                task_id, rework_prompt, manifest,
+                llm_plan={"workflow_sequence": wf},
+                metadata={"deploy_after_implementation": bool(want_deploy)},
+                route="gated", prebuilt_git_url=git_url)
+            sub = self.task_storage.get_task(task_id) or {}
+            self._log_activity(task_id,
+                               "rework_done" if sub.get("status") == "done" else "rework_failed",
+                               agent="it-lead", detail=f"status={sub.get('status')}")
+        except Exception as e:
+            print(f"❌ rework plan error: {e}", flush=True)
+            try:
+                self._update_task_status(task_id, "needs_revision",
+                                         f"rework error: {str(e)[:200]}")
+            except Exception:
+                pass
+        # M6: if this was a self-fix and the rework died (gate fail / error),
+        # close the selffix row too - otherwise it hangs in 'fixing' forever
+        try:
+            fin = self.task_storage.get_task(task_id) or {}
+            if fin.get("status") not in ("done", "review"):
+                from . import self_fix
+                with self.task_storage.connection.cursor() as c:
+                    c.execute("SELECT 1 FROM task_registry WHERE task_id=%s "
+                              "AND metadata->>'selffix_area' IS NOT NULL", (task_id,))
+                    if c.fetchone():
+                        self_fix.fail(self.task_storage.connection, task_id,
+                                      fin.get("status_reason") or fin.get("status"))
+                        self._log_activity(task_id, "selffix_failed", agent="it-lead",
+                                           detail=str(fin.get("status"))[:150])
+        except Exception:
+            pass
+
+    def _forward_to_code_reviewer(self, parent_task_id: str, code_git_url: str, original_prompt: str):
+        """Forward code to Code Reviewer for review before deployment.
+
+        The Code Reviewer functionality is implemented within the IT Lead server itself,
+        so this method creates a review task that will be processed internally using
+        the review_code tool.
+        """
+        try:
+            print(f"📋 Forwarding code to Code Reviewer for task {parent_task_id}", flush=True)
+
+            code_review_prompt = f"""Please review the following code for quality, architecture, and best practices.
+
+PARENT TASK:
+{original_prompt}
+
+CODE LOCATION: {code_git_url}
+
+Please analyze:
+1. Code quality and readability
+2. Architecture and design patterns
+3. Best practices and conventions
+4. Potential bugs or issues
+5. Performance considerations
+
+Return your findings and any recommended improvements."""
+
+            # Create review task in the IT Lead server's task storage
+            # This task will be processed internally by the IT Lead's review_code tool
+            review_task_id = f"{parent_task_id}-review"
+            self.task_storage.create_task(
+                task_id=review_task_id,
+                task_description=code_review_prompt,
+                priority="high",
+                assigned_to="code-reviewer",
+                metadata={
+                    "parent_task_id": parent_task_id,
+                    "review_type": "code_quality",
+                    "code_location": code_git_url,
+                    "tool_call": "review_code",  # Tags it for internal processing by IT Lead
+                    "is_code_review": True
+                }
+            )
+
+            print(f"✅ Created code review task {review_task_id} for parent task {parent_task_id}", flush=True)
+
+        except Exception as e:
+            print(f"❌ Error forwarding to Code Reviewer: {e}", flush=True)

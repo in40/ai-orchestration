@@ -9,6 +9,8 @@ import {
   Button,
   CircularProgress,
   Alert,
+  Checkbox,
+  FormControlLabel,
   Grid,
   Table,
   TableBody,
@@ -30,16 +32,21 @@ import {
   MenuItem,
   IconButton,
   Drawer,
-  Link
+  Link,
+  Tooltip
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon, Visibility as VisibilityIcon, ContentCopy as CopyIcon, Archive as ArchiveIcon, Unarchive as UnarchiveIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 // Import enhanced AddTaskForm component
 import AddTaskForm from './enhanced/AddTaskForm';
+import PageHeader from './PageHeader';
 
 const TaskManagement = () => {
   const [tasks, setTasks] = useState([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [delTask, setDelTask] = useState(null);
+  const [delWord, setDelWord] = useState('');
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -60,6 +67,76 @@ const TaskManagement = () => {
     tags: [],
     context: {},
     dependencies: []
+  });
+  // Rework dialog state
+  const [openReworkDialog, setOpenReworkDialog] = useState(false);
+  const [detailTask, setDetailTask] = useState(null);
+  const [codeView, setCodeView] = useState(null);
+
+  const openCodeBrowser = async (task) => {
+    // git_url looks like ssh://…/mcp-results/tree/main/results/<task>:
+    // the leading slash matters, otherwise "mcp-results/tree" matches first.
+    const m = (task.git_url || '').match(/\/results\/([^/?#]+)/);
+    const candidates = [...new Set([m ? m[1] : null, task.id].filter(Boolean))];
+    const dir = candidates[0];
+    setCodeView({ dir, files: [], loading: true, sel: null, content: '' });
+    for (const cand of candidates) {
+      try {
+        const r = await axios.get(`/api/git/browse/${encodeURIComponent(cand)}`);
+        const files = r.data.files || [];
+        setCodeView({ dir: cand, files, loading: false, sel: files[0] || null, content: '' });
+        if (files[0]) loadFileContent(files[0]);
+        return;
+      } catch (e) { /* try next candidate */ }
+    }
+    setCodeView({ dir, files: [], loading: false, sel: null, content: '',
+                  error: 'Artifact tree not found in results repo' });
+  };
+
+  const isImageFile = (name) => /\.(png|jpe?g|gif|webp|ico|bmp|svg)$/i.test(name || '');
+
+  const loadFileContent = async (f) => {
+    setCodeView(cv => ({ ...cv, sel: f, content: 'loading…' }));
+    if (isImageFile(f.name)) {   // rendered via <img src>, no text fetch
+      setCodeView(cv => ({ ...cv, content: '' }));
+      return;
+    }
+    try {
+      const r = await axios.get(f.url, { responseType: 'text', transformResponse: [d => d] });
+      const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2);
+      setCodeView(cv => ({ ...cv, content: text.length > 200000
+        ? text.slice(0, 200000) + '\n… (truncated, use raw link)' : text }));
+    } catch (e) {
+      setCodeView(cv => ({ ...cv, content: '(failed to load file)' }));
+    }
+  };
+
+  // clipboard with fallback: the UI is served over plain http on the LAN,
+  // where navigator.clipboard is unavailable (non-secure context)
+  const copyText = async (text, label) => {
+    if (!text) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) {
+      window.prompt('Copy ' + (label || 'text'), text);
+    }
+  };
+  const [selectedTaskForRework, setSelectedTaskForRework] = useState(null);
+  const [reworkForm, setReworkForm] = useState({
+    issue_description: '',
+    additional_comments: '',
+    priority: 'medium'
   });
 
   useEffect(() => {
@@ -150,6 +227,25 @@ const TaskManagement = () => {
     setSelectedTaskHistory(null);
   };
 
+  const [permNow, setPermNow] = useState(Date.now() / 1000);
+  useEffect(() => {
+    const pending = selectedTaskHistory?.pending_permission;
+    if (!pending?.asked_at) return;
+    const t = setInterval(() => setPermNow(Date.now() / 1000), 1000);
+    return () => clearInterval(t);
+  }, [selectedTaskHistory?.pending_permission?.asked_at]);
+
+  const resolvePermission = async (decision) => {
+    const tid = selectedTaskHistory?.task_id;
+    try {
+      await axios.post(`/api/tasks/${tid}/permission`, { decision });
+      const r = await axios.get(`/api/tasks/${tid}/history`);
+      setSelectedTaskHistory(r.data);
+    } catch (err) {
+      alert(`Failed to ${decision} permission: ${err?.response?.detail || err.message}`);
+    }
+  };
+
   const handleOpenFilePreview = async (task) => {
     try {
       setPreviewLoading(true);
@@ -175,8 +271,7 @@ const TaskManagement = () => {
   };
 
   const handleDelete = async (taskId) => {
-    if (!window.confirm("Are you sure?")) return;
-    try {
+    if (!window.confirm("Are you sure?")) return;    try {
       await axios.post('/api/tasks/delete', { task_id: taskId });
       // Refresh tasks from server
       const response = await axios.get('/api/tasks');
@@ -185,6 +280,112 @@ const TaskManagement = () => {
       console.error("Error deleting task:", err);
       alert("Failed to delete task");
     }
+  };
+
+  const doArchive = async (task) => {
+    try {
+      await axios.post(`/api/tasks/${task.task_id}/archive`, { archived: !task.archived });
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      alert('Не удалось: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const doDelete = async () => {
+    try {
+      const r = await axios.post(`/api/tasks/${delTask.task_id}/delete`,
+        { confirm: delWord });
+      if (r.data && r.data.success === false) {
+        alert('Не удалено: ' + r.data.error);
+        return;
+      }
+      setDelTask(null); setDelWord('');
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      alert('Не удалось: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const handleRefreshTasks = async () => {
+    try {
+      setLoading(true);
+      await axios.post('/api/tasks/refresh-status');
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      console.error("Error refreshing tasks:", err);
+      alert("Failed to refresh tasks");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRedeploy = async (task) => {
+    const taskId = task.task_id || task.id;
+    if (!window.confirm(`Redeploy task ${taskId}? This will create a new deployment from the existing git code.`)) return;
+
+    try {
+      const response = await axios.post(`/api/tasks/${taskId}/redeploy`);
+      alert(response.data.message || "Task redeployed successfully!");
+      // Refresh tasks to show updated deployment
+      const tasksResponse = await axios.get('/api/tasks');
+      setTasks(tasksResponse.data);
+    } catch (err) {
+      console.error("Error redeploying task:", err);
+      alert(`Failed to redeploy: ${err.response?.data?.detail || 'Unknown error'}`);
+    }
+  };
+
+  const handleOpenReworkDialog = (task) => {
+    setSelectedTaskForRework(task);
+    setReworkForm({
+      issue_description: '',
+      additional_comments: '',
+      priority: 'medium'
+    });
+    setOpenReworkDialog(true);
+  };
+
+  const handleCloseReworkDialog = () => {
+    setOpenReworkDialog(false);
+    setSelectedTaskForRework(null);
+    setReworkForm({
+      issue_description: '',
+      additional_comments: '',
+      priority: 'medium'
+    });
+  };
+
+  const handleReworkSubmit = async () => {
+    if (!selectedTaskForRework) return;
+
+    try {
+      const taskId = selectedTaskForRework.id;
+      await axios.post(`/api/tasks/${taskId}/request-rework`, {
+        task_id: taskId,
+        ...reworkForm
+      });
+
+      alert("Rework request submitted successfully!");
+      handleCloseReworkDialog();
+
+      // Refresh tasks from server
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    } catch (err) {
+      console.error("Error submitting rework request:", err);
+      const errorMsg = err.response?.data?.detail || err.response?.data?.message || err.message || 'Unknown error';
+      alert(`Failed to request rework: ${errorMsg}`);
+    }
+  };
+
+  const handleReworkInputChange = (field) => (e) => {
+    setReworkForm(prev => ({
+      ...prev,
+      [field]: e.target.value
+    }));
   };
 
   if (loading) {
@@ -204,16 +405,27 @@ const TaskManagement = () => {
   return (
     <Grid container spacing={3}>
       <Grid item xs={12}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-          <Typography variant="h4">Task Management</Typography>
-          <Button 
-            variant="contained" 
+        <PageHeader title="Task Management">
+          <FormControlLabel
+            control={<Checkbox size="small" checked={showArchived}
+              onChange={e => setShowArchived(e.target.checked)} />}
+            label={<Typography variant="body2">архив</Typography>}
+          />
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={handleRefreshTasks}
+          >
+            Refresh
+          </Button>
+          <Button
+            variant="contained"
             startIcon={<AddIcon />}
             onClick={handleAddTask}
           >
             Add Task
           </Button>
-        </Box>
+        </PageHeader>
       </Grid>
 
       <Grid item xs={12}>
@@ -224,6 +436,7 @@ const TaskManagement = () => {
                 <TableHead>
                   <TableRow>
                     <TableCell>Title</TableCell>
+                    <TableCell>Description</TableCell>
                     <TableCell>Assignee</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell>Priority</TableCell>
@@ -232,13 +445,26 @@ const TaskManagement = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {tasks.map((task) => (
+                  {tasks.filter(t => showArchived || !t.archived).map((task) => (
                     <TableRow
                       key={task.id}
                       sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
                     >
-                      <TableCell component="th" scope="row">
-                        {task.title}
+                      <TableCell component="th" scope="row" sx={{ maxWidth: 200 }}>
+                        <Tooltip title={task.title} placement="top">
+                          <Typography variant="body2" noWrap>{task.title}</Typography>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell sx={{ maxWidth: 300 }}>
+                        <Tooltip title="Click to view and copy the full description" placement="top">
+                          <Typography
+                            variant="body2" color="text.secondary" noWrap
+                            onClick={() => setDetailTask(task)}
+                            sx={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                          >
+                            {task.description || '-'}
+                          </Typography>
+                        </Tooltip>
                       </TableCell>
                       <TableCell>{task.assignee}</TableCell>
                       <TableCell>
@@ -246,8 +472,9 @@ const TaskManagement = () => {
                           label={task.status} 
                           size="small" 
                           color={
-                            task.status === 'completed' ? 'success' : 
-                            task.status === 'in-progress' ? 'info' : 
+                            task.status === 'completed' || task.status === 'done' ? 'success' : 
+                            task.status === 'in-progress' || task.status === 'in_progress' ? 'info' : 
+                            task.status === 'awaiting_input' ? 'warning' : 
                             task.status === 'pending' ? 'warning' : 'default'
                           } 
                         />
@@ -286,33 +513,55 @@ const TaskManagement = () => {
                         <IconButton
                           color="success"
                           aria-label="view result"
-                          onClick={() => {
-                            const taskId = task.id;
-                            // Try to determine file extension from git_url or default to .py
-                            let ext = '.py';
-                            if (task.git_url.includes('.html')) ext = '.html';
-                            else if (task.git_url.includes('.md')) ext = '.md';
-                            else if (task.git_url.includes('.js')) ext = '.js';
-                            
-                            // Extract task UUID from git_url
-                            const uuidMatch = task.git_url.match(/results\/([a-f0-9-]+)\//);
-                            const taskUuid = uuidMatch ? uuidMatch[1] : taskId;
-                            
-                            // Option 1: Direct Git server link (if Git server has HTTP access)
-                            // const gitServerUrl = `http://192.168.51.187/results/${taskUuid}/result${ext}`;
-                            
-                            // Option 2: Web UI backend proxy (works if Web UI server is accessible)
-                            // Get current host (works from any computer accessing the Web UI)
-                            const currentHost = window.location.origin;
-                            const resultUrl = `${currentHost}/api/git/files/${taskUuid}/result${ext}`;
-                            
-                            window.open(resultUrl, '_blank');
-                          }}
+                          onClick={() => openCodeBrowser(task)}
                           title="View Generated Code"
                         >
                           <DescriptionIcon />
                         </IconButton>
                       )}
+                      {/* View Deployed App Button - shows for tasks with deployment_url */}
+                      {task.deployment_url && (
+                        <IconButton
+                          color="secondary"
+                          aria-label="view deployed app"
+                          onClick={() => window.open(task.deployment_url, '_blank')}
+                          title="View Deployed App"
+                        >
+                          <LaunchIcon />
+                        </IconButton>
+                      )}
+                      {/* Redeploy Button - shows for tasks with git_url but no deployment */}
+                      {task.git_url && !task.deployment_url && (task.status === 'done' || task.status === 'completed') && (
+                        <IconButton
+                          color="primary"
+                          aria-label="redeploy"
+                          onClick={() => handleRedeploy(task)}
+                          title="Redeploy Task"
+                        >
+                          <BuildIcon />
+                        </IconButton>
+                      )}
+                      {/* Request Rework Button - completed/failed/rejected tasks can all be
+                          reworked: needs_revision means a gate rejected the artifact and the
+                          requestor's next move IS a rework (backend allows it too) */}
+                      {['done', 'completed', 'failed', 'needs_revision'].includes(task.status) && (
+                        <IconButton
+                          color="warning"
+                          aria-label="request rework"
+                          onClick={() => handleOpenReworkDialog(task)}
+                          title="Request Rework"
+                        >
+                          <RestartAltIcon />
+                        </IconButton>
+                      )}
+                      <IconButton
+                        color="inherit"
+                        aria-label="view full task"
+                        onClick={() => setDetailTask(task)}
+                        title="View / copy full task"
+                      >
+                        <VisibilityIcon />
+                      </IconButton>
                       <IconButton
                         color="primary"
                         aria-label="view history"
@@ -321,9 +570,18 @@ const TaskManagement = () => {
                         <HistoryIcon />
                       </IconButton>
                       <IconButton
+                        color={task.archived ? 'action' : 'default'}
+                        aria-label="archive task"
+                        onClick={() => doArchive(task)}
+                        title={task.archived ? 'Вернуть из архива' : 'В архив (скрыть, без потерь)'}
+                      >
+                        {task.archived ? <UnarchiveIcon /> : <ArchiveIcon />}
+                      </IconButton>
+                      <IconButton
                         color="error"
                         aria-label="delete task"
-                        onClick={() => handleDelete(task.id)}
+                        onClick={() => { setDelTask(task); setDelWord(''); }}
+                        title="Удалить безвозвратно (в trash)"
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -523,6 +781,88 @@ const TaskManagement = () => {
                   No status history available
                 </Typography>
               )}
+
+              {selectedTaskHistory.pending_permission && (() => {
+                const pp = selectedTaskHistory.pending_permission;
+                const left = Math.max(0, Math.round((pp.asked_at || 0) + 180 - permNow));
+                return (
+                  <Paper sx={{ p: 2, mb: 2, border: 2, borderColor: 'warning.main', bgcolor: 'warning.50' }}>
+                    <Typography variant="subtitle2" color="warning.dark" fontWeight="bold">
+                      🔒 Agent requests permission — auto-reject in {left}s
+                    </Typography>
+                    <Typography variant="body2" sx={{ mt: 0.5, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      {pp.action}: {(pp.resources || []).join(' ; ')}
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
+                      <Button size="small" variant="contained" color="success" onClick={() => resolvePermission('once')}>
+                        Approve once
+                      </Button>
+                      <Button size="small" variant="outlined" color="success" onClick={() => resolvePermission('always')}>
+                        Always allow
+                      </Button>
+                      <Button size="small" variant="contained" color="error" onClick={() => resolvePermission('reject')}>
+                        Deny
+                      </Button>
+                    </Box>
+                  </Paper>
+                );
+              })()}
+
+              {selectedTaskHistory.screenshots?.length > 0 && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="subtitle1" gutterBottom>Render</Typography>
+                  {selectedTaskHistory.screenshots.map((s, i) => (
+                    <Link key={i} href={s.url} target="_blank" rel="noopener">
+                      <Box component="img" src={s.url} alt={s.stage}
+                        sx={{ maxWidth: '100%', border: '1px solid', borderColor: 'grey.400', borderRadius: 1 }} />
+                    </Link>
+                  ))}
+                </Box>
+              )}
+
+              <Typography variant="subtitle1" gutterBottom sx={{ mt: 3 }}>
+                Team Activity ({selectedTaskHistory.activity?.length || 0} events)
+              </Typography>
+
+              {selectedTaskHistory.activity && selectedTaskHistory.activity.length > 0 ? (
+                <Box>
+                  {selectedTaskHistory.activity.map((ev, index) => (
+                    <Paper
+                      key={index}
+                      sx={{
+                        p: 1.5,
+                        mb: 1,
+                        borderLeft: 4,
+                        borderColor:
+                          String(ev.event).endsWith('_error') || String(ev.detail).includes('FAIL') ? 'error.main' :
+                          ['agent_done', 'qa_gate', 'security_gate', 'deploy_done'].includes(ev.event) ? 'success.main' :
+                          ['agent_call', 'deploy', 'file_generated'].includes(ev.event) ? 'info.main' : 'grey.400'
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Box>
+                          <Chip label={ev.event} size="small" variant="outlined" sx={{ mr: 1 }} />
+                          {ev.agent && (
+                            <Chip label={ev.agent} size="small" color="primary" variant="outlined" />
+                          )}
+                        </Box>
+                        <Typography variant="caption" color="textSecondary">
+                          {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : ''}
+                        </Typography>
+                      </Box>
+                      {ev.detail && (
+                        <Typography variant="body2" sx={{ mt: 0.5, wordBreak: 'break-word' }}>
+                          {ev.detail}
+                        </Typography>
+                      )}
+                    </Paper>
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="textSecondary">
+                  No team activity recorded
+                </Typography>
+              )}
             </Box>
           )}
         </DialogContent>
@@ -615,6 +955,258 @@ const TaskManagement = () => {
           )}
         </Box>
       </Drawer>
+
+      {/* Request Rework Dialog */}
+      <Dialog
+        open={openReworkDialog}
+        onClose={handleCloseReworkDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Request Rework</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Request rework for task: <strong>{selectedTaskForRework?.id}</strong>
+          </DialogContentText>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Issue Description"
+            type="text"
+            fullWidth
+            variant="outlined"
+            multiline
+            rows={3}
+            value={reworkForm.issue_description}
+            onChange={handleReworkInputChange('issue_description')}
+            placeholder="Describe the issue that makes this task require rework (e.g., game is not playable)"
+            required
+          />
+          <TextField
+            margin="dense"
+            label="Additional Comments"
+            type="text"
+            fullWidth
+            variant="outlined"
+            multiline
+            rows={2}
+            value={reworkForm.additional_comments}
+            onChange={handleReworkInputChange('additional_comments')}
+            placeholder="Any additional comments for the developer..."
+          />
+          <FormControl fullWidth margin="dense">
+            <InputLabel id="rework-priority-label">Priority</InputLabel>
+            <Select
+              labelId="rework-priority-label"
+              label="Priority"
+              value={reworkForm.priority}
+              onChange={handleReworkInputChange('priority')}
+            >
+              <MenuItem value="low">Low</MenuItem>
+              <MenuItem value="medium">Medium</MenuItem>
+              <MenuItem value="high">High</MenuItem>
+              <MenuItem value="critical">Critical</MenuItem>
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseReworkDialog}>Cancel</Button>
+          <Button
+            onClick={handleReworkSubmit}
+            variant="contained"
+            startIcon={<RestartAltIcon />}
+          >
+            Submit Rework Request
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Artifact code browser: lists every file in results/<task> and shows
+          its content; replaces the old single result.<ext> link that broke for
+          multi-file trees. */}
+      <Dialog open={!!codeView} onClose={() => setCodeView(null)} maxWidth="lg" fullWidth>
+        <DialogTitle sx={{ pb: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
+            <Typography variant="h6">
+              Code: <Box component="span" sx={{ fontFamily: 'monospace', fontSize: 16 }}>{codeView?.dir}</Box>
+            </Typography>
+            <IconButton onClick={() => setCodeView(null)} size="small" aria-label="close">
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          {codeView?.loading && (
+            <Box display="flex" justifyContent="center" p={4}><CircularProgress /></Box>
+          )}
+          {codeView?.error && <Alert severity="warning" sx={{ mb: 1 }}>{codeView.error}</Alert>}
+          {!codeView?.loading && (
+            <Box sx={{ display: 'flex', gap: 2, minHeight: '50vh' }}>
+              <Box sx={{ width: 260, flexShrink: 0, maxHeight: '60vh', overflow: 'auto',
+                         borderRight: '1px solid', borderColor: 'divider', pr: 1 }}>
+                {codeView?.files?.map(f => (
+                  <Box
+                    key={f.name}
+                    onClick={() => loadFileContent(f)}
+                    sx={{
+                      px: 1, py: 0.75, cursor: 'pointer', borderRadius: 1,
+                      bgcolor: codeView?.sel?.name === f.name ? 'action.selected' : 'transparent',
+                      '&:hover': { bgcolor: 'action.hover' }
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{f.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {f.size > 1024 ? `${(f.size / 1024).toFixed(1)} KB` : `${f.size} B`}
+                    </Typography>
+                  </Box>
+                ))}
+                {codeView && !codeView.files?.length && !codeView.error && (
+                  <Typography variant="body2" color="text.secondary">No files</Typography>
+                )}
+              </Box>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                {codeView?.sel && (
+                  <>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                      <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
+                        {codeView.sel.name}
+                      </Typography>
+                      <Box>
+                        <Button size="small" startIcon={<CopyIcon />}
+                          onClick={() => copyText(isImageFile(codeView.sel.name)
+                            ? window.location.origin + codeView.sel.url
+                            : codeView.content, 'file')}>
+                          {isImageFile(codeView.sel.name) ? 'Copy link' : 'Copy'}
+                        </Button>
+                        <Button size="small" href={codeView.sel.url} target="_blank"
+                          startIcon={<OpenInNewIcon />}>
+                          Raw
+                        </Button>
+                      </Box>
+                    </Box>
+                    {isImageFile(codeView.sel.name) ? (
+                      // <img> sandbox: svg scripts do not execute in img context
+                      <Box sx={{ maxHeight: '55vh', overflow: 'auto', borderRadius: 1,
+                                 border: '1px solid', borderColor: 'divider',
+                                 bgcolor: 'grey.200', p: 1, textAlign: 'center' }}>
+                        <Box component="img" src={codeView.sel.url} alt={codeView.sel.name}
+                          sx={{ maxWidth: '100%', objectFit: 'contain' }} />
+                      </Box>
+                    ) : (
+                    <Box component="pre" sx={{
+                      m: 0, p: 2, fontSize: 12.5, lineHeight: 1.5,
+                      bgcolor: 'grey.900', color: 'grey.100', borderRadius: 1,
+                      maxHeight: '55vh', overflow: 'auto', whiteSpace: 'pre'
+                    }}>
+                      {codeView.content}
+                    </Box>
+                    )}
+                  </>
+                )}
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCodeView(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Full task dialog: long descriptions are unreadable/uncopyable in the
+          table cell (Tooltip truncates), so open them here with copy buttons. */}
+      <Dialog open={!!detailTask} onClose={() => setDetailTask(null)} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ pb: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 2 }}>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6" sx={{ wordBreak: 'break-word' }}>
+                {detailTask?.title || detailTask?.id}
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                  {detailTask?.id}
+                </Typography>
+                <IconButton size="small" onClick={() => copyText(detailTask?.id, 'task id')}
+                  title="Copy task ID">
+                  <CopyIcon fontSize="small" />
+                </IconButton>
+              </Box>
+            </Box>
+            <IconButton onClick={() => setDetailTask(null)} size="small" aria-label="close">
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+            <Typography variant="subtitle2">Description</Typography>
+            <Button size="small" startIcon={<CopyIcon />}
+              onClick={() => copyText(detailTask?.description, 'description')}>
+              Copy
+            </Button>
+          </Box>
+          <Box sx={{
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            fontSize: 13,
+            lineHeight: 1.5,
+            bgcolor: 'grey.100',
+            border: '1px solid',
+            borderColor: 'divider',
+            borderRadius: 1,
+            p: 2,
+            maxHeight: '55vh',
+            overflow: 'auto'
+          }}>
+            {detailTask?.description || '(no description)'}
+          </Box>
+          {(detailTask?.git_url || detailTask?.deployment_url) && (
+            <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {[
+                ['Result (git)', detailTask?.git_url],
+                ['Deployment URL', detailTask?.deployment_url]
+              ].filter(([, v]) => v).map(([label, value]) => (
+                <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ minWidth: 120 }}>
+                    {label}
+                  </Typography>
+                  <Typography variant="body2" sx={{ wordBreak: 'break-all', flex: 1 }}>
+                    {value}
+                  </Typography>
+                  <IconButton size="small" onClick={() => copyText(value, label)}
+                    title={`Copy ${label}`}>
+                    <CopyIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDetailTask(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={!!delTask} onClose={() => setDelTask(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Удалить задачу безвозвратно?</DialogTitle>
+        <DialogContent dividers>
+          <Alert severity="error" sx={{ mb: 1 }}>
+            Строка уйдёт в tasks_trash, рабочие файлы (/tmp, скриншоты) и
+            results/{delTask?.task_id} будут стёрты. Продукты (зеркала/GitHub) не пострадают.
+          </Alert>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Для подтверждения введите имя задачи: <b>{delTask?.task_id}</b>
+          </Typography>
+          <TextField fullWidth size="small" value={delWord}
+            onChange={e => setDelWord(e.target.value)} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDelTask(null)}>Отмена</Button>
+          <Button variant="contained" color="error"
+            disabled={delWord !== delTask?.task_id} onClick={doDelete}>
+            Удалить
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Grid>
   );
 };

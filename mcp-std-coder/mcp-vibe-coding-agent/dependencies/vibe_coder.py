@@ -331,6 +331,31 @@ def _get_or_clone_git_repo(repo_url: str, local_path: Path) -> Path:
     return local_path
 
 
+def _normalize_language(language: str) -> str:
+    """Normalize LLM-reported language: first token, lowercased, common aliases."""
+    lang = (language or "").lower().split(",")[0].strip().split()[0] if (language or "").strip() else ""
+    aliases = {"html5": "html", "js": "javascript", "py": "python", "ts": "typescript", "golang": "go"}
+    return aliases.get(lang, lang)
+
+
+LANGUAGE_EXTENSIONS = {
+    "python": ".py", "javascript": ".js", "typescript": ".ts", "java": ".java",
+    "go": ".go", "rust": ".rs", "ruby": ".rb", "php": ".php", "swift": ".swift",
+    "kotlin": ".kt", "terraform": ".tf", "yaml": ".yaml", "json": ".json",
+    "html": ".html", "css": ".css", "sql": ".sql", "yml": ".yaml",
+}
+
+
+def _resolve_extension(language: str, code: str = "") -> str:
+    lang = _normalize_language(language)
+    if code.lstrip().lower().startswith(("<!doctype html", "<html")):
+        lang = "html"
+    if lang in LANGUAGE_EXTENSIONS:
+        return LANGUAGE_EXTENSIONS[lang]
+    sniffed = _normalize_language(detect_language_from_response(code))
+    return LANGUAGE_EXTENSIONS.get(sniffed, ".py")
+
+
 def git_push_llm_response(
     task_id: str,
     llm_response: str,
@@ -394,32 +419,24 @@ def git_push_llm_response(
         result_dir = local_repo_path / "results" / task_id
         result_dir.mkdir(parents=True, exist_ok=True)
 
-        # Determine file extension based on language
-        language_extensions = {
-            "python": ".py",
-            "javascript": ".js",
-            "typescript": ".ts",
-            "java": ".java",
-            "go": ".go",
-            "rust": ".rs",
-            "ruby": ".rb",
-            "php": ".php",
-            "swift": ".swift",
-            "kotlin": ".kt",
-            "terraform": ".tf",
-            "yaml": ".yaml",
-            "yml": ".yaml",
-            "json": ".json",
-            "html": ".html",
-            "css": ".css",
-            "sql": ".sql",
-        }
-        extension = language_extensions.get(language.lower(), ".py")
-
-        # Write code to file
-        filename = f"result{extension}"
-        filepath = result_dir / filename
-        filepath.write_text(code)
+        files_written = []
+        if response_data and isinstance(response_data.get("files"), list) and response_data["files"]:
+            for f in response_data["files"]:
+                rel = os.path.normpath(str(f.get("path", "")))
+                if not rel or rel.startswith("..") or os.path.isabs(rel):
+                    continue
+                dest = result_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(str(f.get("content", "")))
+                files_written.append(rel)
+            filename = files_written[0] if files_written else "result.txt"
+            filepath = result_dir / filename
+            code = str(response_data["files"][0].get("content", ""))
+        else:
+            filename = f"result{_resolve_extension(language, code)}"
+            filepath = result_dir / filename
+            filepath.write_text(code)
+            files_written = [filename]
 
         # Create comprehensive JSON response file
         json_response = {
@@ -452,10 +469,9 @@ def git_push_llm_response(
         env["GIT_COMMITTER_NAME"] = "mcp-agent"
         env["GIT_COMMITTER_EMAIL"] = "mcp-agent@localhost"
 
-        # Stage the files
+        # Stage the files (whole per-task dir: covers single file, multi-file tree, response.json)
         subprocess.run(
-            ["git", "add", str(filepath.relative_to(local_repo_path)), 
-             str(json_filepath.relative_to(local_repo_path))],
+            ["git", "add", str(result_dir.relative_to(local_repo_path))],
             cwd=str(local_repo_path),
             env=env,
             capture_output=True,
@@ -529,6 +545,235 @@ def git_push_llm_response(
         }
 
 
+def _opencode_fix(work_dir, session_id, path, error_text, timeout=None):
+    """Run an opencode fixer session in the task dir; agent edits files in place.
+
+    Returns (ok, detail). ok=True only if the target file actually changed and
+    (for .py) parses. Any failure -> caller falls back to the legacy path.
+    """
+    from .opencode_run import opencode_agent
+    fp = work_dir / path
+    if not fp.exists():
+        return False, f"{path} missing"
+    try:
+        before = fp.read_bytes()
+    except Exception as e:
+        return False, str(e)
+    py_hint = ".qa_venv/bin/python" if (work_dir / ".qa_venv").exists() else "python3"
+    prompt = (f"Target file: {path}\nUse interpreter: {py_hint}\n\n"
+              f"Reported error:\n{error_text}\n\nFix it now.")
+    ok, text, err = opencode_agent(
+        "fixer", work_dir, prompt, session=f"ses-fix-{session_id}",
+        timeout=timeout or int(os.environ.get("OPENCODE_FIX_TIMEOUT", "900")))
+    if not ok:
+        return False, err
+    try:
+        if fp.read_bytes() == before:
+            return False, "opencode made no change to " + path
+    except Exception as e:
+        return False, str(e)
+    if path.endswith(".py"):
+        import ast as _ast
+        try:
+            _ast.parse(fp.read_text(errors="ignore"))
+        except SyntaxError as e:
+            fp.write_bytes(before)  # restore
+            return False, f"opencode produced invalid python: line {e.lineno}: {e.msg}"
+    return True, "fixed via opencode session " + str(session_id)
+
+
+def _read_need_info(ws):
+    """Coder-side clarification protocol (V2): a build session that is blocked
+    on values it cannot guess writes .need_info.json ([{field,question,why}])
+    and stops. Consumed once - the file is removed on read."""
+    f = Path(ws) / ".need_info.json"
+    if not f.exists():
+        return None
+    try:
+        data = json.loads(f.read_text())
+        items = data if isinstance(data, list) else data.get("need_info", [])
+        items = [i for i in items if isinstance(i, dict) and i.get("field")][:5]
+    except Exception:
+        items = []
+    try:
+        f.unlink()
+    except OSError:
+        pass
+    return items or None
+
+
+def _push_tree(task_id: str, src_dir) -> dict:
+    """Copy a built workspace into results/<task_id>/ of the results repo and push."""
+    import shutil as _sh
+    repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
+        "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
+    _get_or_clone_git_repo(repo_url, local)
+    dest = local / "results" / task_id
+    if dest.exists():
+        _sh.rmtree(str(dest))
+    _sh.copytree(str(src_dir), str(dest))
+    for scaffold in ("MANIFEST.md", "AGENTS.md", ".need_info.json"):
+        f = dest / scaffold
+        if f.exists():
+            f.unlink()
+    for pat in (".qa_venv", "__pycache__", ".pytest_cache", "node_modules", "dist"):
+        for junk in dest.rglob(pat):
+            _sh.rmtree(str(junk), ignore_errors=True)
+    for junk in dest.rglob("*.pyc"):
+        try:
+            junk.unlink()
+        except OSError:
+            pass
+    _ensure_git_config(local)
+    env = os.environ.copy()
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "mcp-agent"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "mcp-agent@localhost"
+    subprocess.run(["git", "add", f"results/{task_id}"], cwd=str(local), env=env, capture_output=True)
+    subprocess.run(["git", "commit", "-m", f"[build_project] {task_id}"],
+                   cwd=str(local), env=env, capture_output=True)
+    subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                   cwd=str(local), env=env, capture_output=True)
+    push = subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=str(local),
+                          env=env, capture_output=True, text=True)
+    if push.returncode != 0:
+        return {"error": f"build_project push failed: {(push.stderr or '')[-200:]}"}
+    files = [str(p.relative_to(dest)) for p in sorted(dest.rglob("*")) if p.is_file()]
+    return {"success": True,
+            "git_url": f"{repo_url.rstrip('.git')}/tree/main/results/{task_id}",
+            "files": files}
+
+
+def _derive_requirements(task_id: str) -> str:
+    """Deterministically build requirements.txt from sibling .py imports in the repo."""
+    import ast as _ast
+    import sys as _sys
+    repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
+        "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
+    _get_or_clone_git_repo(repo_url, local)
+    root = local / "results" / task_id
+    aliases = {"yaml": "pyyaml", "PIL": "pillow", "sklearn": "scikit-learn",
+               "bs4": "beautifulsoup4", "cv2": "opencv-python", "fitz": "pymupdf",
+               "dateutil": "python-dateutil", "dotenv": "python-dotenv", "jwt": "PyJWT"}
+    stdlib = getattr(_sys, "stdlib_module_names", set())
+    pkgs = set()
+    for py in root.rglob("*.py") if root.is_dir() else []:
+        try:
+            tree = _ast.parse(py.read_text(errors="ignore"))
+        except SyntaxError:
+            continue
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                mods = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+                mods = [node.module.split(".")[0]]
+            else:
+                continue
+            for m in mods:
+                if m and m not in stdlib and m != task_id.replace("-", "_"):
+                    pkgs.add(aliases.get(m, m))
+    return ("\n".join(sorted(pkgs)) + "\n") if pkgs else "# dependencies (stdlib only)\n"
+
+
+def _looks_like_pkg_list(spec: str) -> bool:
+    """True if spec is plausibly a bare comma/space-separated package list."""
+    toks = [t for t in re.split(r"[,\s]+", (spec or "").strip()) if t]
+    return bool(toks) and len(toks) <= 12 and all(
+        re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,40}", t) for t in toks)
+
+
+def _strip_code_fences(text: str) -> str:
+    t = (text or "").strip()
+    if t.startswith("```"):
+        nl = t.find("\n")
+        if nl != -1:
+            t = t[nl + 1:]
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+        return t.strip("\n")
+    return t
+
+
+def git_push_single_file(task_id: str, rel_path: str, content: str) -> Dict[str, Any]:
+    """Push one raw file into results/<task_id>/<rel_path> (fan-out flow: one LLM
+    call per file keeps every output far below the engine output cap)."""
+    rel = os.path.normpath(str(rel_path))
+    if not rel or rel.startswith("..") or os.path.isabs(rel):
+        return {"success": False, "error": f"invalid path: {rel_path}"}
+    repo_url = getattr(settings, 'mcp_git_repo_url', None) or \
+        os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    local_repo_path = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
+    try:
+        _get_or_clone_git_repo(repo_url, local_repo_path)
+        _ensure_git_config(local_repo_path)
+        dest = local_repo_path / "results" / task_id / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content)
+        env = os.environ.copy()
+        env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "mcp-agent"
+        env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "mcp-agent@localhost"
+        subprocess.run(["git", "add", f"results/{task_id}"], cwd=str(local_repo_path),
+                       env=env, capture_output=True, check=False)
+        subprocess.run(["git", "commit", "-m", f"[generate_file] {task_id}: {rel}"],
+                       cwd=str(local_repo_path), env=env, capture_output=True, check=False)
+        subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=str(local_repo_path),
+                       env=env, capture_output=True, check=False)
+        push = subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=str(local_repo_path),
+                              env=env, capture_output=True, text=True, check=False)
+        if push.returncode != 0:
+            print(f"⚠️ generate_file push warning: {push.stderr}")
+        return {"success": True,
+                "git_url": f"{repo_url.rstrip('.git')}/tree/main/results/{task_id}/{rel}",
+                "file_path": f"results/{task_id}/{rel}",
+                "bytes": len(content)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def validate_llm_artifact(llm_response: str) -> None:
+    """Raise ValueError if the response is a truncated envelope or invalid code."""
+    if not llm_response or len(llm_response.strip()) < 50:
+        raise ValueError("invalid_artifact: empty or trivial response")
+    response_data = _parse_llm_json_response(llm_response)
+    if response_data and "code" in response_data:
+        code = response_data["code"]
+        lang = str(response_data.get("language", "")).lower()
+    elif response_data and isinstance(response_data.get("files"), list) and response_data["files"]:
+        import ast as _ast
+        errors = []
+        for f in response_data["files"]:
+            c = str(f.get("content", ""))
+            p = str(f.get("path", ""))
+            if p.endswith(".py"):
+                try:
+                    _ast.parse(c)
+                except SyntaxError as e:
+                    errors.append(f"{p} line {e.lineno}: {e.msg}")
+            elif p.endswith(".html") and "</html>" not in c.lower():
+                errors.append(f"{p}: missing closing tag")
+        if errors:
+            raise ValueError("invalid_artifact: " + "; ".join(errors))
+        return
+    elif llm_response.lstrip().startswith("{"):
+        raise ValueError("invalid_artifact: JSON envelope failed to parse (truncated?)")
+    else:
+        code = llm_response
+        lang = ""
+    if not code or len(code.strip()) < 100:
+        raise ValueError("invalid_artifact: extracted code too short")
+    stripped = code.lstrip().lower()
+    if stripped.startswith(("<!doctype html", "<html")):
+        if "</html>" not in stripped:
+            raise ValueError("invalid_artifact: HTML missing closing tag (truncated)")
+    elif "javascript" not in lang and "js" not in lang.split(",")[0]:
+        import ast
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            raise ValueError(f"invalid_artifact: python syntax error line {e.lineno}: {e.msg}")
+
+
 def _parse_llm_json_response(response: str) -> Optional[Dict[str, Any]]:
     """
     Parse LLM response as JSON.
@@ -593,22 +838,23 @@ def _parse_llm_json_response(response: str) -> Optional[Dict[str, Any]]:
 
 import requests
 
-def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 5, retry_delay: int = 10) -> str:
+def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int = 1, retry_delay: int = 10, timeout: int = 3600, max_tokens: int = 65536, reasoning_effort: Optional[str] = None, allow_continuations: bool = True, return_partial_on_cap: bool = False) -> str:
     """
     Call LM Studio's OpenAI-compatible endpoint using synchronous requests.
-    
+
     Includes retry logic for transient LLM server errors.
-    
+
     Args:
         prompt: The prompt to send to the LLM
         vibe: Creativity level (1-10)
         server_handlers: Optional server handlers for system prompt
-        max_retries: Maximum number of retry attempts (default: 3)
-        retry_delay: Delay between retries in seconds (default: 5)
-    
+        max_retries: Maximum number of retry attempts (default: 1 - no retry, let LLM finish)
+        retry_delay: Delay between retries in seconds (default: 10)
+        timeout: Request timeout in seconds per LLM call (default: 1800)
+
     Returns:
         LLM response content string
-    
+
     Raises:
         Exception: If all retry attempts fail
     """
@@ -625,24 +871,59 @@ def call_llm_sync(prompt: str, vibe: int, server_handlers=None, max_retries: int
                 break
 
     last_error = None
+    max_continuations = 3 if allow_continuations else 0
+    prev_piece = ""
 
     for attempt in range(max_retries):
         try:
-            response = requests.post(
-                f"{settings.llm_base_url}/chat/completions",
-                json={
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+            full_content = ""
+            for cont in range(max_continuations + 1):
+                payload = {
                     "model": settings.llm_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
+                    "messages": messages,
                     "temperature": vibe / 10,  # 0.1 to 1.0
-                    "max_tokens": 8192  # Increased for longer code outputs
-                },
-                timeout=300
-            )
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+                    "max_tokens": max_tokens
+                }
+                if reasoning_effort:
+                    payload["reasoning_effort"] = reasoning_effort
+                response = requests.post(
+                    f"{settings.llm_base_url}/chat/completions",
+                    json=payload,
+                    timeout=timeout
+                )
+                response.raise_for_status()
+                choice = response.json()["choices"][0]
+                piece = choice["message"].get("content") or ""
+                for k in range(min(100, len(full_content), len(piece)), 0, -1):
+                    if full_content[-k:] == piece[:k]:
+                        piece = piece[k:]
+                        break
+                full_content += piece
+                if choice.get("finish_reason") != "length":
+                    return full_content
+                if cont == max_continuations:
+                    if return_partial_on_cap:
+                        return full_content
+                    raise RuntimeError(
+                        f"truncated_output: LLM hit token cap after {max_continuations} continuations "
+                        f"({len(full_content)} chars)")
+                if piece[:200] and piece[:200] == prev_piece[:200]:
+                    raise RuntimeError(
+                        f"truncated_output: repetitive generation loop detected ({len(full_content)} chars)")
+                prev_piece = piece
+                print(f"⚠️ LLM output truncated at token cap (continuation {cont + 1}/{max_continuations})", flush=True)
+                messages.append({"role": "assistant", "content": piece})
+                tail = piece[-200:]
+                messages.append({"role": "user", "content":
+                    "Your output was cut off. The LAST characters you produced were exactly:\n"
+                    f"...{tail}\n"
+                    "Continue from that exact point: output ONLY the remaining text that follows "
+                    "those characters. Do NOT repeat anything already written. Do NOT restart "
+                    "from the beginning. No preamble."})
         except requests.exceptions.RequestException as e:
             last_error = e
             if attempt < max_retries - 1:
@@ -688,6 +969,12 @@ You MUST respond with a valid JSON object with the following structure:
 }}
 ```
 
+MULTI-FILE DELIVERABLES: if the task requires more than one file (e.g. a project
+template, library with docs, app with config), replace "code"/"filename" with:
+"files": [{{"path": "relative/path.ext", "content": "file contents"}}, ...]
+Paths must be relative (no leading /, no ..). Include a README.md with run
+instructions. The first file is treated as the primary artifact.
+
 ## CRITICAL RULES
 
 1. **Return ONLY valid JSON** - no text before or after the JSON
@@ -700,6 +987,17 @@ You MUST respond with a valid JSON object with the following structure:
 5. **Ensure the code is complete and working** - include all necessary parts
 6. **IMPORTANT: Ensure your complete JSON response is sent** - do not truncate the output
 7. For longer code, ensure ALL code is included - the response must be complete
+8. **🚨 CRITICAL: Web servers MUST bind to 0.0.0.0 for Docker deployment 🚨**
+   - **Flask**: `app.run(host='0.0.0.0', port=PORT, debug=True)` ❌ NEVER use `app.run()` alone
+   - **FastAPI/uvicorn**: `uvicorn.run(app, host='0.0.0.0', port=PORT)`
+   - **http.server**: `HTTPServer(('0.0.0.0', PORT), Handler)`
+   - **socketserver**: `TCPServer(('0.0.0.0', PORT), Handler)` or `TCPServer(('', PORT), Handler)`
+   - **Node.js/Express**: `app.listen(PORT, '0.0.0.0')`
+   - **NEVER bind to**: `127.0.0.1`, `localhost`, or `127.0.0.1` - these will FAIL in Docker!
+   - **Port selection**: Use `PORT = int(os.environ.get("PORT", 5000))` or default to 5000
+9. **Include main block** for Python scripts:
+   - `if __name__ == "__main__":` with server startup code
+   - Ensure the server actually starts and runs (e.g., `app.run()` or `httpd.serve_forever()`)
 
 ## EXAMPLE RESPONSE
 
@@ -766,16 +1064,19 @@ def register_vibe_coding_tool(server_handlers):
             print(f"DEBUG: Using server postgres config: {task_postgres_config}")
         else:
             # Fall back to settings configuration
-            from ..config import settings
+            # NOTE: import under an alias — a bare `settings` here would make it
+            # local to register_vibe_coding_tool and shadow the module-level
+            # import inside enhanced_execute_tool (NameError in patch_file).
+            from ..config import settings as _pg_settings
             task_postgres_config = {
-                "host": settings.postgres_host,
-                "port": settings.postgres_port,
-                "database": settings.postgres_db,
-                "user": settings.postgres_user,
-                "password": settings.postgres_password
+                "host": _pg_settings.postgres_host,
+                "port": _pg_settings.postgres_port,
+                "database": _pg_settings.postgres_db,
+                "user": _pg_settings.postgres_user,
+                "password": _pg_settings.postgres_password
             }
             # Use PostgreSQL for tasks if it's configured and available
-            use_postgres = bool(settings.postgres_password and settings.postgres_password.strip())
+            use_postgres = bool(_pg_settings.postgres_password and _pg_settings.postgres_password.strip())
     except Exception as e:
         # If config is not available, use in-memory storage
         print(f"Error configuring PostgreSQL task storage: {e}")
@@ -803,7 +1104,7 @@ def register_vibe_coding_tool(server_handlers):
     # Define the asynchronous vibe_code tool
     vibe_code_async_tool = {
         "name": "vibe_code_async",
-        "description": "Submit a natural language coding task to be processed asynchronously. Returns a task ID for tracking progress. Use tasks/get to check status and tasks/result to retrieve the generated code.",
+        "description": "[DEPRECATED - kept for legacy tasks and redeploys only; IT Lead now routes all coding through build_project] Submit a natural language coding task to be processed asynchronously. Returns a task ID for tracking progress. Use tasks/get to check status and tasks/result to retrieve the generated code.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -813,6 +1114,24 @@ def register_vibe_coding_tool(server_handlers):
                 "style_guide": {"type": "string", "description": "Additional style hints", "default": ""}
             },
             "required": ["task_description"]
+        }
+    }
+
+    # Define the generate_file tool (fan-out flow: one file per LLM call)
+    generate_file_tool = {
+        "name": "generate_file",
+        "description": "Generate exactly ONE file for a multi-file project and push it to "
+                       "results/<task_id>/<path>. Output stays small by design (no envelope).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Parent task id (shared by all files of one deliverable)"},
+                "path": {"type": "string", "description": "Relative file path, e.g. server.py or docs/README.md"},
+                "spec": {"type": "string", "description": "What this file must contain/do"},
+                "manifest": {"type": "string", "description": "Manifest of sibling files for consistency"},
+                "project_description": {"type": "string", "description": "Overall project goal"},
+            },
+            "required": ["task_id", "path", "spec"]
         }
     }
 
@@ -880,6 +1199,61 @@ def register_vibe_coding_tool(server_handlers):
             tasks_result_tool,
             tasks_cancel_tool
         ])
+    if not any(t["name"] == "generate_file" for t in server_handlers.tools):
+        server_handlers.tools.append(generate_file_tool)
+    if not any(t["name"] == "patch_file" for t in server_handlers.tools):
+        server_handlers.tools.append({
+            "name": "patch_file",
+            "description": "Surgically fix an existing result file given a reported error. "
+                           "Keeps all existing exports; changes only what the error requires.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "path": {"type": "string", "description": "Path relative to results/<task_id>/"},
+                    "error": {"type": "string", "description": "Error text / traceback to fix"},
+                },
+                "required": ["task_id", "path", "error"],
+            },
+        })
+    if not any(t["name"] == "build_project" for t in server_handlers.tools):
+        server_handlers.tools.append({
+            "name": "build_project",
+            "description": "Implement an entire multi-file project in an isolated workspace via "
+                           "an opencode agent session (self-verifying: compiles, runs tests), "
+                           "then push the whole tree to the results repo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "manifest": {"type": "string", "description": "file list with per-file specs"},
+                    "project_description": {"type": "string"},
+                    "spec_context": {"type": "string", "description": "optional technical spec"},
+                    "base_tree": {"type": "string",
+                                  "description": "optional: results-tree URL to seed the "
+                                                 "workspace with (rework mode: fix, not rewrite)"},
+                    "fix_instructions": {"type": "string",
+                                         "description": "rework mode: issues to fix in the seeded tree"},
+                },
+                "required": ["task_id", "manifest"],
+            },
+        })
+    if not any(t["name"] == "resume_build" for t in server_handlers.tools):
+        server_handlers.tools.append({
+            "name": "resume_build",
+            "description": "Resume a paused build_project session (same opencode session and "
+                           "workspace) with a follow-up message, e.g. the requestor's answers "
+                           "to a mid-build clarification. Pushes the tree when the session "
+                           "finishes clean.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "message": {"type": "string", "description": "follow-up instruction for the session"},
+                },
+                "required": ["task_id", "message"],
+            },
+        })
 
     # Notify that tools have changed
     if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:
@@ -889,6 +1263,283 @@ def register_vibe_coding_tool(server_handlers):
     original_execute_tool = server_handlers._execute_tool
 
     def enhanced_execute_tool(tool, arguments):
+        if tool["name"] == "generate_file":
+            path = arguments.get("path", "")
+            base = path.rsplit("/", 1)[-1]
+            spec_txt = str(arguments.get("spec", ""))
+            # S3: boilerplate files need no LLM round-trip
+            if base == "requirements.txt":
+                try:
+                    content = _derive_requirements(arguments.get("task_id", "unassigned"))
+                except Exception:
+                    content = "# dependencies\n"
+                return git_push_single_file(arguments.get("task_id", "unassigned"), path, content)
+            if base == ".env.example":
+                return git_push_single_file(arguments.get("task_id", "unassigned"), path,
+                                            "# Environment configuration\nPORT=5000\n")
+            try:
+                content = call_llm_sync(
+                f"""Generate exactly ONE file for a software project. Output ONLY the raw file content — no markdown fences, no commentary, no JSON wrapper.
+
+File path: {path}
+File spec: {arguments.get('spec', '')}
+
+Sibling files generated by teammates (keep imports and paths consistent, do NOT create them):
+{arguments.get('manifest', 'none')}
+
+Rules:
+- Define EXACTLY the exports your spec promises; import from siblings only what their spec says they export.
+- Prefer lazy imports inside functions for sibling modules, so importing this file never fails.
+- If this file starts a network server, it MUST bind 0.0.0.0 (not 127.0.0.1) and read the port from env PORT (default 5000).
+- Use ONLY the Python stdlib or packages explicitly listed in this project's requirements. NEVER mimic third-party SDK APIs on your own classes (e.g. do not add SDK-style decorators/methods to your own Server object) - implement exactly what the sibling specs say.
+
+Overall project goal:
+{arguments.get('project_description', '')}""",
+                arguments.get("vibe_level", 3), server_handlers,
+                    max_tokens=16384,
+                    reasoning_effort="low",
+                    allow_continuations=base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css")),
+                    return_partial_on_cap=not base.endswith((".py", ".js", ".ts", ".html", ".htm", ".css")))
+                content = _strip_code_fences(content)
+                if not content.strip():
+                    return {"error": "generate_file produced empty content"}
+                if path.endswith(".py"):
+                    import ast as _ast
+                    try:
+                        _ast.parse(content)
+                    except SyntaxError as e:
+                        return {"error": f"generated {path} invalid python: line {e.lineno}: {e.msg}"}
+                return git_push_single_file(arguments.get("task_id", "unassigned"), path, content)
+            except Exception as e:
+                if base in ("requirements.txt", ".env.example"):
+                    fb = ("# dependencies\n" if base == "requirements.txt"
+                          else "# Environment configuration\nPORT=5000\n")
+                    return git_push_single_file(arguments.get("task_id", "unassigned"), path, fb)
+                return {"error": f"generate_file {path} failed: {type(e).__name__}: {e}"}
+
+        if tool["name"] == "build_project":
+            tid = arguments.get("task_id", "unassigned")
+            try:
+                import shutil as _sh
+                from .opencode_run import opencode_agent
+                ws = Path(tempfile.gettempdir()) / "oc-builds" / tid
+                _sh.rmtree(str(ws), ignore_errors=True)
+                ws.mkdir(parents=True)
+                base_tree = str(arguments.get("base_tree") or "").strip()
+                if base_tree:
+                    # rework mode: seed the workspace with the existing artifact tree
+                    m = re.search(r"(?P<repo>.+?)(?:\.git)?/tree/main/(?P<sub>.+)", base_tree)
+                    repo = (m.group("repo") + ".git") if m else os.environ.get(
+                        "MCP_GIT_REPO_URL",
+                        "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                    sub = m.group("sub") if m else ""
+                    tmp = Path(tempfile.gettempdir()) / f"rework-clone-{tid}"
+                    _sh.rmtree(str(tmp), ignore_errors=True)
+                    subprocess.run(["git", "clone", "--depth", "1", repo, str(tmp)],
+                                   check=True, capture_output=True, timeout=180)
+                    src = (tmp / sub) if sub else tmp
+                    if not src.is_dir():
+                        raise FileNotFoundError(f"base_tree path missing: {sub}")
+                    for item in src.iterdir():
+                        if item.name in (".git", "MANIFEST.md", "AGENTS.md"):
+                            continue
+                        dst = ws / item.name
+                        _sh.copytree(item, dst, dirs_exist_ok=True) if item.is_dir() \
+                            else _sh.copy(item, dst)
+                    _sh.rmtree(str(tmp), ignore_errors=True)
+                if base_tree:
+                    (ws / "MANIFEST.md").write_text(
+                        "# REWORK of an existing tree (already present in this directory)\n"
+                        "# Fix ONLY the issues below. Keep every other file and its behavior\n"
+                        "# intact; prefer minimal targeted edits over rewrites; do not delete\n"
+                        "# unrelated files.\n\n# Issues to fix\n"
+                        + str(arguments.get("fix_instructions", ""))
+                        + "\n\n# Original task (context)\n"
+                        + str(arguments.get("project_description", "")))
+                else:
+                    (ws / "MANIFEST.md").write_text(
+                        "# File manifest (create every file exactly at these paths)\n"
+                        + str(arguments.get("manifest", ""))
+                        + "\n\n# Project goal\n" + str(arguments.get("project_description", ""))
+                        + ("\n\n# Technical specification (authoritative)\n"
+                           + str(arguments.get("spec_context", ""))
+                           if arguments.get("spec_context") else ""))
+                agents_text = (
+                    "# Project conventions (authoritative)\n"
+                    "- Python: prefer the stdlib; third-party packages only in requirements.txt.\n"
+                    "- Network servers MUST bind 0.0.0.0 and read the port from env PORT (default 5000).\n"
+                    "- MCP services: plain JSON-RPC over HTTP at /mcp per the manifest; do NOT mimic\n"
+                    "  third-party SDK APIs on your own classes.\n"
+                    "- Prefer lazy imports inside functions for sibling modules.\n"
+                    "- Define exactly the exports the manifest spec promises.\n"
+                    "- Blocked on an unguessable value (private credential, deployment-specific\n"
+                    "  ID, ambiguous external contract) that search cannot answer? Write\n"
+                    "  .need_info.json in the project root: [{\"field\": \"UPPER_SNAKE\", \"question\":\n"
+                    "  \"...\", \"why\": \"...\"}] (max 3) and STOP. The requestor will answer and your\n"
+                    "  session resumes with the values. Never fabricate such values.\n"
+                    "- Research before guessing: unsure about a library API, endpoint contract,\n"
+                    "  parameter names or versions? Use the native search tools:\n"
+                    "  secure-search_secure_search({query}) (verified working; internet-search_internet_search\n"
+                    "  as backup), then secure-search_secure_fetch the best result and follow the\n"
+                    "  documented usage. NEVER invent parameters for third-party APIs. The built-in\n"
+                    "  websearch/webfetch tools are broken here (403) - do not waste turns on them.\n"
+                    "  If a fetched source changed a design decision, list it in a README\n"
+                    "  'References' section.\n"
+                    "- Web UI self-check (you have vision): once the server runs, take a\n"
+                    "  screenshot: /root/.cache/ms-playwright/chromium_headless_shell-1255/\n"
+                    "  chrome-headless-shell-linux64/chrome-headless-shell --headless --no-sandbox\n"
+                    "  --disable-gpu --screenshot=_shot.png --window-size=1280,900\n"
+                    "  --virtual-time-budget=5000 <local URL>; then READ _shot.png with your read\n"
+                    "  tool, verify it actually renders styled and matches the task, fix, repeat.\n"
+                    "  Delete _shot.png before finishing.\n"
+                    "- Generated images: when the task calls for icons/logos/illustrations, use\n"
+                    "  the image-tools generate_image tool (e.g. static/favicon.png, 512x512).\n"
+                    "  Never hotlink external image URLs - the container is offline. Record every\n"
+                    "  generated asset (prompt + seed + size) in a 'Generated assets' README\n"
+                    "  section; the tool echoes the seed it used.\n"
+                    "- REST/HTTP services must be self-describing: expose GET /openapi.json\n"
+                    "  (FastAPI does it automatically; for Flask/plain http.server serve a static\n"
+                    "  OpenAPI 3.0 JSON describing every endpoint) so the generic tester works.\n"
+                    "- The service is served under an ARBITRARY URL prefix (e.g. /task-id/):\n"
+                    "  HTML must reference assets relatively (static/... NOT /static/...), and\n"
+                    "  client-side fetch paths must be relative or derived from location.pathname.\n"
+                    "- README.md must document the ACTUAL run command and endpoints.\n")
+                try:  # retro M2: learned conventions travel with the request
+                    # (MCP argument); the shared-file read remains as fallback
+                    _conv = str(arguments.get("conventions") or "")
+                    if not _conv.strip():
+                        _rc = Path("/root/qwen/base/retro/conventions.md")
+                        if _rc.exists():
+                            _conv = _rc.read_text()[:4000]
+                    if _conv.strip():
+                        agents_text += "\n## Learned conventions (retro)\n" + _conv[:4000]
+                except Exception:
+                    pass
+                (ws / "AGENTS.md").write_text(agents_text)
+                instruction = ("Read MANIFEST.md and AGENTS.md. The tree already exists: fix "
+                               "the listed issues with minimal targeted edits, keep everything "
+                               "else intact and working, then verify as usual (compile, tests, "
+                               "run, screenshot self-check)."
+                               if base_tree else
+                               "Read MANIFEST.md and AGENTS.md, implement every file, then "
+                               "verify and fix until green.")
+                ok, text, err = opencode_agent(
+                    "coder", ws, instruction,
+                    session=f"ses-build-{tid}",
+                    timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
+                if not ok:
+                    return {"error": f"build_project agent failed: {err[:300]}"}
+                need = _read_need_info(ws)
+                if need:
+                    # blocked mid-build: don't push a half tree, don't fan-out -
+                    # IT Lead asks the requestor and calls resume_build
+                    return {"success": False, "need_info": need, "partial": True,
+                            "session": f"ses-build-{tid}"}
+                import ast as _ast
+                for py in ws.rglob("*.py"):
+                    try:
+                        _ast.parse(py.read_text(errors="ignore"))
+                    except SyntaxError as e:
+                        return {"error": f"build_project produced invalid python: "
+                                         f"{py.name} line {e.lineno}: {e.msg}"}
+                out = _push_tree(tid, ws)
+                if out.get("success"):
+                    out["session"] = f"ses-build-{tid}"
+                    out["agent_summary"] = text[-300:]
+                return out
+            except Exception as e:
+                return {"error": f"build_project failed: {type(e).__name__}: {e}"}
+
+        if tool["name"] == "resume_build":
+            # V2: continue the SAME build session after the requestor answered
+            # a mid-build clarification; the workspace on disk is untouched.
+            tid = arguments.get("task_id", "unassigned")
+            ws = Path(tempfile.gettempdir()) / "oc-builds" / tid
+            if not ws.exists():
+                return {"error": "resume_build: workspace is gone (host restart?) - "
+                                 "rebuild from scratch required"}
+            try:
+                from .opencode_run import opencode_agent
+                ok, text, err = opencode_agent(
+                    "coder", ws, str(arguments.get("message", "Continue.")),
+                    session=f"ses-build-{tid}",
+                    timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
+                if not ok:
+                    return {"error": f"resume_build agent failed: {err[:300]}"}
+                need = _read_need_info(ws)
+                if need:
+                    return {"success": False, "need_info": need, "partial": True,
+                            "session": f"ses-build-{tid}"}
+                import ast as _ast
+                for py in ws.rglob("*.py"):
+                    try:
+                        _ast.parse(py.read_text(errors="ignore"))
+                    except SyntaxError as e:
+                        return {"error": f"resume_build produced invalid python: "
+                                         f"{py.name} line {e.lineno}: {e.msg}"}
+                out = _push_tree(tid, ws)
+                if out.get("success"):
+                    out["session"] = f"ses-build-{tid}"
+                    out["agent_summary"] = text[-300:]
+                return out
+            except Exception as e:
+                return {"error": f"resume_build failed: {type(e).__name__}: {e}"}
+
+        if tool["name"] == "patch_file":
+            path = arguments.get("path", "")
+            tid = arguments.get("task_id", "unassigned")
+            try:
+                repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
+                    "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
+                _get_or_clone_git_repo(repo_url, local)
+                fp = local / "results" / tid / path
+                if not fp.exists():
+                    return {"error": f"patch_file: {path} not found in results/{tid}"}
+                original = fp.read_text()
+                oc_via = ""
+                if os.environ.get("OPENCODE_PATCH", "1") != "0":
+                    ok, detail = _opencode_fix(local / "results" / tid, tid, path,
+                                               str(arguments.get("error", ""))[-2000:])
+                    if ok:
+                        oc_via = detail
+                    else:
+                        print(f"⚠️ patch_file opencode fell back to single-shot: {detail}", flush=True)
+                if not oc_via:
+                    fixed = _strip_code_fences(call_llm_sync(
+                        "Fix this file. Keep every existing export and behavior; change only what "
+                        "is needed to resolve the reported error. Output ONLY the complete fixed "
+                        "file content, no fences or commentary.\n\nFile path: " + path +
+                        "\nReported error:\n" + str(arguments.get("error", ""))[-2000:] +
+                        "\n\nCurrent file:\n" + original,
+                        2, server_handlers, max_tokens=16384, reasoning_effort="low"))
+                    if not fixed.strip():
+                        return {"error": "patch_file produced empty output"}
+                    if path.endswith(".py"):
+                        import ast as _ast
+                        try:
+                            _ast.parse(fixed)
+                        except SyntaxError as e:
+                            return {"error": f"patched {path} invalid: line {e.lineno}: {e.msg}"}
+                    fp.write_text(fixed)
+                _ensure_git_config(local)
+                env = os.environ.copy()
+                env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "mcp-agent"
+                env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "mcp-agent@localhost"
+                subprocess.run(["git", "add", f"results/{tid}"], cwd=str(local), env=env, capture_output=True)
+                subprocess.run(["git", "commit", "-m", f"[patch_file] {tid}: {path}"],
+                               cwd=str(local), env=env, capture_output=True)
+                subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                               cwd=str(local), env=env, capture_output=True)
+                push = subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=str(local),
+                                      env=env, capture_output=True, text=True)
+                if push.returncode != 0:
+                    return {"error": f"patch_file push failed: {(push.stderr or '')[-200:]}"}
+                return {"success": True, "patched": True,
+                        "file_path": f"results/{tid}/{path}", "via": oc_via or "single-shot"}
+            except Exception as e:
+                return {"error": f"patch_file failed: {type(e).__name__}: {e}"}
+
         if tool["name"] == "vibe_code":
             # Construct prompt with style and vibe
             prompt = create_vibe_code_prompt(arguments)
@@ -907,13 +1558,21 @@ def register_vibe_coding_tool(server_handlers):
 
                 # Submit for background processing
                 def llm_call_wrapper(input_args):
-                    prompt = create_vibe_code_prompt(input_args)
-                    llm_response = call_llm_sync(prompt, input_args.get("vibe_level", 5), server_handlers)
-                    print(f"DEBUG: LLM response received, calling git_push_llm_response for task {task_id}")
-                    # Push to Git and return Git URL
-                    result = git_push_llm_response(task_id, llm_response, input_args.get("language", "python"))
-                    print(f"DEBUG: git_push_llm_response returned: {result.get('git_url', 'NO GIT URL')}")
-                    return result
+                    try:
+                        prompt = create_vibe_code_prompt(input_args)
+                        print(f"DEBUG: Calling LLM for async task {task_id}")
+                        llm_response = call_llm_sync(prompt, input_args.get("vibe_level", 5), server_handlers)
+                        validate_llm_artifact(llm_response)
+                        print(f"DEBUG: LLM response received for task {task_id}, calling git_push_llm_response")
+                        # Push to Git and return Git URL
+                        result = git_push_llm_response(task_id, llm_response, input_args.get("language", "python"))
+                        print(f"DEBUG: git_push_llm_response returned: {result.get('git_url', 'NO GIT URL')}")
+                        return result
+                    except Exception as e:
+                        print(f"❌ ERROR in llm_call_wrapper for task {task_id}: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                        raise  # Re-raise so task_manager can capture the error
 
                 task_manager.submit_for_processing(task_id, llm_call_wrapper)
 

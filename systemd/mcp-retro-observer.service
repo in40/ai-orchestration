@@ -1,0 +1,10 @@
+[Unit]
+Description=Retro observer - nightly team health snapshot (read-only)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/root/qwen/base/.env
+ExecStart=/root/qwen/base/it-lead-mcp-server/venv/bin/python3 /root/qwen/base/retro/observer.py
+ExecStart=/root/qwen/base/it-lead-mcp-server/venv/bin/python3 /root/qwen/base/retro/proposer.py
+ExecStart=/root/qwen/base/it-lead-mcp-server/venv/bin/python3 /root/qwen/base/retro/verifier.py

@@ -24,6 +24,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { formatDistanceToNow } from 'date-fns';
+import PageHeader from './PageHeader';
 
 const AgentDetail = () => {
   const { agentName } = useParams();
@@ -43,8 +44,18 @@ const AgentDetail = () => {
     const fetchData = async () => {
       try {
         setLoading(true);
-        const response = await axios.get(`/api/agents/${encodeURIComponent(agentName)}`);
-        setAgent(response.data);
+        // dynamic registry endpoint: same source as the Team list, so every
+        // listed agent resolves here (the old /api/agents had 3 hardcoded roles)
+        const response = await axios.get(`/api/planner/agents/${encodeURIComponent(agentName)}`);
+        const data = response.data || {};
+        setAgent({
+          ...data,
+          status: data.status || 'online',
+          last_seen: data.last_seen || new Date().toISOString(),
+          capabilities: (data.capabilities || [])
+            .map(c => (typeof c === 'string' ? c : c && c.name))
+            .filter(Boolean),
+        });
         setError(null);
       } catch (err) {
         setError('Failed to load agent details');
@@ -119,59 +130,53 @@ const AgentDetail = () => {
   }
 
   return (
-    <Grid container spacing={3}>
-      <Grid item xs={12}>
-        <Card>
-          <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
-              <Avatar sx={{ 
-                bgcolor: agent.status === 'online' ? 'success.main' : 'grey.500', 
-                width: 80, 
-                height: 80,
-                mr: 3 
-              }}>
-                {agent.name.charAt(0)}
-              </Avatar>
-              <Box>
-                <Typography variant="h4">{agent.name}</Typography>
-                <Chip 
-                  label={agent.status} 
-                  size="large" 
-                  color={agent.status === 'online' ? 'success' : 'default'} 
-                />
-                <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
-                  Last seen: {formatDistanceToNow(new Date(agent.last_seen), { addSuffix: true })}
-                </Typography>
-                {agent.uptime && (
-                  <Typography variant="body2" color="text.secondary">
-                    Uptime: {agent.uptime}
+    <>
+      {/* unified header: agent name left, actions right */}
+      <PageHeader title={agent.name}>
+        <Button variant="contained" onClick={handleAssignTask}>
+          Assign Task
+        </Button>
+        <Button variant="outlined" onClick={() => navigate('/team')}>
+          Back to Team
+        </Button>
+      </PageHeader>
+      <Grid container spacing={3}>
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <Avatar sx={{ 
+                  bgcolor: agent.status === 'online' ? 'success.main' : 'grey.500', 
+                  width: 80, 
+                  height: 80,
+                  mr: 3 
+                }}>
+                  {agent.name.charAt(0)}
+                </Avatar>
+                <Box>
+                  <Chip 
+                    label={agent.status} 
+                    size="large" 
+                    color={agent.status === 'online' ? 'success' : 'default'} 
+                  />
+                  <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
+                    Last seen: {formatDistanceToNow(new Date(agent.last_seen), { addSuffix: true })}
                   </Typography>
-                )}
-                {agent.version && (
-                  <Typography variant="body2" color="text.secondary">
-                    Version: {agent.version}
-                  </Typography>
-                )}
+                  {agent.uptime && (
+                    <Typography variant="body2" color="text.secondary">
+                      Uptime: {agent.uptime}
+                    </Typography>
+                  )}
+                  {agent.version && (
+                    <Typography variant="body2" color="text.secondary">
+                      Version: {agent.version}
+                    </Typography>
+                  )}
+                </Box>
               </Box>
-            </Box>
-            
-            <Box sx={{ display: 'flex', gap: 2, mt: 2 }}>
-              <Button 
-                variant="contained" 
-                onClick={handleAssignTask}
-              >
-                Assign Task
-              </Button>
-              <Button 
-                variant="outlined" 
-                onClick={() => navigate('/team')}
-              >
-                Back to Team
-              </Button>
-            </Box>
-          </CardContent>
-        </Card>
-      </Grid>
+            </CardContent>
+          </Card>
+        </Grid>
 
       <Grid item xs={12} md={6}>
         <Card>
@@ -279,7 +284,8 @@ const AgentDetail = () => {
           <Button onClick={handleTaskSubmit} variant="contained">Assign Task</Button>
         </DialogActions>
       </Dialog>
-    </Grid>
+      </Grid>
+    </>
   );
 };
 

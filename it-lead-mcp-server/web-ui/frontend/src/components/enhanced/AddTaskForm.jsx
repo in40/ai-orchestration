@@ -48,7 +48,9 @@ const AddTaskForm = ({
     tags: [],
     attachments: [],
     context: {},
-    dependencies: []
+    dependencies: [],
+    deployAfterImplementation: false, // Deployment option
+    requiresClient: false // generate a verification client alongside the service
   });
 
   const [errors, setErrors] = useState({});
@@ -107,7 +109,9 @@ const AddTaskForm = ({
         attachments: taskData.attachments.map(a => ({
           name: a.name || 'unnamed',
           type: a.type || 'text/plain'
-        }))
+        })),
+        deploy_after_implementation: taskData.deployAfterImplementation,
+        requires_client: taskData.requiresClient
       }
     };
 
@@ -284,6 +288,77 @@ const AddTaskForm = ({
                 IT Lead will intelligently route this task to the appropriate agent based on content analysis
               </FormHelperText>
             </FormControl>
+
+            {/* Deployment Option */}
+            <Box sx={{ 
+              mt: 2, 
+              p: 2, 
+              border: '1px solid', 
+              borderColor: taskData.deployAfterImplementation ? 'success.main' : 'divider',
+              borderRadius: 1,
+              bgcolor: taskData.deployAfterImplementation ? 'success.50' : 'transparent'
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+                <Checkbox
+                  checked={taskData.deployAfterImplementation}
+                  onChange={(e) => setTaskData(prev => ({
+                    ...prev,
+                    deployAfterImplementation: e.target.checked
+                  }))}
+                  color="success"
+                  size="medium"
+                />
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle2" fontWeight="bold" color={taskData.deployAfterImplementation ? 'success.main' : 'text.primary'}>
+                    Deploy after implementation
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    When enabled, the application will be automatically deployed to a Docker container after implementation is complete. 
+                    You will receive a public URL to access the deployed application.
+                  </Typography>
+                  {taskData.deployAfterImplementation && (
+                    <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <RouteIcon fontSize="small" color="success" />
+                      <Typography variant="caption" color="success.main" fontWeight="bold">
+                        Workflow: Requirements → Implementation → DevOps Deployment
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            </Box>
+
+            {/* Client Verification Option */}
+            <Box sx={{
+              mt: 2,
+              p: 2,
+              border: '1px solid',
+              borderColor: taskData.requiresClient ? 'info.main' : 'divider',
+              borderRadius: 1,
+              bgcolor: taskData.requiresClient ? 'info.50' : 'transparent'
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+                <Checkbox
+                  checked={taskData.requiresClient}
+                  onChange={(e) => setTaskData(prev => ({
+                    ...prev,
+                    requiresClient: e.target.checked
+                  }))}
+                  color="info"
+                  size="medium"
+                />
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle2" fontWeight="bold" color={taskData.requiresClient ? 'info.main' : 'text.primary'}>
+                    Requires client
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    The team also generates client.py — a standalone verification client that
+                    exercises the service end-to-end (run as: python client.py &lt;BASE_URL&gt;).
+                    It is executed against the deployed URL as an acceptance test.
+                  </Typography>
+                </Box>
+              </Box>
+            </Box>
 
             {/* Tags for categorization */}
             <Box sx={{ mt: 2 }}>

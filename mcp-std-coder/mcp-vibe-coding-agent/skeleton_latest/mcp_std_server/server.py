@@ -145,7 +145,23 @@ class McpServer:
             # Determine the correct endpoint based on the transport type
             if self.transport_type == "streamable-http":
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/mcp"
-                endpoint_url = f"http://{self.host}:{self.port}/mcp"
+                import os as _os
+                # advertise a REACHABLE address, not the bind wildcard:
+                # 0.0.0.0 in the registry forced every client into a
+                # replace("0.0.0.0","127.0.0.1") hack that dies on multi-host
+                import socket as _sock
+                _adv = (_os.environ.get("MCP_ADVERTISE_HOST") or "").strip()
+                if self.host not in ("0.0.0.0", "::"):
+                    _adv = self.host
+                elif not _adv:
+                    try:
+                        _s = _sock.socket()
+                        _s.connect(("10.255.255.255", 1))
+                        _adv = _s.getsockname()[0]
+                        _s.close()
+                    except Exception:
+                        _adv = "127.0.0.1"
+                endpoint_url = f"http://{_adv}:{self.port}/mcp"
             else:
                 # For legacy transport, use the send endpoint
                 registry_url = f"http://{self.registry_host}:{self.registry_port}/send"
@@ -175,7 +191,20 @@ class McpServer:
             print(f"DEBUG: Registration payload prepared: {payload['params']['id']}")
 
             print(f"DEBUG: Sending registration request to {registry_url}")
-            response = requests.post(registry_url, json=payload)
+            # Boot race: at systemd start the registry process exists but is
+            # not listening yet; a single-shot POST silently lost members
+            # from the team list until manual restart (retry ~2 min window).
+            import time as _t
+            response = None
+            for attempt in range(24):
+                try:
+                    response = requests.post(registry_url, json=payload, timeout=5)
+                    if response.status_code == 200:
+                        break
+                except Exception as e:
+                    if attempt == 23:
+                        raise
+                _t.sleep(5)
             print(f"DEBUG: Registration response status: {response.status_code}")
             print(f"DEBUG: Registration response text: {response.text}")
 

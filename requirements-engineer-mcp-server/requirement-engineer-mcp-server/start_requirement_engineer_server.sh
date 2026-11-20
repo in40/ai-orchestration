@@ -5,18 +5,29 @@
 
 echo "Starting Requirement Engineer MCP Server..."
 
-# Default values
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# Default values from .env or fallback
 TRANSPORT="streamable-http"
-HOST="127.0.0.1"
-PORT=3062  # Changed to 3062 as required
-ENABLE_REGISTRY=false  # As per requirement: should not become a new registry
-REGISTER_WITH_REGISTRY=true  # As per requirement: should connect to existing registry
-REGISTRY_HOST="127.0.0.1"
-REGISTRY_PORT=3031  # As per requirement: connect to existing registry on port 3031
-USE_POSTGRES=false  # Use SQLite for task storage (matching Registry Server)
-POSTGRES_HOST="127.0.0.1"  # PostgreSQL host
-POSTGRES_DB="mcp_registry"  # Database name
-MAX_CONCURRENT_REQUESTS=10
+HOST="${WEB_UI_HOST:-0.0.0.0}"
+PORT="${REQUIREMENTS_PORT:-3062}"
+ENABLE_REGISTRY=false
+REGISTER_WITH_REGISTRY=true
+REGISTRY_HOST="${REGISTRY_HOST:-127.0.0.1}"
+REGISTRY_PORT="${REGISTRY_PORT:-3031}"
+USE_POSTGRES="${USE_POSTGRES:-true}"
+POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
+POSTGRES_DB="${POSTGRES_DB:-mcp_registry}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+MAX_CONCURRENT_REQUESTS="${MAX_CONCURRENT_REQUESTS:-10}"
+# LLM configuration MUST come from .env - no fallbacks
+LLM_PROVIDER_URL="${LLM_PROVIDER_URL}"
+LLM_MODEL="${LLM_MODEL}"
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -65,6 +76,14 @@ while [[ $# -gt 0 ]]; do
       MAX_CONCURRENT_REQUESTS="$2"
       shift 2
       ;;
+    --llm-provider-url)
+      LLM_PROVIDER_URL="$2"
+      shift 2
+      ;;
+    --llm-model)
+      LLM_MODEL="$2"
+      shift 2
+      ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -78,6 +97,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --registry-port PORT      Registry server port [default: 3031]"
       echo "  --use-postgres            Use PostgreSQL for registry storage instead of SQLite [default: true]"
       echo "  --max-concurrent-requests NUM  Maximum number of concurrent requests [default: 10]"
+      echo "  --llm-provider-url URL    LLM provider URL [default: http://192.168.51.237:1234/v1/chat/completions]"
+      echo "  --llm-model MODEL         LLM model name [default: qwen3-coder-next@q5_k_xl]"
       echo "  -h, --help               Show this help message"
       exit 0
       ;;
@@ -127,11 +148,20 @@ else
 fi
 
 if [ "$USE_POSTGRES" = true ]; then
-  CMD="$CMD --use-postgres --postgres-host $POSTGRES_HOST --postgres-db $POSTGRES_DB --postgres-user postgres --postgres-password postgres"
+  CMD="$CMD --use-postgres --postgres-host $POSTGRES_HOST --postgres-db $POSTGRES_DB --postgres-user $POSTGRES_USER --postgres-password $POSTGRES_PASSWORD"
 fi
 
 if [ "$MAX_CONCURRENT_REQUESTS" != "10" ]; then
   CMD="$CMD --max-concurrent-requests $MAX_CONCURRENT_REQUESTS"
+fi
+
+# LLM configuration
+if [ -n "$LLM_PROVIDER_URL" ]; then
+  CMD="$CMD --llm-provider-url $LLM_PROVIDER_URL"
+fi
+
+if [ -n "$LLM_MODEL" ]; then
+  CMD="$CMD --llm-model $LLM_MODEL"
 fi
 
 echo "Executing: $CMD"

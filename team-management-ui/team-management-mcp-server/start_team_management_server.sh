@@ -3,16 +3,25 @@
 # Team Management MCP Server startup script
 # Sets up environment variables and starts the server
 
-# Set default values
+# Load configuration from .env file if it exists
+if [ -f "/root/qwen/base/.env" ]; then
+    source /root/qwen/base/.env
+    echo "✅ Loaded configuration from /root/qwen/base/.env"
+fi
+
+# Set default values from .env or fallback
 export TRANSPORT="${TRANSPORT:-streamable-http}"
-export HOST="${HOST:-127.0.0.1}"
-export PORT="${PORT:-3063}"  # Default to port 3063 as requested
-export ENABLE_REGISTRY="${ENABLE_REGISTRY:-false}"  # Should be false as requested
-export REGISTER_WITH_REGISTRY="${REGISTER_WITH_REGISTRY:-true}"  # Should be true as requested
+export HOST="${WEB_UI_HOST:-0.0.0.0}"
+export PORT="${TEAM_PORT:-3063}"
+export ENABLE_REGISTRY="${ENABLE_REGISTRY:-false}"
+export REGISTER_WITH_REGISTRY="${REGISTER_WITH_REGISTRY:-true}"
 export REGISTRY_HOST="${REGISTRY_HOST:-127.0.0.1}"
 export REGISTRY_PORT="${REGISTRY_PORT:-3031}"
-export USE_POSTGRES="${USE_POSTGRES:-false}"
+export USE_POSTGRES="${USE_POSTGRES:-true}"
 export MAX_CONCURRENT_REQUESTS="${MAX_CONCURRENT_REQUESTS:-10}"
+# LLM Configuration - MUST come from .env, NO fallback
+export LLM_PROVIDER_URL="${LLM_PROVIDER_URL}"
+export LLM_MODEL="${LLM_MODEL}"
 
 # PostgreSQL configuration (only used if USE_POSTGRES=true)
 export POSTGRES_HOST="${POSTGRES_HOST:-localhost}"

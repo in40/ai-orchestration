@@ -8,6 +8,7 @@ echo "Starting MCP System (IT Lead Server + Web UI)..."
 # Default values
 START_IT_LEAD_SERVER=true
 START_WEB_UI=true
+START_IMPLEMENTATION_ENGINEER=true
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -20,13 +21,18 @@ while [[ $# -gt 0 ]]; do
       START_WEB_UI=false
       shift
       ;;
+    --no-implementation-engineer)
+      START_IMPLEMENTATION_ENGINEER=false
+      shift
+      ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  --no-it-lead-server    Skip starting the IT Lead server"
-      echo "  --no-web-ui           Skip starting the Web UI"
-      echo "  -h, --help           Show this help message"
+      echo "  --no-it-lead-server        Skip starting the IT Lead server"
+      echo "  --no-web-ui               Skip starting the Web UI"
+      echo "  --no-implementation-engineer  Skip starting the Implementation Engineer"
+      echo "  -h, --help                Show this help message"
       exit 0
       ;;
     *)
@@ -41,15 +47,16 @@ done
 cleanup() {
     echo ""
     echo "Shutting down MCP System..."
-    
+
     # Kill all background processes
     jobs -p | xargs -r kill 2>/dev/null
-    
+
     # Also try to stop specific services if they're running
     pkill -f "it_lead_mcp_server.server" 2>/dev/null || true
     pkill -f "uvicorn" 2>/dev/null || true
     pkill -f "npm run dev" 2>/dev/null || true
-    
+    pkill -f "mcp_std_server.server" 2>/dev/null || true
+
     echo "MCP System has been shut down."
     exit 0
 }
@@ -82,6 +89,31 @@ else
     echo "Skipping IT Lead Server startup (as requested)"
 fi
 
+# Start Implementation Engineer (if requested)
+if [ "$START_IMPLEMENTATION_ENGINEER" = true ]; then
+    echo ""
+    echo "Starting Implementation Engineer MCP Server..."
+    cd /root/qwen/base/mcp-std-coder/mcp-vibe-coding-agent
+    ./start_mcp_server.sh --register-with-registry --registry-host 127.0.0.1 --registry-port 3061 &
+    IMPLEMENTATION_ENGINEER_PID=$!
+
+    echo "Implementation Engineer PID: ${IMPLEMENTATION_ENGINEER_PID}"
+
+    # Wait a moment for the Implementation Engineer server to start
+    echo "Waiting for Implementation Engineer to be ready..."
+    sleep 5
+
+    # Check if the server is running on port 3060
+    timeout 10 bash -c 'until nc -z localhost 3060; do sleep 1; done' 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "Implementation Engineer is ready on port 3060"
+    else
+        echo "Warning: Implementation Engineer may not be ready on port 3060"
+    fi
+else
+    echo "Skipping Implementation Engineer startup (as requested)"
+fi
+
 # Start Web UI (if requested)
 if [ "$START_WEB_UI" = true ]; then
     echo ""
@@ -112,6 +144,9 @@ echo "MCP System startup complete!"
 echo ""
 if [ "$START_IT_LEAD_SERVER" = true ]; then
     echo "IT Lead Server should be available at: http://127.0.0.1:3061/mcp"
+fi
+if [ "$START_IMPLEMENTATION_ENGINEER" = true ]; then
+    echo "Implementation Engineer should be available at: http://127.0.0.1:3060/mcp"
 fi
 if [ "$START_WEB_UI" = true ]; then
     echo "Web UI should be available at: http://localhost:5173"

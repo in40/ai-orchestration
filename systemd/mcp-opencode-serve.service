@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenCode serve - agent runtime HTTP API
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment=OPENCODE_PASSWORD=uX9AAaDEehvQRg
+ExecStart=/root/.opencode/bin/opencode serve --port 4097 --hostname 127.0.0.1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

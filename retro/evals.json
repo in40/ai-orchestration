@@ -1,0 +1,17 @@
+[
+  {
+    "key": "golden-static",
+    "description": "Single web page: dark gradient background, centered monospace title 'Eval One' and a small card with text; deploy it as a web service",
+    "expect_deploy": true
+  },
+  {
+    "key": "golden-script",
+    "description": "Python script that prints today's date in ISO format to stdout",
+    "expect_deploy": false
+  },
+  {
+    "key": "golden-api",
+    "description": "Python stdlib http service: GET /health returns {\"status\":\"ok\"}, GET /sum?a=2&b=3 returns {\"sum\":5}; deploy it as a web service",
+    "expect_deploy": true
+  }
+]
