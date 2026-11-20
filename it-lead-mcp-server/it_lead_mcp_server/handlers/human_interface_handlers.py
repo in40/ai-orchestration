@@ -582,12 +582,12 @@ class HumanInterfaceHandlers:
         try:
             cur = self.task_storage.connection.cursor()
             cur.execute(
-                "SELECT task_id, e->>'event', e->>'detail', (e->>'ts')::bigint "
+                "SELECT task_id, e->>'event', e->>'detail', (e->>'ts')::numeric::bigint "
                 "FROM task_registry, jsonb_array_elements(COALESCE(activity,'[]'::jsonb)) e "
                 "WHERE e->>'event' = ANY(%s) "
-                "AND COALESCE(e->>'ts','') ~ '^[0-9]+$' "
-                "AND (e->>'ts')::bigint > EXTRACT(EPOCH FROM now() - interval '48 hours')::bigint "
-                "ORDER BY (e->>'ts')::bigint DESC LIMIT 20", (list(events),))
+                "AND COALESCE(e->>'ts','') ~ '^[0-9]+(\\.[0-9]+)?$' "
+                "AND (e->>'ts')::numeric > EXTRACT(EPOCH FROM now() - interval '48 hours') "
+                "ORDER BY (e->>'ts')::numeric DESC LIMIT 20", (list(events),))
             rows = [{"task_id": r[0], "event": r[1], "detail": (r[2] or "")[:150],
                      "ts": int(r[3])} for r in cur.fetchall()]
             self.task_storage.connection.commit()
