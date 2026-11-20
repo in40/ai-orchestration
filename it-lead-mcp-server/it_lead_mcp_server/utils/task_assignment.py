@@ -95,7 +95,20 @@ class TaskAssignmentManager:
                 self.task_storage.connection.commit()
                 cur.close()
                 for tid in orphans:
-                    print(f"⚠️ orphaned task swept to needs_revision: {tid}")
+                    if self._recover_git_url(tid):
+                        print(f"🩹 orphan self-heal: re-running gates for {tid}")
+                        threading.Thread(
+                            target=self._trigger_rework_workflow,
+                            args=(tid,
+                                  "Конвейер оборвался из-за рестарта сервиса; "
+                                  "дерево артефакта восстановлено из results-репозитория. "
+                                  "Код не меняй, если сборка не падает: прогони "
+                                  "верификацию артефакта (компиляция/запуск/smoke) "
+                                  "и заверши работу.",
+                                  "", "medium"),
+                            daemon=True).start()
+                    else:
+                        print(f"⚠️ orphaned task swept to needs_revision: {tid}")
         except Exception as e:
             print(f"⚠️ orphan sweep failed: {e}")
 
@@ -3024,6 +3037,36 @@ Please implement this corrected code in {original_language} and prepare it for d
             import traceback
             traceback.print_exc()
 
+    def _recover_git_url(self, task_id):
+        """Self-heal: the coder pushes results/<task_id> before the pipeline
+        records git_url, so an interrupted task's tree may exist anyway. Probe
+        the results repo and adopt the tree if found."""
+        import subprocess
+        repo = "/tmp/mcp-vibe-coding-git/repo"
+        url = "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"
+        try:
+            if not os.path.isdir(os.path.join(repo, ".git")):
+                subprocess.run(["git", "clone", "-q", "--filter=blob:none",
+                                "--no-checkout", url, repo],
+                               capture_output=True, timeout=300)
+            else:
+                subprocess.run(["git", "-C", repo, "fetch", "-q", "origin"],
+                               capture_output=True, timeout=300)
+            r = subprocess.run(["git", "-C", repo, "ls-tree", "--name-only",
+                                "origin/main", f"results/{task_id}/"],
+                               capture_output=True, text=True, timeout=60)
+            if r.stdout.strip():
+                tree = f"{url[:-4]}/tree/main/results/{task_id}"
+                self._merge_metadata(task_id, {"git_url": tree, "path": tree,
+                                               "storage_type": "git"})
+                self._log_activity(task_id, "git_url_recovered", agent="it-lead",
+                                   detail=f"adopted results/{task_id} from results repo")
+                print(f"🩹 git_url recovered for {task_id}", flush=True)
+                return tree
+        except Exception as e:
+            print(f"⚠️ git_url recovery probe failed for {task_id}: {e}", flush=True)
+        return None
+
     def _trigger_rework_workflow(self, task_id: str, issue_description: str, additional_comments: str, priority: str = "medium"):
         """
         Trigger rework workflow when a task in 'done' status is found to have issues.
@@ -3065,10 +3108,14 @@ Please implement this corrected code in {original_language} and prepare it for d
                 except Exception:
                     metadata = {}
             if not metadata.get("git_url"):
-                print(f"⛔ rework rejected: {task_id} has no artifact tree (git_url)", flush=True)
-                self._log_activity(task_id, "rework_rejected", agent="it-lead",
-                                   detail="no git_url - nothing to fix in place")
-                return
+                recovered = self._recover_git_url(task_id)
+                if recovered:
+                    metadata["git_url"] = recovered
+                else:
+                    print(f"⛔ rework rejected: {task_id} has no artifact tree (git_url)", flush=True)
+                    self._log_activity(task_id, "rework_rejected", agent="it-lead",
+                                       detail="no git_url - nothing to fix in place")
+                    return
 
             # Check if code review is needed based on issue type
             # Issues related to code quality, architecture, or patterns suggest needing review

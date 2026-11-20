@@ -889,6 +889,12 @@ async def reject_retro_proposal(pid: int, body: dict = None):
                                {"id": pid, "reason": (body or {}).get("reason", "")})
 
 
+@app.get("/api/pipeline/alerts")
+async def get_pipeline_alerts():
+    """Recent pipeline incidents: rework rejections, self-fix failures, timeouts."""
+    return await _it_lead_tool("get_pipeline_alerts", {})
+
+
 @app.get("/api/selffix")
 async def get_selffix_queue():
     """Self-fix items: diffs awaiting review plus recent history."""

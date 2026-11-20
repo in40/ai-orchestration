@@ -16,6 +16,8 @@ const ClarificationBell = () => {
   const [digest, setDigest] = useState(null);
   const [proposals, setProposals] = useState([]);
   const [selffix, setSelffix] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+  const seenAlerts = useRef(null);
   const [sfDiff, setSfDiff] = useState({});
   const [fixDialog, setFixDialog] = useState(false);
   const [fixText, setFixText] = useState('');
@@ -72,6 +74,10 @@ const ClarificationBell = () => {
     try {
       const s = await axios.get('/api/selffix');
       setSelffix((s.data.items || []).filter(x => x.status === 'review'));
+    } catch (e) { /* ignore */ }
+    try {
+      const a = await axios.get('/api/pipeline/alerts');
+      setAlerts(a.data.alerts || []);
     } catch (e) { /* ignore */ }
   }, []);
 
@@ -141,6 +147,24 @@ const ClarificationBell = () => {
       seenSelffix.current = ids;
     }
   }, [selffix]);
+
+  // pipeline incidents -> notify once per new set
+  useEffect(() => {
+    const keys = alerts.map(a => `${a.task_id}:${a.event}:${a.ts}`).sort().join(',');
+    if (seenAlerts.current === null) { seenAlerts.current = keys; return; }
+    if (keys && keys !== seenAlerts.current && document.hidden) {
+      seenAlerts.current = keys;
+      beep();
+      if ('Notification' in window && Notification.permission === 'granted') {
+        const n = new Notification(`Пайплайн: инциденты: ${alerts.length}`, {
+          body: alerts.slice(0, 4).map(a => `${a.event} · ${a.task_id}`).join('\n'),
+          tag: 'pipeline-alerts' });
+        n.onclick = () => { window.focus(); n.close(); };
+      }
+    } else {
+      seenAlerts.current = keys;
+    }
+  }, [alerts]);
 
   const decideSelffix = async (id, action) => {
     try {
@@ -248,6 +272,19 @@ const ClarificationBell = () => {
             Системные уведомления заблокированы: откройте интерфейс по https://…
             (на http браузер их запрещает всегда) и разрешите их в настройках сайта
           </MenuItem>
+        )}
+        {alerts.length > 0 && (
+          <Box sx={{ px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+            <Typography variant="subtitle2" color="warning.main">
+              ⚠️ Инциденты за 48ч: {alerts.length}
+            </Typography>
+            {alerts.slice(0, 6).map((a, i) => (
+              <Typography key={i} variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                <b>{a.event}</b> · <span style={{ fontFamily: 'monospace' }}>{a.task_id}</span>
+                {a.detail ? ` — ${String(a.detail).slice(0, 90)}` : ''}
+              </Typography>
+            ))}
+          </Box>
         )}
         {groups.length === 0 && proposals.length === 0 && selffix.length === 0 &&
           <MenuItem disabled>Нет активных вопросов</MenuItem>}

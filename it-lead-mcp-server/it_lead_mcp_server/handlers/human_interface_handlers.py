@@ -134,6 +134,13 @@ class HumanInterfaceHandlers:
                                 "required": ["id"]}
             },
             {
+                "name": "get_pipeline_alerts",
+                "description": "Recent pipeline incidents (rework rejections, "
+                               "self-fix failures, clarification timeouts, recovered "
+                               "artifacts) within the last 48 hours.",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
                 "name": "get_retro_digest",
                 "description": "Latest nightly retro report: team health snapshot "
                                "(tasks/gates/reworks/stuck) for the notification bell.",
@@ -218,6 +225,8 @@ class HumanInterfaceHandlers:
             return {"success": True}
         elif tool_name == "get_retro_digest":
             return self._get_retro_digest(arguments)
+        elif tool_name == "get_pipeline_alerts":
+            return self._get_pipeline_alerts()
         elif tool_name == "request_self_fix":
             from ..utils import self_fix
             return self_fix.file_self_fix(
