@@ -1036,7 +1036,9 @@ class TaskAssignmentManager:
         if not git_url and os.environ.get("OPENCODE_BUILD", "1") != "0":
             base = None
             try:
-                pid = (metadata or {}).get("product_id")
+                md = metadata or {}
+                pid = md.get("product_id") or \
+                    ((md.get("original_arguments") or {}).get("metadata") or {}).get("product_id")
                 if pid:
                     with self.task_storage.connection.cursor() as pc:
                         pc.execute("SELECT name, mirror_url FROM products WHERE id=%s",
@@ -1045,6 +1047,9 @@ class TaskAssignmentManager:
                     self.task_storage.connection.commit()
                     if prow:
                         base = prow[1]
+                        # multi-file tree iteration, like rework: the planner's
+                        # greenfield manifest would confuse the artifact validator
+                        file_manifest = self._gated_manifest_synth()
                         self._log_activity(task_id, "product_source", agent="it-lead",
                                            detail=f"building on product '{prow[0]}' mirror")
             except Exception:
@@ -1251,7 +1256,9 @@ class TaskAssignmentManager:
         """After gates: copy the accepted results/<task> tree into the product
         mirror so the product accumulates the outcome of its tasks."""
         try:
-            pid = (metadata or {}).get("product_id")
+            md = metadata or {}
+            pid = md.get("product_id") or \
+                ((md.get("original_arguments") or {}).get("metadata") or {}).get("product_id")
             if not pid:
                 return
             with self.task_storage.connection.cursor() as c:
