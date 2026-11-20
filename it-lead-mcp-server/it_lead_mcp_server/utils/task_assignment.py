@@ -90,22 +90,34 @@ class TaskAssignmentManager:
                     "status_reason='pipeline thread lost on IT Lead restart; "
                     "request rework to resume' "
                     "WHERE status IN ('in_progress','rework_in_progress') "
+                    "OR (status='review' AND COALESCE(metadata->>'selffix_area','')='') "
                     "RETURNING task_id")
                 orphans = [r[0] for r in cur.fetchall()]
                 self.task_storage.connection.commit()
                 cur.close()
                 for tid in orphans:
                     if self._recover_git_url(tid):
-                        print(f"🩹 orphan self-heal: re-running gates for {tid}")
-                        threading.Thread(
-                            target=self._trigger_rework_workflow,
-                            args=(tid,
-                                  "Конвейер оборвался из-за рестарта сервиса; "
+                        # reuse the requestor's own rework text when present,
+                        # so a restart does not silently downgrade the task
+                        prompt = ("Конвейер оборвался из-за рестарта сервиса; "
                                   "дерево артефакта восстановлено из results-репозитория. "
                                   "Код не меняй, если сборка не падает: прогони "
                                   "верификацию артефакта (компиляция/запуск/smoke) "
-                                  "и заверши работу.",
-                                  "", "medium"),
+                                  "и заверши работу.")
+                        try:
+                            with self.task_storage.connection.cursor() as c2:
+                                c2.execute("SELECT metadata->>'rework_issue_description' "
+                                           "FROM task_registry WHERE task_id=%s", (tid,))
+                                r2 = c2.fetchone()
+                            self.task_storage.connection.commit()
+                            if r2 and r2[0]:
+                                prompt = r2[0]
+                        except Exception:
+                            pass
+                        print(f"🩹 orphan self-heal: re-running gates for {tid}")
+                        threading.Thread(
+                            target=self._trigger_rework_workflow,
+                            args=(tid, prompt, "", "medium"),
                             daemon=True).start()
                     else:
                         print(f"⚠️ orphaned task swept to needs_revision: {tid}")
