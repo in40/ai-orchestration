@@ -1037,8 +1037,7 @@ class TaskAssignmentManager:
             base = None
             try:
                 md = metadata or {}
-                pid = md.get("product_id") or \
-                    ((md.get("original_arguments") or {}).get("metadata") or {}).get("product_id")
+                pid = self._pid_from(md)
                 if pid:
                     with self.task_storage.connection.cursor() as pc:
                         pc.execute("SELECT name, mirror_url FROM products WHERE id=%s",
@@ -1252,13 +1251,24 @@ class TaskAssignmentManager:
                     pass
         threading.Thread(target=_run, daemon=True).start()
 
+    def _pid_from(self, md, depth=0):
+        """product_id may sit at top level or nested in assign wrappers."""
+        if not isinstance(md, dict) or depth > 4:
+            return None
+        if md.get("product_id"):
+            return md["product_id"]
+        for v in md.values():
+            r = self._pid_from(v, depth + 1)
+            if r:
+                return r
+        return None
+
     def _sync_product_mirror(self, task_id, metadata):
         """After gates: copy the accepted results/<task> tree into the product
         mirror so the product accumulates the outcome of its tasks."""
         try:
             md = metadata or {}
-            pid = md.get("product_id") or \
-                ((md.get("original_arguments") or {}).get("metadata") or {}).get("product_id")
+            pid = self._pid_from(md)
             if not pid:
                 return
             with self.task_storage.connection.cursor() as c:
