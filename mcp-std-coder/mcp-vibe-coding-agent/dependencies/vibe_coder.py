@@ -1329,10 +1329,16 @@ Overall project goal:
                 if base_tree:
                     # rework mode: seed the workspace with the existing artifact tree
                     m = re.search(r"(?P<repo>.+?)(?:\.git)?/tree/main/(?P<sub>.+)", base_tree)
-                    repo = (m.group("repo") + ".git") if m else os.environ.get(
-                        "MCP_GIT_REPO_URL",
-                        "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
-                    sub = m.group("sub") if m else ""
+                    if m:
+                        repo, sub = m.group("repo") + ".git", m.group("sub")
+                    elif base_tree.endswith(".git") or "://" in base_tree:
+                        # direct clone URL (product mirror)
+                        repo, sub = base_tree, ""
+                    else:
+                        repo = os.environ.get(
+                            "MCP_GIT_REPO_URL",
+                            "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                        sub = ""
                     tmp = Path(tempfile.gettempdir()) / f"rework-clone-{tid}"
                     _sh.rmtree(str(tmp), ignore_errors=True)
                     subprocess.run(["git", "clone", "--depth", "1", repo, str(tmp)],

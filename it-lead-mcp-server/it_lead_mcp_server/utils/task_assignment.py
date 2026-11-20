@@ -1034,8 +1034,23 @@ class TaskAssignmentManager:
         git_url = prebuilt_git_url
         results = None
         if not git_url and os.environ.get("OPENCODE_BUILD", "1") != "0":
+            base = None
+            try:
+                pid = (metadata or {}).get("product_id")
+                if pid:
+                    with self.task_storage.connection.cursor() as pc:
+                        pc.execute("SELECT name, mirror_url FROM products WHERE id=%s",
+                                   (int(pid),))
+                    prow = pc.fetchone()
+                    self.task_storage.connection.commit()
+                    if prow:
+                        base = prow[1]
+                        self._log_activity(task_id, "product_source", agent="it-lead",
+                                           detail=f"building on product '{prow[0]}' mirror")
+            except Exception:
+                base = None
             git_url = self._build_via_opencode(task_id, task_description, file_manifest,
-                                               coder_endpoint, metadata)
+                                               coder_endpoint, metadata, base_tree=base)
         if git_url is None:
             results = {}
             with ThreadPoolExecutor(max_workers=3) as ex:
@@ -1180,6 +1195,7 @@ class TaskAssignmentManager:
                     return
                 if self._finalize_selffix(task_id):
                     return
+                self._sync_product_mirror(task_id, metadata)
                 self._generate_docs(task_id)
                 self._update_task_status(task_id, "done",
                                          ("Rework deliverable: gates passed, redeployed at " + url
@@ -1192,6 +1208,7 @@ class TaskAssignmentManager:
             return
         if self._finalize_selffix(task_id):
             return
+        self._sync_product_mirror(task_id, metadata)
         self._generate_docs(task_id)
         self._update_task_status(task_id, "done",
                                  ("Rework deliverable: gates passed (no deploy expected)"
@@ -1229,6 +1246,75 @@ class TaskAssignmentManager:
                 except Exception:
                     pass
         threading.Thread(target=_run, daemon=True).start()
+
+    def _sync_product_mirror(self, task_id, metadata):
+        """After gates: copy the accepted results/<task> tree into the product
+        mirror so the product accumulates the outcome of its tasks."""
+        try:
+            pid = (metadata or {}).get("product_id")
+            if not pid:
+                return
+            with self.task_storage.connection.cursor() as c:
+                c.execute("SELECT name, mirror_url FROM products WHERE id=%s",
+                          (int(pid),))
+            row = c.fetchone()
+            self.task_storage.connection.commit()
+            if not row:
+                return
+            pname, mirror = row
+            import shutil as _sh
+            import subprocess as _sp
+            import tempfile as _tf
+            res_repo = "/tmp/mcp-vibe-coding-git/repo"
+            _sp.run(["git", "-C", res_repo, "pull", "-q", "--rebase", "origin", "main"],
+                    capture_output=True, timeout=300)
+            src = os.path.join(res_repo, "results", task_id)
+            if not os.path.isdir(src):
+                self._log_activity(task_id, "product_sync", agent="it-lead",
+                                   detail="skipped (no results tree)")
+                return
+            tmp = _tf.mkdtemp(prefix="prod-sync-")
+            try:
+                work = os.path.join(tmp, "w")
+                cl = _sp.run(["git", "clone", "--", mirror, work],
+                             capture_output=True, text=True, timeout=300)
+                if cl.returncode != 0:
+                    self._log_activity(task_id, "product_sync", agent="it-lead",
+                                       detail=f"skipped (clone: {cl.stderr[:100]})")
+                    return
+                for item in os.listdir(work):
+                    if item == ".git":
+                        continue
+                    p = os.path.join(work, item)
+                    _sh.rmtree(p) if os.path.isdir(p) else os.remove(p)
+                for item in os.listdir(src):
+                    if item in (".git", "docs", "MANIFEST.md", "AGENTS.md"):
+                        continue
+                    s = os.path.join(src, item)
+                    d = os.path.join(work, item)
+                    _sh.copytree(s, d) if os.path.isdir(s) else _sh.copy(s, d)
+                run = lambda *a: _sp.run(list(a), cwd=work, capture_output=True,
+                                         text=True, timeout=300)
+                run("git", "add", "-A")
+                cm = run("git", "-c", "user.name=it-lead", "-c",
+                         "user.email=it-lead@local", "commit", "-m",
+                         f"product update from task {task_id}")
+                if "nothing to commit" in (cm.stdout + cm.stderr):
+                    self._log_activity(task_id, "product_sync", agent="it-lead",
+                                       detail="no changes")
+                    return
+                p = run("git", "push", "origin", "HEAD:main")
+                self._log_activity(task_id, "product_sync", agent="it-lead",
+                                   detail=("ok -> " + pname) if p.returncode == 0
+                                   else f"failed: {p.stderr[:120]}")
+            finally:
+                _sh.rmtree(tmp, ignore_errors=True)
+        except Exception as e:
+            try:
+                self._log_activity(task_id, "product_sync", agent="it-lead",
+                                   detail=f"skipped ({str(e)[:100]})")
+            except Exception:
+                pass
 
     def _finalize_selffix(self, task_id) -> bool:
         """M6: if this rework was a self-fix over a snapshot, compute the

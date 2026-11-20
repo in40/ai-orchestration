@@ -60,6 +60,11 @@ const AddTaskForm = ({
     metadata: false
   });
   const [availableAgents, setAvailableAgents] = useState([]);
+  const [products, setProducts] = useState([]);
+  useEffect(() => {
+    fetch('/api/products').then(r => r.json())
+      .then(d => setProducts(d.products || [])).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (agents && agents.length > 0) {
@@ -458,6 +463,27 @@ const AddTaskForm = ({
                 }))}
               />
             </Box>
+
+            {/* Product iteration: build on top of a product mirror */}
+            <FormControl fullWidth margin="dense" size="small">
+              <InputLabel>Продукт (итерация поверх зеркала, опционально)</InputLabel>
+              <Select
+                value={taskData.context?.product_id || ''}
+                label="Продукт (итерация поверх зеркала, опционально)"
+                onChange={(e) => setTaskData(prev => ({
+                  ...prev,
+                  context: { ...prev.context, product_id: e.target.value || undefined }
+                }))}
+              >
+                <MenuItem value="">— с нуля (без продукта) —</MenuItem>
+                {products.map(p => (
+                  <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
+                ))}
+              </Select>
+              <FormHelperText>
+                Если выбран — кодер клонирует зеркало продукта и работает поверх него
+              </FormHelperText>
+            </FormControl>
 
             {/* Acceptance Criteria */}
             <TextField

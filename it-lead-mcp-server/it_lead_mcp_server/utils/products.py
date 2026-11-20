@@ -205,9 +205,7 @@ def publish_product(conn, product_id, github_repo, private=True, confirm="",
         cur.close()
         return {"success": False, "error": "product not found"}
     name, desc, mirror, status, existing = row
-    if status == "published" and existing:
-        cur.close()
-        return {"success": False, "error": f"already published: {existing}"}
+    republish = bool(existing) and status == "published"
     if not _mirror_has_commits(mirror):
         cur.close()
         return {"success": False, "error": "mirror is empty — nothing to publish"}
@@ -216,18 +214,26 @@ def publish_product(conn, product_id, github_repo, private=True, confirm="",
         cur.close()
         return {"success": False, "error": "GITHUB_PAT not configured"}
 
-    github_repo = (github_repo or name).strip().removesuffix(".git")
-    if "/" in github_repo:
-        owner, _, repo = github_repo.partition("/")
+    if republish:
+        m = re.search(r"github\.com/([^/]+)/([^/.]+)", existing)
+        if not m:
+            cur.close()
+            return {"success": False, "error": f"bad github_url: {existing}"}
+        owner, repo = m.group(1), m.group(2)
     else:
-        owner, repo = GITHUB_OWNER, github_repo
-    code, payload = _github_create_repo(pat, repo, private, desc or f"product {repo}")
-    if code == 422 and "already exists" in json.dumps(payload):
-        pass  # reuse existing repo
-    elif code not in (200, 201):
-        cur.close()
-        return {"success": False,
-                "error": f"github create failed {code}: {redact(json.dumps(payload))[:200]}"}
+        github_repo = (github_repo or name).strip().removesuffix(".git")
+        if "/" in github_repo:
+            owner, _, repo = github_repo.partition("/")
+        else:
+            owner, repo = GITHUB_OWNER, github_repo
+        code, payload = _github_create_repo(pat, repo, private,
+                                            desc or f"product {repo}")
+        if code == 422 and "already exists" in json.dumps(payload):
+            pass  # reuse existing repo
+        elif code not in (200, 201):
+            cur.close()
+            return {"success": False,
+                    "error": f"github create failed {code}: {redact(json.dumps(payload))[:200]}"}
 
     tmp = tempfile.mkdtemp(prefix="prod-publish-")
     try:

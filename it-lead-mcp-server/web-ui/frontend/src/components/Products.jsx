@@ -99,10 +99,15 @@ const Products = () => {
                   </Typography>
                 )}
                 <Box sx={{ mt: 1.5 }}>
-                  {p.status !== 'published' && (
+                  {p.status !== 'published' ? (
                     <Button size="small" variant="contained" startIcon={<PublishIcon />}
                       onClick={() => openPublish(p)}>
                       Опубликовать…
+                    </Button>
+                  ) : (
+                    <Button size="small" variant="outlined" startIcon={<PublishIcon />}
+                      onClick={() => openPublish(p)}>
+                      Обновить в GitHub
                     </Button>
                   )}
                 </Box>
@@ -135,8 +140,14 @@ const Products = () => {
       <Dialog open={!!pub} onClose={() => setPub(null)} maxWidth="xs" fullWidth>
         <DialogTitle>Публикация: {pub?.name}</DialogTitle>
         <DialogContent dividers>
-          <TextField fullWidth size="small" margin="normal" label="Имя репо на GitHub"
-            value={pubRepo} onChange={e => setPubRepo(e.target.value)} />
+          {pub?.github_url ? (
+            <Alert severity="info" sx={{ mb: 1 }}>
+              Будет обновлён существующий репозиторий: {pub.github_url}
+            </Alert>
+          ) : (
+            <TextField fullWidth size="small" margin="normal" label="Имя репо на GitHub"
+              value={pubRepo} onChange={e => setPubRepo(e.target.value)} />
+          )}
           <FormControlLabel control={
             <Checkbox checked={pubPrivate} onChange={e => setPubPrivate(e.target.checked)} />
           } label="приватный репозиторий" />
