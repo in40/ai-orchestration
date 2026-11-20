@@ -1011,6 +1011,15 @@ class TaskAssignmentManager:
                 return
             git_url = next((o["git_url"].rsplit("/", 1)[0] for o in results.values()
                             if o.get("git_url")), "")
+        if git_url and self.task_storage:
+            # persist the artifact location BEFORE gates run: if this thread
+            # ever dies (service restart), the tree is not orphaned and a
+            # rework can still be requested against it
+            try:
+                self._merge_metadata(task_id, {"git_url": git_url, "path": git_url,
+                                               "storage_type": "git"})
+            except Exception:
+                pass
         qa_ok, qa_info = self._run_qa_gate(task_id, git_url, task_id)
         # QA-side clarification: the contract planner could not decide how to
         # run/test this artifact without requestor input (backend URL, creds,
