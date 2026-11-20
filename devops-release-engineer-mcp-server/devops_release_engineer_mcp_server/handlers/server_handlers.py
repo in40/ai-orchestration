@@ -1247,6 +1247,14 @@ CMD ["python", "-m", "http.server", "{container_port}"]
             out = out["result"]
         return out if isinstance(out, dict) else {}
 
+    def _clear_deployment_url(self, task_id):
+        """Ask the task owner (IT Lead) to drop deployment_url after stop/delete,
+        so the Tasks-tab redeploy button (git_url && !deployment_url) reappears."""
+        try:
+            self._it_lead_tool("clear_deployment_url", {"task_id": task_id})
+        except Exception as e:
+            deployment_logger.info(f"clear_deployment_url via MCP failed: {e}")
+
     def _get_deploy_env(self, task_id):
         """Runtime env from the task owner via MCP; direct SQL only as a
         fallback so a devops box needs no DB credentials in the norm."""
