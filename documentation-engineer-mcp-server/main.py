@@ -8,8 +8,10 @@ Streamable-HTTP MCP-сервер (plain JSON-RPC 2.0 over HTTP POST /mcp):
     (чтобы ссылка работала с других контейнеров, а не только с localhost);
   * инструмент generate_task_docs(task_id) клонирует/обновляет results-дерево,
     читает описание задачи, план planner'а, need_info/ответы заказчика,
-    QA-контракт и финальный код, пишет results/<task>/docs/REQUIREMENTS.md и
-    results/<task>/docs/ARCHITECTURE.md и пушит docs/ обратно в results-дерево.
+    QA-контракт, rework-запросы, security findings, code review notes и финальный
+    код, пишет results/<task>/docs/REQUIREMENTS.md (облегчённый ISO 29148),
+    results/<task>/docs/ARCHITECTURE.md (arc42-lite) и results/<task>/docs/USAGE.md
+    (Diátaxis how-to) и пушит docs/ обратно в results-дерево.
 
 Сбой генерации docs никогда не роняет сервер и не влияет на статус задачи:
 инструмент возвращает isError + строку "docs=skipped", успешный путь — "docs=ok".
@@ -329,10 +331,89 @@ def _as_str_list(value) -> list:
     return [_stringify(value)]
 
 
+def _extract_section(text: str, starts: tuple, ends: tuple, limit: int = 40) -> list:
+    """Достаёт пункты markdown-секции между заголовками из starts и ends."""
+    lines = (text or "").splitlines()
+    out, on = [], False
+    for ln in lines:
+        low = ln.lower()
+        if not on:
+            if any(s in low for s in starts):
+                on = True
+            continue
+        if any(e in low for e in ends):
+            break
+        out.append(ln)
+        if len(out) > 300:
+            break
+    return _split_items("\n".join(out), limit)
+
+
+SEC_KW = ("security", "безопас", "secret", "токен", "token", "password", "пароль",
+          "уязвим", "inject", "cve", "traversal", "auth", "валидац", "validation")
+REL_KW = ("надеж", "fallback", "retry", "error", "ошибк", "crash", "падени", "timeout",
+          "таймаут", "robust", "деград", "логир", "доступн")
+PERF_KW = ("производит", "нагруз", "performance", "latency", "латент", "memory",
+           "памят", "cpu", "throughput", "скорост", "optimize", "кэш", "cache")
+
+
+def classify_nfr(inp: dict) -> dict:
+    """Раскладывает security findings и QA-контракт по категориям NFR."""
+    cats = {"security": [], "reliability": [], "performance": []}
+    for item in inp.get("security_items", []):
+        low = item.lower()
+        if any(k in low for k in PERF_KW):
+            cats["performance"].append(item)
+        elif any(k in low for k in REL_KW):
+            cats["reliability"].append(item)
+        else:
+            cats["security"].append(item)
+    for item in inp.get("qa_items", []):
+        low = item.lower()
+        if any(k in low for k in SEC_KW):
+            cats["security"].append(item)
+        elif any(k in low for k in PERF_KW):
+            cats["performance"].append(item)
+        elif any(k in low for k in REL_KW):
+            cats["reliability"].append(item)
+    return cats
+
+
+def _ac_kind(item: str) -> str:
+    low = item.lower()
+    if any(k in low for k in ("install", "установ", "зависимост", "pip", "requirements")):
+        return "install"
+    if any(k in low for k in ("health", "/health", "healthcheck", "ping", "доступн")):
+        return "healthcheck"
+    if any(k in low for k in ("run", "запуск", "serve", "start", "работ", "python main")):
+        return "run"
+    return "general"
+
+
+def _tokens(s: str) -> set:
+    return set(re.findall(r"[a-zа-я0-9_/.-]{4,}", (s or "").lower()))
+
+
+def traceability(frs: list, qa_items: list) -> list:
+    """FR -> список совпадений с QA-проверками по пересечению токенов."""
+    rows = []
+    qa_tok = [(_tokens(q), q) for q in qa_items]
+    for i, fr in enumerate(frs, 1):
+        ft = _tokens(fr)
+        matches = [q for qt, q in qa_tok if len(ft & qt) >= 2]
+        rows.append((f"FR-{i}", fr, matches[:3]))
+    return rows
+
+
+NO_DATA = "_нет данных_"
+
+
 def collect_inputs(tdir: Path) -> dict:
     inp: dict = {
         "task_meta": None, "description": "", "plan_items": [],
         "need_info_items": [], "answer_items": [], "qa_items": [],
+        "rework_items": [], "security_items": [], "review_items": [],
+        "healthcheck_client": False,
         "code_files": [], "readme": "", "requirements_txt": "",
     }
 
@@ -352,6 +433,20 @@ def collect_inputs(tdir: Path) -> dict:
             inp["description"] = _read_text(desc_path)
             if desc_path.name == "README.md":
                 inp["readme"] = inp["description"]
+    if not inp["description"]:
+        # реальное results-дерево: response.json с original_llm_response (JSON-строка)
+        rp = tdir / "response.json"
+        if rp.is_file():
+            data = _load_json(rp)
+            if isinstance(data, dict):
+                olr = data.get("original_llm_response")
+                if isinstance(olr, str):
+                    try:
+                        olr = json.loads(olr)
+                    except json.JSONDecodeError:
+                        olr = None
+                if isinstance(olr, dict) and olr.get("task_understanding"):
+                    inp["description"] = _stringify(olr["task_understanding"])
 
     # 2. План planner'а
     plan_path = _first_existing(tdir, ["plan.json", "plan.md", "planner_plan.json", "planner_plan.md"])
@@ -371,6 +466,33 @@ def collect_inputs(tdir: Path) -> dict:
     qa_path = _first_existing(tdir, ["qa_contract.json", "qa.json", "qa_contract.md", "qa.md", "acceptance.md"])
     if qa_path:
         inp["qa_items"] = _as_str_list(_load_json(qa_path))
+
+    # 4b. Rework-запросы (что исправляется в задаче)
+    rw_path = _first_existing(tdir, ["rework.md", "rework.json", "MANIFEST.md", "issues.md", "rework_request.md"])
+    if rw_path:
+        raw = _load_json(rw_path)
+        if isinstance(raw, str) and rw_path.suffix.lower() == ".md":
+            items = _extract_section(raw, ("issues to fix", "issues found", "что исправить"),
+                                     ("additional comments", "original code location",
+                                      "original task", "language:"))
+            inp["rework_items"] = items or _split_items(raw)
+        else:
+            inp["rework_items"] = _as_str_list(raw)
+
+    # 4c. Security findings
+    sec_path = _first_existing(tdir, ["security_findings.json", "security.json", "security_findings.md",
+                                      "security.md", "findings.json", "security_review.md"])
+    if sec_path:
+        inp["security_items"] = _as_str_list(_load_json(sec_path))
+
+    # 4d. Code review notes
+    cr_path = _first_existing(tdir, ["code_review.md", "code_review.json", "code_review_notes.md",
+                                     "review.md", "review_notes.md", "review.json"])
+    if cr_path:
+        inp["review_items"] = _as_str_list(_load_json(cr_path))
+
+    # 4e. Healthcheck-клиент (для runtime-сценариев arc42)
+    inp["healthcheck_client"] = (tdir / "healthcheck" / "client.py").is_file()
 
     # 5. Финальный код
     for p in sorted(tdir.rglob("*")):
@@ -468,56 +590,59 @@ def third_party_deps(inp: dict) -> list:
 # ---------------------------------------------------------------------------
 
 def render_requirements(task_id: str, inp: dict) -> str:
+    """REQUIREMENTS.md по облегчённому ISO/IEC/IEEE 29148."""
     L = []
     L.append(f"# Требования к решению — {task_id}")
     L.append("")
-    L.append(f"> Сгенерировано автоматически сервисом `{SERVICE_NAME}` {SERVICE_VERSION} ({_now_iso()}).")
+    L.append(f"> Сгенерировано автоматически `{SERVICE_NAME}` {SERVICE_VERSION} ({_now_iso()}). "
+             "Формат: облегчённый ISO/IEC/IEEE 29148.")
     L.append("> Не редактируйте вручную: файл перезаписывается при повторной генерации.")
     L.append("")
 
-    L.append("## 1. Постановка задачи")
+    L.append("## 1. Назначение и границы")
     L.append("")
-    L.append(inp["description"] or "_Описание задачи в results-дереве не найдено._")
+    L.append(inp["description"] or NO_DATA)
     L.append("")
 
     L.append("## 2. Функциональные требования")
     L.append("")
-    frs = list(inp["plan_items"]) or _split_items(inp["description"])
-    if frs:
-        for i, item in enumerate(frs, 1):
+    frs = list(inp["plan_items"]) + _split_items(inp["description"])
+    frs += [f"{it} (rework)" for it in inp.get("rework_items", [])]
+    seen, frs_u = set(), []
+    for fr in frs:
+        key = fr.lower()[:60]
+        if key not in seen:
+            seen.add(key)
+            frs_u.append(fr)
+    frs_u = frs_u[:40]
+    if frs_u:
+        for i, item in enumerate(frs_u, 1):
             L.append(f"- **FR-{i}.** {item}")
     else:
-        L.append("_Функциональные требования не извлечены (нет описания и плана)._")
+        L.append(NO_DATA)
     L.append("")
 
     L.append("## 3. Нефункциональные требования")
     L.append("")
-    nfrs = [
-        "Код не содержит секретов, паролей и токенов; конфигурация — через переменные окружения.",
-        "Ошибки обрабатываются без падения сервиса; сбои логируются.",
-        "Сетевой сервис слушает 0.0.0.0, порт берётся из переменной окружения PORT (по умолчанию 5000).",
-    ]
-    env_all = set()
-    for p in inp["code_files"]:
-        env_all |= analyze_file(p)["env"]
-    if "PORT" in env_all:
-        nfrs.append("Порт сервиса задаётся переменной окружения PORT.")
-    deps = third_party_deps(inp)
-    if not deps:
-        nfrs.append("Решение использует только стандартную библиотеку (нет сторонних зависимостей).")
-    else:
-        nfrs.append(f"Сторонние зависимости зафиксированы ({', '.join(deps[:10])}).")
-    for item in inp["qa_items"]:
-        low = item.lower()
-        if any(k in low for k in ("производит", "нагруз", "security", "безопас", "доступн", "latency", "performance")):
-            nfrs.append(item)
-    for item in nfrs:
-        L.append(f"- {item}")
-    L.append("")
+    cats = classify_nfr(inp)
+    cats["security"].insert(0, "Код не содержит секретов, паролей и токенов; конфигурация — через переменные окружения.")
+    cats["reliability"].insert(0, "Ошибки обрабатываются и логируются без падения сервиса.")
+    for title, key in (("3.1 Безопасность", "security"), ("3.2 Надёжность", "reliability"),
+                       ("3.3 Производительность", "performance")):
+        L.append(f"### {title}")
+        L.append("")
+        if cats[key]:
+            for item in cats[key]:
+                L.append(f"- {item}")
+        else:
+            L.append(NO_DATA)
+        L.append("")
 
-    L.append("## 4. Принятые допущения (clarifications)")
+    L.append("## 4. Ограничения и допущения")
     L.append("")
     if inp["need_info_items"] or inp["answer_items"]:
+        L.append("Принятые допущения (clarifications Q→A):")
+        L.append("")
         L.append("| # | Вопрос / потребность | Ответ заказчика |")
         L.append("|---|---------------------|-----------------|")
         n = max(len(inp["need_info_items"]), len(inp["answer_items"]))
@@ -527,27 +652,72 @@ def render_requirements(task_id: str, inp: dict) -> str:
             q = q.replace("|", "\\|")
             a = a.replace("|", "\\|")
             L.append(f"| {i + 1} | {q} | {a} |")
+        L.append("")
+    env_map = {}
+    for p in inp["code_files"]:
+        for var in analyze_file(p)["env"]:
+            env_map.setdefault(var, str(p.relative_to(inp["_tdir"])))
+    if env_map:
+        L.append("Переменные окружения (ограничение конфигурации): "
+                 + ", ".join(f"`{v}`" for v in sorted(env_map)) + ".")
     else:
-        L.append("_Запросов need_info и уточнений заказчика не зафиксировано — решение принято по исходному описанию._")
+        L.append(NO_DATA)
     L.append("")
 
-    L.append("## 5. Критерии приёмки")
+    L.append("## 5. Вне объёма (out of scope)")
     L.append("")
-    acs = inp["qa_items"] or _split_items(inp["description"])
-    if acs:
-        for i, item in enumerate(acs, 1):
-            L.append(f"- **AC-{i}.** {item}")
+    oos_re = re.compile(r"(out[- ]of[- ]scope|не входит|не нужно|не делать|не требуется|не реализов|skip)", re.I)
+    oos = [it for it in _split_items(inp["description"]) + inp.get("rework_items", []) if oos_re.search(it)]
+    if oos:
+        for item in oos:
+            L.append(f"- {item}")
     else:
-        L.append("- Задача считается принятой, если QA-контракт выполнен и решение прошло все гейты IT Lead.")
+        L.append(NO_DATA)
+    L.append("")
+
+    L.append("## 6. Критерии приёмки")
+    L.append("")
+    if inp["qa_items"]:
+        for i, item in enumerate(inp["qa_items"], 1):
+            L.append(f"- **AC-{i}.** ({_ac_kind(item)}) {item}")
+    else:
+        L.append(NO_DATA)
+    L.append("")
+
+    L.append("## 7. Трассировка FR ↔ QA-проверки")
+    L.append("")
+    if frs_u and inp["qa_items"]:
+        ac_index = {q: f"AC-{i}" for i, q in enumerate(inp["qa_items"], 1)}
+        L.append("| FR | Требование | QA-проверки |")
+        L.append("|----|------------|-------------|")
+        for fr_name, fr_text, matches in traceability(frs_u, inp["qa_items"]):
+            refs = ", ".join(ac_index[m] for m in matches) or "—"
+            short = fr_text if len(fr_text) <= 80 else fr_text[:77] + "..."
+            L.append(f"| {fr_name} | {short.replace('|', chr(92) + '|')} | {refs} |")
+    else:
+        L.append(NO_DATA)
     L.append("")
     return "\n".join(L)
 
 
+TODO_RE = re.compile(r"(TODO|FIXME|HACK|XXX)[:\s]+(.{3,100})")
+
+
+def code_debt(inp: dict) -> list:
+    out = []
+    for p in inp["code_files"]:
+        for marker, m in TODO_RE.findall(_read_text(p))[:5]:
+            out.append(f"`{p.relative_to(inp['_tdir'])}`: {marker} — {m.strip()}")
+    return out[:10]
+
+
 def render_architecture(task_id: str, inp: dict) -> str:
+    """ARCHITECTURE.md по arc42-lite (разделы 1, 3, 4, 5, 6, 9, 11)."""
     L = []
     L.append(f"# Архитектура решения — {task_id}")
     L.append("")
-    L.append(f"> Сгенерировано автоматически сервисом `{SERVICE_NAME}` {SERVICE_VERSION} ({_now_iso()}).")
+    L.append(f"> Сгенерировано автоматически `{SERVICE_NAME}` {SERVICE_VERSION} ({_now_iso()}). "
+             "Формат: arc42-lite (разделы 1, 3, 4, 5, 6, 9, 11).")
     L.append("> Не редактируйте вручную: файл перезаписывается при повторной генерации.")
     L.append("")
 
@@ -560,14 +730,55 @@ def render_architecture(task_id: str, inp: dict) -> str:
                 break
         if entry:
             break
+    routes = set()
+    env_map = {}
+    for p in inp["code_files"]:
+        a = analyses[p]
+        routes |= a["routes"]
+        for var in a["env"]:
+            env_map.setdefault(var, str(p.relative_to(inp["_tdir"])))
+    deps = third_party_deps(inp)
 
-    L.append("## 1. Обзор")
+    # 1. Контекст и внешние интерфейсы
+    L.append("## 1. Контекст и внешние интерфейсы")
     L.append("")
-    L.append(f"Исходных файлов в решении: {len(inp['code_files'])}."
-             + (f" Точка входа — `{entry.relative_to(inp['_tdir'])}`." if entry and entry in analyses else ""))
+    first_line = (inp["description"].splitlines() or [""])[0].lstrip("# ").strip() if inp["description"] else ""
+    if first_line:
+        L.append(f"Система: {first_line[:200]}")
+        L.append("")
+    if routes or env_map:
+        L.append("| Интерфейс | Тип | Назначение |")
+        L.append("|-----------|-----|------------|")
+        for r in sorted(routes)[:15]:
+            L.append(f"| `{r}` | HTTP | внешний эндпоинт сервиса |")
+        if "REGISTRY_URL" in env_map:
+            L.append("| Реестр агентов | HTTP (исходящий) | регистрация и heartbeat (URL из `REGISTRY_URL`) |")
+        if "RESULTS_REPO" in env_map:
+            L.append("| Results-дерево | git (исходящий) | clone/pull перед генерацией, push после |")
+        L.append("")
+    else:
+        L.append(NO_DATA)
+        L.append("")
+
+    # 3. Стратегия решения
+    L.append("## 3. Стратегия решения")
+    L.append("")
+    strat = []
+    if entry:
+        strat.append(f"Единая точка входа — `{entry.relative_to(inp['_tdir'])}`"
+                     + (", модули в одном дереве." if len(inp["code_files"]) > 1 else "."))
+    strat.append("Только стандартная библиотека Python." if not deps
+                 else f"Сторонние зависимости: {', '.join(deps[:10])}.")
+    if env_map:
+        strat.append("Конфигурация — только через переменные окружения (без секретов в коде).")
+    if any("threading" in analyses[p]["imports"] for p in inp["code_files"] if p.suffix.lower() == ".py"):
+        strat.append("Фоновые потоки (daemon) для периодических задач; их сбой не влияет на основной сервис.")
+    for item in strat:
+        L.append(f"- {item}")
     L.append("")
 
-    L.append("## 2. Модули и их ответственность")
+    # 4. Строительные блоки
+    L.append("## 4. Строительные блоки")
     L.append("")
     if inp["code_files"]:
         L.append("| Файл | Ответственность | Ключевые сущности |")
@@ -577,51 +788,39 @@ def render_architecture(task_id: str, inp: dict) -> str:
             ents = ", ".join(f"`{x}`" for x in (a["funcs"] + a["classes"])[:8]) or "—"
             desc = (a["doc"] or "—").replace("|", "\\|")
             L.append(f"| `{p.relative_to(inp['_tdir'])}` | {desc} | {ents} |")
+        L.append("")
+        L.append("Поток данных: входные данные → обработка модулями → результат/ответ; "
+                 "журналирование — stdout сервиса.")
     else:
-        L.append("_Исходный код в results-дереве не найден._")
+        L.append(NO_DATA)
     L.append("")
 
-    L.append("## 3. Потоки данных")
+    # 5. Runtime-сценарии
+    L.append("## 5. Runtime-сценарии")
     L.append("")
-    routes = set()
-    for a in analyses.values():
-        routes |= a["routes"]
-    if routes:
-        L.append(f"Внешний контур: клиент → HTTP (порт из `PORT`) → маршруты: {', '.join(f'`{r}`' for r in sorted(routes)[:15])}.")
-    elif entry:
-        L.append("Внешний контур: клиент → HTTP-сервис (порт из `PORT`) → точка входа → модули решения.")
+    scenarios = []
+    health_routes = [r for r in routes if "health" in r.lower()]
+    if health_routes or inp.get("healthcheck_client"):
+        client = "healthcheck/client.py → " if inp.get("healthcheck_client") else "клиент → "
+        r = health_routes[0] if health_routes else "/health"
+        scenarios.append(f"S1 healthcheck: {client}`GET {r}` → 200 `{{\"status\":\"ok\"}}`.")
+    mcp_routes = [r for r in routes if "mcp" in r.lower()]
+    if mcp_routes:
+        scenarios.append(f"S2 рабочий вызов: клиент → `POST {mcp_routes[0]}` (JSON-RPC "
+                         "tools/list, tools/call) → результат инструмента.")
+    elif routes:
+        scenarios.append(f"S2 рабочий вызов: клиент → `POST {sorted(routes)[0]}` → ответ сервиса.")
+    if "REGISTRY_URL" in env_map:
+        scenarios.append("S3 регистрация/heartbeat: фоновый поток → реестр (`REGISTRY_URL`) "
+                         "периодически; недоступность реестра не влияет на сервис.")
+    if scenarios:
+        for s in scenarios:
+            L.append(f"- {s}")
     else:
-        L.append("Точка входа не определена; поток данных описан в постановке задачи (раздел 1 REQUIREMENTS.md).")
-    L.append("")
-    L.append("Внутренний контур: входные данные задачи → обработка модулями → результат/ответ; "
-             "журналирование — stdout/логи сервиса.")
+        L.append(NO_DATA)
     L.append("")
 
-    L.append("## 4. Внешние зависимости")
-    L.append("")
-    deps = third_party_deps(inp)
-    if deps:
-        for d in deps:
-            L.append(f"- `{d}`")
-    else:
-        L.append("_Только стандартная библиотека Python — сторонних зависимостей не обнаружено._")
-    L.append("")
-
-    L.append("## 5. Переменные окружения")
-    L.append("")
-    env_map = {}
-    for p in inp["code_files"]:
-        for var in analyze_file(p)["env"]:
-            env_map.setdefault(var, set()).add(str(p.relative_to(inp["_tdir"])))
-    if env_map:
-        L.append("| Переменная | Где используется |")
-        L.append("|------------|------------------|")
-        for var in sorted(env_map):
-            L.append(f"| `{var}` | {', '.join(sorted(env_map[var])[:4])} |")
-    else:
-        L.append("_Явных переменных окружения в коде не найдено._")
-    L.append("")
-
+    # 6. Схема развёртывания
     L.append("## 6. Схема развёртывания")
     L.append("")
     run_cmd = None
@@ -631,13 +830,132 @@ def render_architecture(task_id: str, inp: dict) -> str:
         if re.search(r"\b(python|uvicorn|flask|npm start|node|docker)\b", s) and len(s) < 120:
             run_cmd = s
             break
-    if run_cmd:
-        L.append(f"Запуск: `{run_cmd}` (порт — env `PORT`, по умолчанию 5000).")
-    else:
-        L.append("Запуск: `python main.py` (порт — env `PORT`, по умолчанию 5000).")
+    L.append(f"- Запуск (контейнер/процесс): `{run_cmd or 'python main.py'}`.")
+    if "PORT" in env_map:
+        L.append("- Порт: из переменной окружения `PORT` (по умолчанию 5000), bind `0.0.0.0`.")
+    if mcp_routes:
+        L.append(f"- URL: `http://<хост>:<порт>{mcp_routes[0]}` (возможен произвольный URL-префикс).")
+    if env_map:
+        L.append("- Переменные окружения: " + ", ".join(f"`{v}`" for v in sorted(env_map)) + ".")
+    if "RESULTS_REPO" in env_map:
+        L.append("- Результаты (включая `docs/`) коммитятся и пушатся обратно в results-дерево.")
     L.append("")
-    L.append("- Сервис слушает `0.0.0.0`, наружу публикуется только HTTP-эндпоинт.")
-    L.append("- Результаты (включая `docs/`) коммитятся и пушатся обратно в results-дерево.")
+
+    # 9. Ключевые решения (ADR)
+    L.append("## 9. Ключевые решения (ADR)")
+    L.append("")
+    adrs = []
+    if not deps and inp["code_files"]:
+        adrs.append(("ADR-1. Только стандартная библиотека",
+                     "Нужна переносимость между контейнерами команды без pip-установок.",
+                     "Вся логика — на stdlib.",
+                     "Нет внешних зависимостей и supply-chain-уязвимостей; часть логики пишется вручную."))
+    if env_map:
+        adrs.append(("ADR-2. Конфигурация через переменные окружения",
+                     "Секреты и адреса различаются в dev/prod и не должны попадать в код.",
+                     "Все настройки читаются из env со значениями по умолчанию.",
+                     "Развёртывание параметризуется env; значения по умолчанию документированы."))
+    if "REGISTRY_URL" in env_map:
+        adrs.append(("ADR-3. Повторная регистрация как heartbeat",
+                     "Реестр (:3031) обновляет last_seen только при registry/register.",
+                     "Периодически повторяется registry/register — он же heartbeat.",
+                     "Один периодический вызов вместо двух протоколов; перерегистрация лечит сбой реестра."))
+    if inp.get("healthcheck_client"):
+        adrs.append(("ADR-4. Активный healthcheck клиентом",
+                     "Нужна проверка живости извне (мониторинг, DevOps).",
+                     "Внешний healthcheck-клиент опрашивает GET /health.",
+                     "GET /health покрывает liveness; глубокая диагностика — в логах."))
+    if adrs:
+        for title, ctx, dec, cons in adrs:
+            L.append(f"**{title}**")
+            L.append("")
+            L.append(f"- Контекст: {ctx}")
+            L.append(f"- Решение: {dec}")
+            L.append(f"- Последствия: {cons}")
+            L.append("")
+    else:
+        L.append(NO_DATA)
+        L.append("")
+
+    # 11. Риски и технический долг
+    L.append("## 11. Риски и технический долг")
+    L.append("")
+    risks = []
+    for item in inp.get("review_items", []):
+        risks.append(f"code review: {item}")
+    for item in inp.get("security_items", []):
+        risks.append(f"security: {item}")
+    risks += code_debt(inp)
+    if risks:
+        for item in risks:
+            L.append(f"- {item}")
+    else:
+        L.append(NO_DATA)
+    L.append("")
+    return "\n".join(L)
+
+
+def render_usage(task_id: str, inp: dict) -> str:
+    """USAGE.md — Diátaxis how-to: как запустить и использовать результат задачи."""
+    L = []
+    L.append(f"# Использование — {task_id}")
+    L.append("")
+    L.append(f"> Сгенерировано автоматически `{SERVICE_NAME}` {SERVICE_VERSION} ({_now_iso()}). "
+             "Формат: Diátaxis how-to.")
+    L.append("")
+    first_line = (inp["description"].splitlines() or [""])[0].lstrip("# ").strip() if inp["description"] else ""
+    if first_line:
+        L.append(f"Как запустить и использовать результат задачи. {first_line[:160]}")
+    else:
+        L.append("Как запустить и использовать результат задачи.")
+    L.append("")
+
+    env_map = {}
+    for p in inp["code_files"]:
+        for var in analyze_file(p)["env"]:
+            env_map.setdefault(var, str(p.relative_to(inp["_tdir"])))
+    routes = set()
+    for p in inp["code_files"]:
+        routes |= analyze_file(p)["routes"]
+    run_cmd = None
+    for line in (inp.get("readme") or "").splitlines():
+        s = line.strip().strip("`").strip()
+        s = re.sub(r"^(?:run|запуск|start)\s*[:=]\s*", "", s, flags=re.IGNORECASE)
+        if re.search(r"\b(python|uvicorn|flask|npm start|node|docker)\b", s) and len(s) < 120:
+            run_cmd = s
+            break
+
+    steps = []
+    steps.append("Подготовка: Python 3.10+ (и git, если используется results-дерево). "
+                 + (f"Переменные окружения: {', '.join(f'`{v}`' for v in sorted(env_map))}." if env_map
+                    else "Отдельных переменных окружения не требуется."))
+    deps = third_party_deps(inp)
+    if deps:
+        steps.append(f"Установка зависимостей: `pip install -r requirements.txt` ({', '.join(deps[:10])}).")
+    else:
+        steps.append("Установка зависимостей не требуется (только стандартная библиотека).")
+    steps.append(f"Запуск: `{run_cmd or 'python main.py'}` (порт — env `PORT`, по умолчанию 5000).")
+    health = next((r for r in sorted(routes) if "health" in r.lower()), None)
+    if health:
+        steps.append(f"Проверка живости: `curl http://127.0.0.1:${{PORT:-5000}}{health}` "
+                     "→ ожидаемый ответ 200 со статусом ok.")
+    else:
+        steps.append("Проверка живости: healthcheck-endpoint в коде не обнаружен — см. README.md задачи.")
+    mcp = next((r for r in sorted(routes) if "mcp" in r.lower()), None)
+    if mcp:
+        steps.append(f"Основной сценарий (MCP): `POST {mcp}` с JSON-RPC "
+                     "`{\"method\":\"tools/list\"}` → список инструментов; "
+                     "вызов инструмента — `method: tools/call` с `params.name` и `params.arguments`.")
+    elif routes:
+        steps.append(f"Основной сценарий: HTTP-запрос к `/{sorted(routes)[0].lstrip('/')}` — примеры в README.md.")
+    else:
+        steps.append(f"Основной сценарий использования: {NO_DATA.replace('_', '')} — см. README.md задачи.")
+    steps.append("Ожидаемый результат работы сервиса — артефакты в рабочем каталоге/results-дереве; "
+                 "журнал (stdout) содержит строки статуса вида `...=ok` / `...=skipped`.")
+    steps.append("Диагностика: смотреть stdout-логи процесса; сервис не должен падать — "
+                 "ошибки отдельных операций логируются как skipped; подробности — в README.md задачи.")
+    for i, s in enumerate(steps[:10], 1):
+        L.append(f"{i}. {s}")
     L.append("")
     return "\n".join(L)
 
@@ -662,13 +980,15 @@ def generate_task_docs(task_id: str, sync: bool = True) -> dict:
     docs_dir.mkdir(parents=True, exist_ok=True)
     req_path = docs_dir / "REQUIREMENTS.md"
     arch_path = docs_dir / "ARCHITECTURE.md"
+    usage_path = docs_dir / "USAGE.md"
     req_path.write_text(render_requirements(task_id, inp), encoding="utf-8")
     arch_path.write_text(render_architecture(task_id, inp), encoding="utf-8")
+    usage_path.write_text(render_usage(task_id, inp), encoding="utf-8")
 
     pushed = push_docs(task_id)
     result = {
         "task_id": task_id,
-        "docs": [str(req_path), str(arch_path)],
+        "docs": [str(req_path), str(arch_path), str(usage_path)],
         "pushed_to_results": pushed,
         "status": "ok",
         "activity": "docs=ok",
@@ -720,7 +1040,8 @@ def backfill(days: int = 14) -> list:
             continue
         if task_status(tdir) != "done":
             continue
-        docs_ok = (tdir / "docs" / "REQUIREMENTS.md").is_file() and (tdir / "docs" / "ARCHITECTURE.md").is_file()
+        docs_ok = all((tdir / "docs" / f).is_file()
+                      for f in ("REQUIREMENTS.md", "ARCHITECTURE.md", "USAGE.md"))
         if docs_ok or not _recent(tdir, days):
             continue
         try:
@@ -742,9 +1063,11 @@ TOOL_DEFS = [{
     "name": "generate_task_docs",
     "description": (
         "Генерирует автодокументацию к задаче: клонирует/обновляет results-дерево, "
-        "читает описание задачи, план planner'а, need_info/ответы заказчика, QA-контракт "
-        "и финальный код; пишет results/<task>/docs/REQUIREMENTS.md и ARCHITECTURE.md "
-        "и пушит docs/ обратно в results-дерево. Сбой не влияет на статус задачи."
+        "читает описание задачи, план planner'а, need_info/ответы заказчика, QA-контракт, "
+        "rework-запросы, security findings, code review notes и финальный код; пишет "
+        "results/<task>/docs/REQUIREMENTS.md (облегчённый ISO 29148), ARCHITECTURE.md "
+        "(arc42-lite) и USAGE.md (Diátaxis how-to) и пушит docs/ обратно в results-дерево. "
+        "Сбой не влияет на статус задачи."
     ),
     "inputSchema": {
         "type": "object",
