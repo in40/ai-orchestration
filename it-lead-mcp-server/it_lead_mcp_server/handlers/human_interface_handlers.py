@@ -134,6 +134,33 @@ class HumanInterfaceHandlers:
                                 "required": ["id"]}
             },
             {
+                "name": "list_products",
+                "description": "Products (mirrors on .187, optional GitHub publication).",
+                "inputSchema": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "import_product",
+                "description": "Create a product mirror on the artifact host from "
+                               "a git URL or a results/<task_id> seed.",
+                "inputSchema": {"type": "object", "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "source_url": {"type": "string"},
+                    "seed_task_id": {"type": "string"}},
+                    "required": ["name"]}
+            },
+            {
+                "name": "publish_product",
+                "description": "Human-only: push a product mirror to a new GitHub "
+                               "repo (requires confirm='publish').",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "integer"},
+                    "github_repo": {"type": "string"},
+                    "private": {"type": "boolean"},
+                    "confirm": {"type": "string"}},
+                    "required": ["id", "confirm"]}
+            },
+            {
                 "name": "get_pipeline_alerts",
                 "description": "Recent pipeline incidents (rework rejections, "
                                "self-fix failures, clarification timeouts, recovered "
@@ -227,6 +254,23 @@ class HumanInterfaceHandlers:
             return self._get_retro_digest(arguments)
         elif tool_name == "get_pipeline_alerts":
             return self._get_pipeline_alerts()
+        elif tool_name == "list_products":
+            from ..utils import products
+            return {"success": True,
+                    "products": products.list_products(self.task_storage.connection)}
+        elif tool_name == "import_product":
+            from ..utils import products
+            return products.import_product(
+                self.task_storage.connection,
+                arguments.get("name", ""), arguments.get("description", ""),
+                arguments.get("source_url", ""), arguments.get("seed_task_id", ""))
+        elif tool_name == "publish_product":
+            from ..utils import products
+            return products.publish_product(
+                self.task_storage.connection, int(arguments.get("id", 0)),
+                arguments.get("github_repo", ""),
+                bool(arguments.get("private", True)),
+                arguments.get("confirm", ""))
         elif tool_name == "request_self_fix":
             from ..utils import self_fix
             return self_fix.file_self_fix(

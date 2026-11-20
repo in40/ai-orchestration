@@ -6,6 +6,7 @@ import Dashboard from './components/Dashboard';
 import TeamMembers from './components/TeamMembers';
 import TaskManagement from './components/TaskManagement';
 import Deployments from './components/Deployments';
+import Products from './components/Products';
 import AgentDetail from './components/AgentDetail';
 import ItLeadDashboard from './components/it-lead/ItLeadDashboard';
 import Navigation from './components/Navigation';
@@ -34,6 +35,7 @@ function App() {
           <Route path="/team" element={<TeamMembers />} />
           <Route path="/tasks" element={<TaskManagement />} />
           <Route path="/deployments" element={<Deployments />} />
+          <Route path="/products" element={<Products />} />
           <Route path="/it-lead" element={<ItLeadDashboard />} />
           <Route path="/agent/:agentName" element={<AgentDetail />} />
         </Routes>

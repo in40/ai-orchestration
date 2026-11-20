@@ -889,6 +889,27 @@ async def reject_retro_proposal(pid: int, body: dict = None):
                                {"id": pid, "reason": (body or {}).get("reason", "")})
 
 
+@app.get("/api/products")
+async def list_products():
+    return await _it_lead_tool("list_products", {})
+
+
+@app.post("/api/products")
+async def import_product(body: dict):
+    return await _it_lead_tool("import_product", {
+        "name": body.get("name", ""), "description": body.get("description", ""),
+        "source_url": body.get("source_url", ""),
+        "seed_task_id": body.get("seed_task_id", "")})
+
+
+@app.post("/api/products/{pid}/publish")
+async def publish_product(pid: int, body: dict = None):
+    b = body or {}
+    return await _it_lead_tool("publish_product", {
+        "id": pid, "github_repo": b.get("github_repo", ""),
+        "private": b.get("private", True), "confirm": b.get("confirm", "")})
+
+
 @app.get("/api/pipeline/alerts")
 async def get_pipeline_alerts():
     """Recent pipeline incidents: rework rejections, self-fix failures, timeouts."""

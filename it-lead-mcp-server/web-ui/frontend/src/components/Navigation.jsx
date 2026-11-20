@@ -494,6 +494,14 @@ const Navigation = ({ children }) => {
               </Button>
               <Button
                 component={Link}
+                to="/products"
+                variant={isActive('/products') ? 'outlined' : 'text'}
+                color="inherit"
+              >
+                Products
+              </Button>
+              <Button
+                component={Link}
                 to="/it-lead"
                 variant={isActive('/it-lead') ? 'outlined' : 'text'}
                 color="inherit"
