@@ -251,6 +251,13 @@ def approve(conn, pid):
                 "metric_before=%s::jsonb, applied_at=now(), result=%s WHERE id=%s",
                 (sha, json.dumps(mb, ensure_ascii=False),
                  f"merged {len(copied)} file(s)", pid))
+    # close the parked task row, else the nightly observer reports it as stuck
+    cur.execute("UPDATE task_registry SET status='done', status_reason=%s, "
+                "activity = COALESCE(activity,'[]'::jsonb) || jsonb_build_array(%s::jsonb) "
+                "WHERE task_id=%s",
+                (f"self-fix merged as {sha[:8]}",
+                 json.dumps({"event": "selffix_merged", "agent": "it-lead",
+                             "detail": sha[:8], "ts": time.time()}), tid))
     conn.commit()
     cur.close()
     return {"success": True, "merged": len(copied), "commit": sha[:8]}
@@ -259,9 +266,18 @@ def approve(conn, pid):
 def reject(conn, pid, reason=""):
     _sql(conn)
     cur = conn.cursor()
+    cur.execute("SELECT task_id FROM selffix WHERE id=%s AND status='review'", (pid,))
+    row = cur.fetchone()
     cur.execute("UPDATE selffix SET status='rejected', result=%s "
                 "WHERE id=%s AND status='review'",
                 (("rejected: " + reason[:180]), pid))
+    if row:
+        cur.execute("UPDATE task_registry SET status='needs_revision', status_reason=%s, "
+                    "activity = COALESCE(activity,'[]'::jsonb) || jsonb_build_array(%s::jsonb) "
+                    "WHERE task_id=%s",
+                    (("self-fix rejected: " + reason[:150]),
+                     json.dumps({"event": "selffix_rejected", "agent": "it-lead",
+                                 "detail": reason[:150], "ts": time.time()}), row[0]))
     conn.commit()
     n = cur.rowcount
     cur.close()
