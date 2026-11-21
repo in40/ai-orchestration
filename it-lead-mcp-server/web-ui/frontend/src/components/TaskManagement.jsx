@@ -282,9 +282,38 @@ const TaskManagement = () => {
     }
   };
 
+  // /api/tasks maps task_id -> id and drops the `archived` column, so
+  // task.task_id was undefined: every "В архив..." click POSTed to
+  // /api/tasks/undefined/archive, matched no row (success:false, HTTP 200)
+  // and the UI never changed -> "кнопки не работают".
+  const tidOf = (t) => (t ? (t.task_id || t.id) : '');
+
+  // The list endpoint does not expose `archived`, so remember toggles per
+  // browser (localStorage). If the backend starts returning the flag, it wins.
+  const ARCHIVE_LS_KEY = 'archivedTaskIds';
+  const loadArchivedIds = () => {
+    try { return new Set(JSON.parse(localStorage.getItem(ARCHIVE_LS_KEY) || '[]')); }
+    catch (e) { return new Set(); }
+  };
+  const [archivedIds, setArchivedIds] = useState(loadArchivedIds);
+  const markArchived = (tid, archived) => {
+    const next = new Set(archivedIds);
+    if (archived) next.add(tid); else next.delete(tid);
+    setArchivedIds(next);
+    try { localStorage.setItem(ARCHIVE_LS_KEY, JSON.stringify([...next])); } catch (e) { /* private mode */ }
+  };
+  const isArchived = (t) => (typeof t.archived === 'boolean' ? t.archived : archivedIds.has(tidOf(t)));
+
   const doArchive = async (task) => {
+    const tid = tidOf(task);
+    const next = !isArchived(task);
     try {
-      await axios.post(`/api/tasks/${task.task_id}/archive`, { archived: !task.archived });
+      const r = await axios.post(`/api/tasks/${encodeURIComponent(tid)}/archive`, { archived: next });
+      if (r.data && r.data.success === false) {
+        alert('Не удалось: задача не найдена (' + tid + ')');
+        return;
+      }
+      markArchived(tid, next);
       const response = await axios.get('/api/tasks');
       setTasks(response.data);
     } catch (err) {
@@ -294,7 +323,7 @@ const TaskManagement = () => {
 
   const doDelete = async () => {
     try {
-      const r = await axios.post(`/api/tasks/${delTask.task_id}/delete`,
+      const r = await axios.post(`/api/tasks/${encodeURIComponent(tidOf(delTask))}/delete`,
         { confirm: delWord });
       if (r.data && r.data.success === false) {
         alert('Не удалено: ' + r.data.error);
@@ -445,7 +474,7 @@ const TaskManagement = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {tasks.filter(t => showArchived || !t.archived).map((task) => (
+                  {tasks.filter(t => showArchived || !isArchived(t)).map((task) => (
                     <TableRow
                       key={task.id}
                       sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
@@ -570,12 +599,12 @@ const TaskManagement = () => {
                         <HistoryIcon />
                       </IconButton>
                       <IconButton
-                        color={task.archived ? 'action' : 'default'}
+                        color={isArchived(task) ? 'action' : 'default'}
                         aria-label="archive task"
                         onClick={() => doArchive(task)}
-                        title={task.archived ? 'Вернуть из архива' : 'В архив (скрыть, без потерь)'}
+                        title={isArchived(task) ? 'Вернуть из архива' : 'В архив (скрыть, без потерь)'}
                       >
-                        {task.archived ? <UnarchiveIcon /> : <ArchiveIcon />}
+                        {isArchived(task) ? <UnarchiveIcon /> : <ArchiveIcon />}
                       </IconButton>
                       <IconButton
                         color="error"
@@ -1191,10 +1220,10 @@ const TaskManagement = () => {
         <DialogContent dividers>
           <Alert severity="error" sx={{ mb: 1 }}>
             Строка уйдёт в tasks_trash, рабочие файлы (/tmp, скриншоты) и
-            results/{delTask?.task_id} будут стёрты. Продукты (зеркала/GitHub) не пострадают.
+            results/{tidOf(delTask)} будут стёрты. Продукты (зеркала/GitHub) не пострадают.
           </Alert>
           <Typography variant="body2" sx={{ mb: 1 }}>
-            Для подтверждения введите имя задачи: <b>{delTask?.task_id}</b>
+            Для подтверждения введите имя задачи: <b>{tidOf(delTask)}</b>
           </Typography>
           <TextField fullWidth size="small" value={delWord}
             onChange={e => setDelWord(e.target.value)} />
@@ -1202,7 +1231,7 @@ const TaskManagement = () => {
         <DialogActions>
           <Button onClick={() => setDelTask(null)}>Отмена</Button>
           <Button variant="contained" color="error"
-            disabled={delWord !== delTask?.task_id} onClick={doDelete}>
+            disabled={delWord !== tidOf(delTask)} onClick={doDelete}>
             Удалить
           </Button>
         </DialogActions>
