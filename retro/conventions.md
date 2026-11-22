@@ -11,3 +11,5 @@ For JavaScript tasks, submit complete runnable code that satisfies every QA chec
 For self-fix/M6 tasks, edit only files explicitly listed in the task, make minimal targeted changes, do not add dependencies or modify package.json unless the task explicitly requires it; if broader changes are needed, stop and request scope approval. [selffix-1795109801, selffix-1795107079] (retro #5)
 
 - Перед submit прогони все обязательные QA-проверки (syntax, completeness, tests/lint), а не только validate_artifact; если проверка падает или отсутствует required test/metadata, исправь или верни blocker. [ui-dogfood-1795100260, selffix-1795107079] (retro #10)
+
+- Для self-fix/M6 правь только явно выданные файлы; не добавляй зависимости и не меняй package.json/requirements без явного требования; если фикс невозможен без этого, верни blocker с точной причиной и файлом. [selffix-1795201829, selffix-1795201812, selffix-1795109801, selffix-1795107079] (retro #8)
