@@ -33,8 +33,7 @@ import {
   PlayArrow as PlayIcon,
   Stop as StopIcon,
   Delete as DeleteIcon,
-  Science as TestIcon,
-  Build as BuildIcon
+  Science as TestIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import DeploymentTester from './DeploymentTester';
@@ -102,18 +101,6 @@ const Deployments = () => {
     } catch (err) {
       console.error("Error deleting deployment:", err);
       alert(`Failed to delete deployment: ${err.response?.data?.detail || 'Unknown error'}`);
-    }
-  };
-
-  const handleRedeploy = async (taskId) => {
-    if (!window.confirm(`Redeploy task ${taskId}? This will create a new deployment from the existing git code.`)) return;
-    try {
-      const response = await axios.post(`/api/tasks/${taskId}/redeploy`);
-      alert(response.data.message || 'Task redeployed successfully!');
-      fetchDeployments(statusFilter);
-    } catch (err) {
-      console.error("Error redeploying task:", err);
-      alert(`Failed to redeploy: ${err.response?.data?.detail || 'Unknown error'}`);
     }
   };
 
@@ -351,13 +338,6 @@ const Deployments = () => {
                         title="Delete deployment"
                       >
                         <DeleteIcon />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        onClick={() => handleRedeploy(deployment.task_id)}
-                        title="Redeploy"
-                      >
-                        <BuildIcon />
                       </IconButton>
                     </Box>
                   </TableCell>
