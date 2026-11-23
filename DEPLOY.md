@@ -38,7 +38,15 @@ web-ui (:8000 backend + :5173 frontend), edge-proxy :3080,
 - `MCP_GIT_REPO_URL` — ssh-url репозитория артефактов (нужен ssh-доступ)
 - `DEPLOYMENT_HOST` — адрес хоста для публичных URL деплоев
 - `POSTGRES_*` — БД реестра задач (таблицы создаются сервисами)
+- `USE_POSTGRES=false` — работать на SQLite вместо PostgreSQL (см. ниже)
 - `SHOTS_DIR`, `HEADLESS_SHELL`, `IMAGE_API_BASE` — vision/generation
+
+## SQLite fallback (без PostgreSQL)
+`USE_POSTGRES=false` (или недоступный сервер) — весь стек работает на SQLite
+(`SQLITE_PATH`, по умолчанию `$BASE_DIR/data/mcp_registry.db`, WAL).
+Проверено боевым E2E: полный конвейер (plan→build→QA→security→docs→done),
+clarifications, дашборд. Ограничение: retro-аналитика (`retro/*`) на SQLite
+пропускается. Бэкап — копия файла `*.db` (+ `-wal`).
 
 ## Проверка
 ```
@@ -59,6 +67,7 @@ openssl req -x509 -newkey rsa:2048 -keyout /root/certs/dash.key \
 vite подхватит сертификаты автоматически (см. vite.config.js).
 
 ## Откат/бэкап
-Код — git; состояние — `pg_dump mcp_registry`; конфиги — `.env`,
+Код — git; состояние — `pg_dump mcp_registry` (или копия `data/*.db*` на SQLite);
+конфиги — `.env`,
 `~/.config/opencode`, `/etc/nginx`. Пример полного бэкапа:
 `/root/backups/20261123-pre-open-hardening/RESTORE.md`.
