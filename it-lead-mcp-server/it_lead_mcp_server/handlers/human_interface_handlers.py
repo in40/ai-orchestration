@@ -3,6 +3,7 @@ Human Interface Handlers for IT Lead MCP Server
 Implements human interface capabilities for software development teams
 """
 import json
+import os
 import time
 import datetime
 from typing import Dict, Any, List, Optional
@@ -762,8 +763,9 @@ class HumanInterfaceHandlers:
     def _approve_retro_proposal(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
             import sys as _sys
-            if "/root/qwen/base/retro" not in _sys.path:
-                _sys.path.insert(0, "/root/qwen/base/retro")
+            BASE_DIR = os.environ.get("BASE_DIR", "/root/qwen/base")
+            if BASE_DIR + "/retro" not in _sys.path:
+                _sys.path.insert(0, BASE_DIR + "/retro")
             from applier import apply_proposal
             return apply_proposal(int(arguments.get("id", 0)),
                                   manager=self.task_assignment_manager)
@@ -773,8 +775,9 @@ class HumanInterfaceHandlers:
     def _reject_retro_proposal(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
             import sys as _sys
-            if "/root/qwen/base/retro" not in _sys.path:
-                _sys.path.insert(0, "/root/qwen/base/retro")
+            BASE_DIR = os.environ.get("BASE_DIR", "/root/qwen/base")
+            if BASE_DIR + "/retro" not in _sys.path:
+                _sys.path.insert(0, BASE_DIR + "/retro")
             from applier import reject_proposal
             return reject_proposal(int(arguments.get("id", 0)),
                                    str(arguments.get("reason", "")))

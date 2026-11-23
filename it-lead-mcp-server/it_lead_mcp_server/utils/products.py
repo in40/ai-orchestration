@@ -23,7 +23,7 @@ SSH_TARGET = os.environ.get("PROJECTS_SSH", "sorokin@192.168.51.187")
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/home/sorokin/projects")
 GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "in40")
 GITHUB_API = "https://api.github.com"
-PAT_FILE = "/root/qwen/base/.env"
+PAT_FILE = os.environ.get("BASE_DIR", "/root/qwen/base") + "/.env"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 GIT_ID = ["-c", "user.name=it-lead", "-c", "user.email=it-lead@pipeline.local"]
 

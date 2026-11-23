@@ -1414,7 +1414,7 @@ Overall project goal:
                     # (MCP argument); the shared-file read remains as fallback
                     _conv = str(arguments.get("conventions") or "")
                     if not _conv.strip():
-                        _rc = Path("/root/qwen/base/retro/conventions.md")
+                        _rc = Path(os.environ.get("BASE_DIR", "/root/qwen/base") + "/retro/conventions.md")
                         if _rc.exists():
                             _conv = _rc.read_text()[:4000]
                     if _conv.strip():

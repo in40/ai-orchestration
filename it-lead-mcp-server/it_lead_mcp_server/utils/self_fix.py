@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 
-REPO = "/root/qwen/base"
+REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
 RESULTS_LOCAL = "/tmp/mcp-vibe-coding-git/repo"
 RESULTS_REPO = os.environ.get("MCP_GIT_REPO_URL",
     "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
@@ -247,8 +247,9 @@ def approve(conn, pid):
     subprocess.run(["git", "-C", REPO, "push", "-q", "origin", "v0.5.11"],
                    capture_output=True)
     import sys as _sys
-    if "/root/qwen/base/retro" not in _sys.path:
-        _sys.path.insert(0, "/root/qwen/base/retro")
+    _bd = os.environ.get("BASE_DIR", "/root/qwen/base")
+    if _bd + "/retro" not in _sys.path:
+        _sys.path.insert(0, _bd + "/retro")
     from applier import _baseline_metric
     mb = _baseline_metric(cur)
     cur.execute("UPDATE selffix SET status='merged', merge_commit=%s, "

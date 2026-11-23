@@ -7,9 +7,9 @@ import sys
 import os
 
 # Add paths
-sys.path.insert(0, '/root/qwen/base/it-lead-mcp-server')
-sys.path.insert(0, '/root/qwen/base/it-lead-mcp-server/it_lead_mcp_server')
-sys.path.insert(0, '/root/qwen/base')
+sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base') + '/it-lead-mcp-server')
+sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base') + '/it-lead-mcp-server/it_lead_mcp_server')
+sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base'))
 
 from utils.task_storage import TaskStorage
 

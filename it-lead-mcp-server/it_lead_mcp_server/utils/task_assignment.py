@@ -785,7 +785,7 @@ class TaskAssignmentManager:
         """Retro skill library travels with the build request (MCP argument),
         so the coder host needs no shared filesystem with IT Lead."""
         try:
-            with open("/root/qwen/base/retro/conventions.md") as f:
+            with open(os.environ.get("BASE_DIR", "/root/qwen/base") + "/retro/conventions.md") as f:
                 return f.read()[:4000]
         except Exception:
             return ""

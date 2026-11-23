@@ -24,7 +24,7 @@ from datetime import datetime
 
 # Import configuration
 import sys
-sys.path.insert(0, '/root/qwen/base')
+sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base'))
 from config import get_settings
 
 # Get settings
@@ -49,7 +49,7 @@ except ImportError:
     except ImportError:
         # If modules are in different location, add to path
         import sys
-        sys.path.insert(0, '/root/qwen/base/it-lead-mcp-server/it_lead_mcp_server/utils')
+        sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base') + '/it-lead-mcp-server/it_lead_mcp_server/utils')
         from git_result_storage import get_git_storage
         from file_result_storage import get_file_storage
         from result_router import get_result_router
@@ -1995,7 +1995,8 @@ def _results_dir(task_id: str) -> str:
         pass
     d = os.path.join(repo, "results", task_id)
     if not os.path.isdir(d):
-        d = f"/root/qwen/base/mcp-results/results/{task_id}"
+        d = os.path.join(os.environ.get("BASE_DIR", "/root/qwen/base"),
+                         "mcp-results", "results", task_id)
     return d
 
 

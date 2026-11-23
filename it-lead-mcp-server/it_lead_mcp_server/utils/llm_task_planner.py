@@ -4,6 +4,7 @@ Handles complex task routing decisions that rule-based system cannot resolve
 Uses dynamic MCP agent and tool discovery via MCP protocol.
 """
 import json
+import os
 import time
 from typing import Dict, List, Any, Optional
 
@@ -88,7 +89,7 @@ those fields."""
 
         try:  # retro M2: learned planner notes, read at plan time (no restart needed)
             import pathlib as _pl
-            _pn = _pl.Path("/root/qwen/base/retro/planner_notes.md")
+            _pn = _pl.Path(os.environ.get("BASE_DIR", "/root/qwen/base") + "/retro/planner_notes.md")
             if _pn.exists():
                 prompt += ("\n\n## Retro notes (learned, authoritative)\n"
                            + _pn.read_text()[:4000])
