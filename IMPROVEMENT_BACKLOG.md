@@ -463,3 +463,9 @@ Two real bugs found by the live sqlite E2E on the deploy host:
    backends.
 Also defensive: _fn_merge/_fn_append tolerate corrupted values; _j loops
 up to 3 parses for double-encoded columns.
+
+## provision.sh ✅
+deploy/provision.sh: one-command host bootstrap (apt deps, docker,
+chromium, opencode CLI+config+agents, ssh keys, .env, install.sh,
+self-E2E task). install.sh: psql/postgres setup now conditional on
+USE_POSTGRES (sqlite hosts need no postgres at all).

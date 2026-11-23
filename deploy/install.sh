@@ -14,10 +14,6 @@ UNITS=(mcp-registry mcp-requirements-engineer mcp-implementation-engineer
 
 log() { echo "[install] $*"; }
 
-for c in python3 node npm psql git nginx; do
-  command -v "$c" >/dev/null || { echo "MISSING: $c - install it first (see DEPLOY.md)"; exit 1; }
-done
-
 log "syncing $SRC -> $TARGET"
 mkdir -p "$TARGET"
 rsync -a --delete --exclude .git --exclude venv --exclude .venv \
@@ -27,6 +23,16 @@ rsync -a --delete --exclude .git --exclude venv --exclude .venv \
   echo ">>> EDIT $TARGET/.env (POSTGRES_PASSWORD, LLM_PROVIDER_URL, LLM_MODEL, DEPLOYMENT_HOST...) then re-run"; exit 0; }
 # shellcheck disable=SC1091
 set -a; . "$TARGET/.env"; set +a
+
+# psql is only required when the postgres backend is enabled (USE_POSTGRES=false
+# falls back to sqlite, see db_compat)
+USE_PG=${USE_POSTGRES:-true}
+for c in python3 node npm git nginx; do
+  command -v "$c" >/dev/null || { echo "MISSING: $c - install it first (see DEPLOY.md)"; exit 1; }
+done
+if [ "$USE_PG" != "false" ]; then
+  command -v psql >/dev/null || { echo "MISSING: psql - install postgresql (or set USE_POSTGRES=false in $TARGET/.env to use sqlite)"; exit 1; }
+fi
 
 log "python venvs (global + per-server where present)"
 python3 -m venv "$TARGET/.venv"
@@ -46,12 +52,17 @@ log "web-ui frontend"
 (cd "$TARGET/it-lead-mcp-server/web-ui/frontend" && npm ci --silent)
 
 log "database"
+if [ "$USE_PG" != "false" ]; then
 PG() { if command -v sudo >/dev/null; then sudo -u postgres "$@"; else su postgres -c "$(printf '%q ' "$@")"; fi; }
 PG psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER:-postgres}'" | grep -q 1 || \
   PG psql -c "CREATE USER ${POSTGRES_USER:-postgres} PASSWORD '${POSTGRES_PASSWORD:-postgres}'"
 PG psql -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB:-mcp_registry}'" | grep -q 1 || \
   PG createdb "${POSTGRES_DB:-mcp_registry}"
+PG psql -c "ALTER USER ${POSTGRES_USER:-postgres} PASSWORD '${POSTGRES_PASSWORD:-postgres}'" >/dev/null
 # tables are created by the services themselves (CREATE TABLE IF NOT EXISTS)
+else
+log "USE_POSTGRES=false - sqlite fallback (db_compat), skipping postgres setup"
+fi
 
 log "runtime dirs + nginx edge"
 mkdir -p "${SHOTS_DIR:-/var/www/shots}" /etc/nginx/mcp-deployments
