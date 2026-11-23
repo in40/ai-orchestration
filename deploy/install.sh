@@ -84,7 +84,7 @@ systemctl daemon-reload
 
 log "starting services"
 for u in "${UNITS[@]}"; do systemctl enable --now "$u" 2>/dev/null && log "up: $u"; done
-systemctl enable --now mcp-retro-observer.timer 2>/dev/null || true
+systemctl enable --now mcp-retro-observer.timer mcp-deployment-warden.timer 2>/dev/null || true
 
 log "smoke"
 sleep 8
