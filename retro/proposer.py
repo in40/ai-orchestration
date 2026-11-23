@@ -18,13 +18,12 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-import psycopg2
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from observer import DB, _j  # noqa: E402
+from observer import DB, _j, connect  # noqa: E402
 
-REPO = "/root/qwen/base"
+REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
 ALLOWED = {"note": "R0", "agents_md": "R1", "planner": "R1", "hire": "R2"}
 
 
@@ -129,7 +128,7 @@ def auto_apply_note(title, patch_text):
 
 
 def main():
-    conn = psycopg2.connect(**DB)
+    conn = connect(**DB)
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS retro_proposals("
                 "id serial PRIMARY KEY, ts timestamptz DEFAULT now(), title text, "

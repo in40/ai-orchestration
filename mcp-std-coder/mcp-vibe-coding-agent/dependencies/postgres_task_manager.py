@@ -62,15 +62,14 @@ class PostgresTaskManager:
             raise ImportError("psycopg2 is required for PostgreSQL task storage support. Install it with: pip install psycopg2-binary")
 
     def _connect(self):
-        """Establish connection to PostgreSQL database"""
+        """Connect: postgres when enabled/reachable, sqlite fallback otherwise"""
         try:
-            self.connection = self.psycopg2.connect(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.user,
-                password=self.password
-            )
+            import os as _os, sys as _sys
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from mcp_std_server.utils import db_compat
+            self.connection, self.backend = db_compat.connect(
+                host=self.host, port=self.port, database=self.database,
+                user=self.user, password=self.password)
             print("✅ Successfully connected to PostgreSQL task database")
         except Exception as e:
             print(f"❌ Failed to connect to PostgreSQL: {e}")

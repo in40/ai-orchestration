@@ -14,11 +14,10 @@ import sys
 import time
 from datetime import datetime, timezone
 
-import psycopg2
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from observer import DB  # noqa: E402
+from observer import DB, connect  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TERMINAL = ("done", "failed", "needs_revision")
@@ -59,7 +58,7 @@ def main():
         res = run_one(args.base_url, spec)
         results.append(res)
         print(" ", res, flush=True)
-    conn = psycopg2.connect(**DB)
+    conn = connect(**DB)
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS retro_eval_runs("
                 "id serial PRIMARY KEY, ts timestamptz DEFAULT now(), results jsonb)")

@@ -23,15 +23,12 @@ class TaskStorage:
         self._init_db()
 
     def _connect(self):
-        """Establish connection to PostgreSQL database"""
+        """Connect: postgres when enabled/reachable, sqlite fallback otherwise"""
         try:
-            self.connection = psycopg2.connect(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.user,
-                password=self.password
-            )
+            from . import db_compat
+            self.connection, self.backend = db_compat.connect(
+                host=self.host, port=self.port, database=self.database,
+                user=self.user, password=self.password)
             logger.info(f"✅ Successfully connected to PostgreSQL: {self.database}")
         except Exception as e:
             logger.error(f"❌ Failed to connect to PostgreSQL: {e}")

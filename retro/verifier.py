@@ -18,20 +18,19 @@ import os
 import subprocess
 import sys
 
-import psycopg2
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from observer import DB  # noqa: E402
+from observer import DB, connect  # noqa: E402
 from applier import _baseline_metric  # noqa: E402
 
-REPO = "/root/qwen/base"
+REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
 MIN_TASKS = 5
 DROP_TOLERANCE = 0.15
 WATCH_DAYS = 14
 
 
 def main():
-    conn = psycopg2.connect(**DB)
+    conn = connect(**DB)
     cur = conn.cursor()
     cur.execute("SET lock_timeout = 10000")
     cur.execute("ALTER TABLE retro_proposals ADD COLUMN IF NOT EXISTS commit_sha text")

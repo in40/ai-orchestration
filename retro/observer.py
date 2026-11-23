@@ -13,25 +13,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-import psycopg2
-
-
-def _db_params():
-    """Credentials from env or /root/qwen/base/.env (never hardcoded)."""
-    pw = os.environ.get("POSTGRES_PASSWORD")
-    if not pw:
-        try:
-            for line in open("/root/qwen/base/.env"):
-                if line.startswith("POSTGRES_PASSWORD="):
-                    pw = line.split("=", 1)[1].strip()
-                    break
-        except OSError:
-            pass
-    return dict(host="127.0.0.1", database="mcp_registry", user="postgres",
-                password=pw or os.environ.get("PGPASSWORD", ""))
-
-
-DB = _db_params()
+from _compat import DB, connect  # noqa: E402  (DB re-exported for verifier)
 ACTIVE = {"submitted", "in_progress", "review", "rework_in_progress", "awaiting_input"}
 STUCK_HOURS = 6
 WINDOW_DAYS = 7
@@ -47,7 +29,7 @@ def _j(v):
 
 
 def collect():
-    conn = psycopg2.connect(**DB)
+    conn, _backend = connect()
     cur = conn.cursor()
     cur.execute(
         "CREATE TABLE IF NOT EXISTS retro_reports("
@@ -96,7 +78,10 @@ def collect():
                 m["clarifications_pending"] += 1
                 m["clarification_fields"][c.get("field", "?")] += 1
         try:
-            upd = updated if updated.tzinfo else updated.replace(tzinfo=timezone.utc)
+            if isinstance(updated, str):  # sqlite stores TEXT timestamps
+                upd = datetime.fromisoformat(updated).replace(tzinfo=timezone.utc)
+            else:
+                upd = updated if updated.tzinfo else updated.replace(tzinfo=timezone.utc)
         except Exception:
             upd = now
         if status in ACTIVE and now - upd > timedelta(hours=STUCK_HOURS):
@@ -129,13 +114,8 @@ def collect():
 
 
 def main():
-    if os.environ.get("USE_POSTGRES", "true").lower() in ("false", "0", "no"):
-        # retro analytics query postgres jsonb directly; sqlite hosts skip
-        # until the retro suite is ported (phase 2)
-        print("retro: postgres disabled (USE_POSTGRES=false) - skipping")
-        return
     m, digest = collect()
-    conn = psycopg2.connect(**DB)
+    conn, _backend = connect()
     cur = conn.cursor()
     cur.execute("INSERT INTO retro_reports(digest, metrics) VALUES (%s, %s)",
                 (digest, json.dumps(m, ensure_ascii=False)))

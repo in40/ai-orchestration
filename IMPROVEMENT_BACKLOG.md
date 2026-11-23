@@ -469,3 +469,15 @@ deploy/provision.sh: one-command host bootstrap (apt deps, docker,
 chromium, opencode CLI+config+agents, ssh keys, .env, install.sh,
 self-E2E task). install.sh: psql/postgres setup now conditional on
 USE_POSTGRES (sqlite hosts need no postgres at all).
+
+## Phase 2: retro + team-management + service_registry on db_compat ✅
+db_compat new rules: now()/interval arithmetic -> datetime(now,...),
+to_regclass -> sqlite_master, AT TIME ZONE/::text/::timestamp stripped,
+jsonb ? key-exists -> json_extract IS NOT NULL, SET lock_timeout -> noop,
+ADD COLUMN IF NOT EXISTS emulated via PRAGMA table_info, DDL rules now
+case-insensitive (fixes products mirror: lowercase serial/timestamptz).
+retro/*: retro/_compat.py (BASE_DIR-aware creds), all 6 scripts via
+db_compat - observer no longer skips on sqlite. service_registry_db x8
+(heartbeat persistence), team-management task_storage, coder
+postgres_task_manager: db_compat dispatch. Integration test covers
+every idiom on sqlite + observer live on PG.

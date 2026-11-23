@@ -17,11 +17,10 @@ import argparse
 import json
 import sys
 
-import psycopg2
 import requests
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
-from observer import DB, _j  # noqa: E402
+from observer import DB, _j, connect  # noqa: E402
 
 
 def candidate_verdict(endpoint, tool, task_id, git_url):
@@ -57,7 +56,7 @@ def main():
     ap.add_argument("--samples", type=int, default=5)
     args = ap.parse_args()
 
-    conn = psycopg2.connect(**DB)
+    conn = connect(**DB)
     cur = conn.cursor()
     cur.execute("SELECT task_id, metadata::text, activity::text FROM task_registry "
                 "WHERE metadata::jsonb ? 'git_url' ORDER BY created_at DESC LIMIT 40")

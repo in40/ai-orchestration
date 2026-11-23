@@ -10,11 +10,10 @@ import os
 import subprocess
 import sys
 
-import psycopg2
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-REPO = "/root/qwen/base"
+REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
 TARGETS = {
     "agents_md": os.path.join(REPO, "retro/conventions.md"),
     "planner": os.path.join(REPO, "retro/planner_notes.md"),
@@ -22,8 +21,8 @@ TARGETS = {
 
 
 def _db():
-    from observer import DB
-    return psycopg2.connect(**DB)
+    from observer import DB, connect
+    return connect(**DB)
 
 
 def _baseline_metric(cur):
