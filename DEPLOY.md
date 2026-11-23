@@ -1,5 +1,17 @@
 # Развёртывание AI-orchestration (single host)
 
+## Быстрый старт (чистый хост, одна команда)
+С управляющей машины (или вручную скопировав единственный файл deploy/provision.sh):
+```
+export LLM_PROVIDER_URL=http://<llm-host>:8081/v1/chat/completions LLM_MODEL=<model> \
+       MCP_GIT_REPO_URL=ssh://<user>@<host>/home/<user>/mcp-results.git \
+       DEPLOYMENT_HOST=<этот-хост> USE_POSTGRES=false
+bash deploy/provision.sh
+```
+provision.sh сам ставит git/curl (apt/dnf/yum/apk), клонит репозиторий с GitHub,
+генерирует .env и opencode.json, вызывает install.sh и в конце заводит
+self-E2E задачу через весь конвейер (PASS = система жива).
+
 Конвейер «IT Lead → coder → QA → security → devops» с web-дашбордом,
 колокольчиком уточнений и ночным ретро-циклом.
 

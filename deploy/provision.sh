@@ -24,6 +24,19 @@ export DEBIAN_FRONTEND=noninteractive PATH="$PATH:/usr/sbin:/sbin"
 log() { echo "[provision] $*"; }
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
+log "0/7 bootstrap: package manager + fetch tools"
+# a virgin minimal image may have neither git nor curl - the installer must
+# provide its own prerequisites (network comes from the distro mirror anyway)
+if ! command -v git >/dev/null || ! command -v curl >/dev/null; then
+  if command -v apt-get >/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq && apt-get install -y -qq ca-certificates curl git rsync >/dev/null
+  elif command -v dnf >/dev/null; then dnf -y -q install curl git rsync >/dev/null
+  elif command -v yum >/dev/null;  then yum -y -q install curl git rsync >/dev/null
+  elif command -v apk >/dev/null;  then apk add --no-cache curl git rsync bash >/dev/null
+  else echo "no supported package manager (apt/dnf/yum/apk) - install git+curl first"; exit 1; fi
+fi
+
 REPO_URL=${REPO_URL:-https://github.com/in40/ai-orchestration}
 REPO_REF=${REPO_REF:-v0.5.11}
 ORCH_DIR=${ORCH_DIR:-/opt/ai-orchestration}
@@ -39,12 +52,16 @@ OPENCODE_BASE_URL=${OPENCODE_BASE_URL:-${LLM_PROVIDER_URL%/chat/completions}}
 
 log "1/7 apt packages"
 PKGS="ca-certificates curl git rsync sudo openssl python3 python3-venv python-is-python3 build-essential nginx nodejs npm postgresql-client"
+if command -v apt-get >/dev/null; then
 apt-get update -qq
 apt-get install -y -qq $PKGS >/dev/null
 apt-get install -y -qq chromium >/dev/null 2>&1 || apt-get install -y -qq chromium-browser >/dev/null 2>&1 || log "WARN: chromium not found (visual gate disabled)"
 command -v docker >/dev/null || { apt-get install -y -qq docker.io >/dev/null && systemctl enable --now docker; }
 if [ "$USE_POSTGRES" != "false" ] && ! command -v psql >/dev/null; then
   apt-get install -y -qq postgresql >/dev/null && systemctl enable --now postgresql
+fi
+else
+  log "WARN: no apt-get - skipping distro packages (install python3/node/nginx/docker manually)"
 fi
 
 log "2/7 opencode CLI"
