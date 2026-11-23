@@ -109,13 +109,13 @@ POSTGRES_HOST=127.0.0.1
 POSTGRES_PORT=5432
 POSTGRES_DB=mcp_registry
 POSTGRES_USER=postgres
-POSTGRES_PASSWORD=***
+POSTGRES_PASSWORD=${PG_PW}
 MCP_GIT_REPO_URL=${MCP_GIT_REPO_URL:-}
 SECURE_SEARCH_URL=${SECURE_SEARCH_URL:-}
 HEADLESS_SHELL=$(command -v chromium || command -v chromium-browser || echo /usr/bin/chromium)
 SHOTS_DIR=/var/www/shots
 OPENCODE_SERVE_URL=http://127.0.0.1:4097
-OPENCODE_PASSWORD=***
+OPENCODE_PASSWORD=${OC_PW}
 EOF
   chmod 600 "$ORCH_DIR/.env"
   log "wrote $ORCH_DIR/.env (PROVISION_FORCE_ENV=1 to regenerate)"
