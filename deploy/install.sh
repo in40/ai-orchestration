@@ -59,12 +59,15 @@ cp "$TARGET/deploy/nginx-edge.conf" /etc/nginx/conf.d/mcp-deployments.conf
 nginx -t && systemctl reload nginx
 
 log "systemd units (paths rewritten to $TARGET)"
+# some VPS guests forbid mount namespaces (unshare EPERM) - strip sandbox
+# directives that force one, otherwise units die with status=226/NAMESPACE
 for u in "${UNITS[@]}"; do
   for ext in service timer; do
     [ -f "$TARGET/systemd/$u.$ext" ] || continue
     sed -e "s#/root/qwen/base#$TARGET#g" \
         -e "s#\bpython -m#$TARGET/.venv/bin/python -m#g" \
         -e "s#source venv/bin/activate#source $TARGET/.venv/bin/activate#" \
+        -e "/^\(ReadWritePaths\|ProtectSystem\|ProtectHome\|PrivateTmp\|PrivateDevices\|ProtectKernelTunables\|ProtectControlGroups\|ReadOnlyPaths\|InaccessiblePaths\)=/d" \
         "$TARGET/systemd/$u.$ext" > "/etc/systemd/system/$u.$ext"
   done
 done
