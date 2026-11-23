@@ -20,6 +20,7 @@ Environment="LLM_MODEL=qwen3-coder-next@q5_k_xl"
 
 # Start the requirements engineer server
 ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    source venv/bin/activate 2>/dev/null || true; \
     python requirement_engineer_server.py \
         --transport ${TRANSPORT:-streamable-http} \
         --host ${WEB_UI_HOST:-0.0.0.0} \
