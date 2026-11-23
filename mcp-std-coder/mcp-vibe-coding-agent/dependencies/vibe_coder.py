@@ -1392,8 +1392,10 @@ Overall project goal:
                     "  If a fetched source changed a design decision, list it in a README\n"
                     "  'References' section.\n"
                     "- Web UI self-check (you have vision): once the server runs, take a\n"
-                    "  screenshot: /root/.cache/ms-playwright/chromium_headless_shell-1255/\n"
-                    "  chrome-headless-shell-linux64/chrome-headless-shell --headless --no-sandbox\n"
+                    "  screenshot: " + os.environ.get("HEADLESS_SHELL",
+                        "/root/.cache/ms-playwright/chromium_headless_shell-1255/"
+                        "chrome-headless-shell-linux64/chrome-headless-shell") +
+                    " --headless --no-sandbox\n"
                     "  --disable-gpu --screenshot=_shot.png --window-size=1280,900\n"
                     "  --virtual-time-budget=5000 <local URL>; then READ _shot.png with your read\n"
                     "  tool, verify it actually renders styled and matches the task, fix, repeat.\n"
