@@ -10,7 +10,7 @@ TARGET=${1:-/opt/ai-orchestration}
 UNITS=(mcp-registry mcp-requirements-engineer mcp-implementation-engineer
        mcp-qa-engineer mcp-security-reviewer mcp-devops-release-engineer
        mcp-team-management mcp-it-lead mcp-web-ui-backend mcp-web-ui-frontend
-       mcp-deployment-warden mcp-retro-observer)
+       mcp-deployment-warden mcp-retro-observer mcp-document-store)
 
 log() { echo "[install] $*"; }
 
@@ -66,6 +66,7 @@ for u in "${UNITS[@]}"; do
     [ -f "$TARGET/systemd/$u.$ext" ] || continue
     sed -e "s#/root/qwen/base#$TARGET#g" \
         -e "s#\bpython -m#$TARGET/.venv/bin/python -m#g" \
+        -e "s#\bpython -c#$TARGET/.venv/bin/python -c#g" \
         -e "s#source venv/bin/activate#source $TARGET/.venv/bin/activate#" \
         -e "/^\(ReadWritePaths\|ProtectSystem\|ProtectHome\|PrivateTmp\|PrivateDevices\|ProtectKernelTunables\|ProtectControlGroups\|ReadOnlyPaths\|InaccessiblePaths\)=/d" \
         "$TARGET/systemd/$u.$ext" > "/etc/systemd/system/$u.$ext"
