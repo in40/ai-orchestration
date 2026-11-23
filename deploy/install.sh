@@ -46,10 +46,11 @@ log "web-ui frontend"
 (cd "$TARGET/it-lead-mcp-server/web-ui/frontend" && npm ci --silent)
 
 log "database"
-sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER:-postgres}'" | grep -q 1 || \
-  sudo -u postgres psql -c "CREATE USER ${POSTGRES_USER:-postgres} PASSWORD '${POSTGRES_PASSWORD:-postgres}'"
-sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB:-mcp_registry}'" | grep -q 1 || \
-  sudo -u postgres createdb "${POSTGRES_DB:-mcp_registry}"
+PG() { if command -v sudo >/dev/null; then sudo -u postgres "$@"; else su postgres -c "$(printf '%q ' "$@")"; fi; }
+PG psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER:-postgres}'" | grep -q 1 || \
+  PG psql -c "CREATE USER ${POSTGRES_USER:-postgres} PASSWORD '${POSTGRES_PASSWORD:-postgres}'"
+PG psql -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB:-mcp_registry}'" | grep -q 1 || \
+  PG createdb "${POSTGRES_DB:-mcp_registry}"
 # tables are created by the services themselves (CREATE TABLE IF NOT EXISTS)
 
 log "runtime dirs + nginx edge"
