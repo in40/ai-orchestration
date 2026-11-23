@@ -124,6 +124,24 @@ class PostgresServiceRegistry:
             self.connection.rollback()
             return False
 
+    def _dict_cursor(self):
+        """RealDict-style cursor on both backends: psycopg2 needs the real
+        RealDictCursor (db_compat's sqlite cursor already returns dicts)."""
+        if getattr(self, "backend", "postgres") == "postgres":
+            import psycopg2.extras
+            return self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        return self.connection.cursor(cursor_factory=dict)
+
+    @staticmethod
+    def _j(v):
+        """capabilities arrive as dict (pg jsonb) or str (sqlite TEXT)"""
+        if isinstance(v, (str, bytes)):
+            try:
+                return json.loads(v)
+            except (TypeError, ValueError):
+                return {}
+        return v or {}
+
     def list_services(self) -> List[Dict[str, Any]]:
         """List all registered services in the registry.
         
@@ -131,7 +149,7 @@ class PostgresServiceRegistry:
             List of dictionaries containing service information
         """
         try:
-            cursor = self.connection.cursor(cursor_factory=getattr(getattr(self, 'extras', None), 'RealDictCursor', dict))
+            cursor = self._dict_cursor()
             
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
@@ -149,7 +167,7 @@ class PostgresServiceRegistry:
                     "name": row['name'],
                     "description": row['description'],
                     "endpoint": row['endpoint'],
-                    "capabilities": row['capabilities'] if row['capabilities'] else {},
+                    "capabilities": self._j(row['capabilities']),
                     "registered_at": row['registered_at'],
                     "last_seen": row['last_seen']
                 }
@@ -170,7 +188,7 @@ class PostgresServiceRegistry:
             Service information dictionary or None if not found
         """
         try:
-            cursor = self.connection.cursor(cursor_factory=getattr(getattr(self, 'extras', None), 'RealDictCursor', dict))
+            cursor = self._dict_cursor()
             
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
@@ -187,7 +205,7 @@ class PostgresServiceRegistry:
                     "name": row['name'],
                     "description": row['description'],
                     "endpoint": row['endpoint'],
-                    "capabilities": row['capabilities'] if row['capabilities'] else {},
+                    "capabilities": self._j(row['capabilities']),
                     "registered_at": row['registered_at'],
                     "last_seen": row['last_seen']
                 }
