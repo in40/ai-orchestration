@@ -126,7 +126,10 @@ class SqliteConn:
 
     def __init__(self, path):
         self._c = sqlite3.connect(path, timeout=30, check_same_thread=False)
-        self._c.isolation_level = "DEFERRED"
+        # autocommit (isolation_level=None): every statement commits instantly,
+        # so a thread that reads without commit can never hold a write lock -
+        # explicit .commit() calls elsewhere become harmless no-ops
+        self._c.isolation_level = None
         self._c.execute("PRAGMA journal_mode=WAL")
         self._c.execute("PRAGMA busy_timeout=30000")
         self._c.create_function("jsonb_append", 2, _fn_append)
