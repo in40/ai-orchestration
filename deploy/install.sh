@@ -16,8 +16,9 @@ log() { echo "[install] $*"; }
 
 log "syncing $SRC -> $TARGET"
 mkdir -p "$TARGET"
+# data/ and logs/ are runtime state - never let --delete touch them
 rsync -a --delete --exclude .git --exclude venv --exclude .venv \
-      --exclude node_modules --exclude .env "$SRC/" "$TARGET/"
+      --exclude node_modules --exclude .env --exclude data --exclude logs "$SRC/" "$TARGET/"
 
 [ -f "$TARGET/.env" ] || { cp "$TARGET/.env.example" "$TARGET/.env"
   echo ">>> EDIT $TARGET/.env (POSTGRES_PASSWORD, LLM_PROVIDER_URL, LLM_MODEL, DEPLOYMENT_HOST...) then re-run"; exit 0; }
@@ -37,16 +38,20 @@ fi
 log "python venvs (global + per-server where present)"
 python3 -m venv "$TARGET/.venv"
 "$TARGET/.venv/bin/pip" -q install -U pip
-for r in "$TARGET"/*/requirements.txt "$TARGET/it-lead-mcp-server/web-ui/backend/requirements.txt"; do
-  [ -f "$r" ] && "$TARGET/.venv/bin/pip" -q install -r "$r"
-done
+while IFS= read -r r; do
+  "$TARGET/.venv/bin/pip" -q install -r "$r"
+done < <(find "$TARGET" -maxdepth 3 -name requirements.txt \
+           -not -path "*/venv/*" -not -path "*/.venv/*" -not -path "*/node_modules/*")
 "$TARGET/.venv/bin/pip" -q install fastapi uvicorn "psycopg2-binary" requests pydantic httpx
-for d in "$TARGET"/*/; do
-  [ -f "$d/requirements.txt" ] || continue
+# per-server venvs: requirements.txt may sit one or two levels deep
+# (requirements-engineer-mcp-server/requirement-engineer-mcp-server/...)
+while IFS= read -r r; do
+  d=$(dirname "$r")
   [ -d "$d/venv" ] || python3 -m venv "$d/venv"
   "$d/venv/bin/pip" -q install -U pip
-  "$d/venv/bin/pip" -q install -r "$d/requirements.txt"
-done
+  "$d/venv/bin/pip" -q install -r "$r"
+done < <(find "$TARGET" -maxdepth 3 -name requirements.txt \
+           -not -path "*/venv/*" -not -path "*/.venv/*" -not -path "*/node_modules/*")
 
 log "web-ui frontend"
 (cd "$TARGET/it-lead-mcp-server/web-ui/frontend" && npm ci --silent)
