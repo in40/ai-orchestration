@@ -65,6 +65,7 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 
 log "4/7 repo $REPO_REF"
 if [ -d "$SRC/.git" ]; then git -C "$SRC" fetch -q origin && git -C "$SRC" checkout -q "$REPO_REF" && git -C "$SRC" pull -q origin "$REPO_REF"
+elif [ -f "$SRC/deploy/provision.sh" ]; then log "source pre-seeded at $SRC (no .git) - using as-is"
 else git clone -q -b "$REPO_REF" "$REPO_URL" "$SRC"; fi
 mkdir -p /root/.config/opencode/agents
 cp "$SRC"/opencode-agents/*.md /root/.config/opencode/agents/
