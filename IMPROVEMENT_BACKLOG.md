@@ -441,3 +441,13 @@ mcp_std_server (8 files). AgentDetail used to hit /api/agents (3
 hardcoded roles) while the Team list comes from /api/planner/agents
 (raw registry names) -> every View Details 404'd; it now uses the
 dynamic endpoint and normalizes capabilities/status/last_seen.
+
+## SQLite fallback (db_compat) ✅
+USE_POSTGRES=false (or unreachable PG) -> sqlite at SQLITE_PATH /
+$BASE_DIR/data/<db>.db. db_compat.py: psycopg2-shaped facade; regex-translates
+the codebase jsonb idioms to JSON1 (append/merge/setx/->>/::jsonb/ARRAY_ELEMS),
+RealDictCursor emulation, WAL+busy_timeout. task_storage: read-modify-write
+upsert (portable), JSON cols normalized on read. registry (all 8 copies),
+devops (_db_connect x7 + task_deployments DDL now in code), web-ui updater
+via TaskStorage. retro suite skips on sqlite (phase 2). PG path regression-
+tested live; unit-tested all idioms on sqlite.

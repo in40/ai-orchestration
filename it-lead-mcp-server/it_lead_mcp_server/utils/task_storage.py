@@ -34,20 +34,32 @@ class TaskStorage:
         self.user = user
         self.password = password
         self.connection = None
+        self.backend = None
 
         try:
-            import psycopg2
-            import psycopg2.extras
-            self.psycopg2 = psycopg2
-            self.extras = psycopg2.extras
-            self._connect_postgres()
-            self._init_db_postgres()
-            print("TaskStorage initialized successfully")
-        except ImportError:
-            raise ImportError("psycopg2 is required for PostgreSQL task storage. Install it with: pip install psycopg2-binary")
+            from . import db_compat
+            self.connection, self.backend = db_compat.connect(
+                host=self.host, port=self.port, database=self.database,
+                user=self.user, password=self.password)
+            if self.backend == "postgres":
+                self._init_db_postgres()
+            else:
+                self._init_db_sqlite()
+            print(f"TaskStorage initialized successfully (backend={self.backend})")
         except Exception as e:
             print(f"Failed to initialize task storage: {e}")
             raise
+
+    @staticmethod
+    def _j(v):
+        """Parse a JSON column that sqlite stores as TEXT (postgres jsonb
+        arrives already parsed). Non-JSON values pass through untouched."""
+        if isinstance(v, (str, bytes)):
+            try:
+                return json.loads(v)
+            except (TypeError, ValueError):
+                return v
+        return v
 
     def _connect_postgres(self):
         """Establish connection to PostgreSQL database"""
@@ -162,6 +174,44 @@ class TaskStorage:
             print(f"Error initializing PostgreSQL task storage database: {e}")
             raise
 
+    def _init_db_sqlite(self):
+        """SQLite fallback schema: JSON columns stored as TEXT; db_compat
+        translates the jsonb idioms to JSON1 functions. No CHECK constraints:
+        the status vocabulary evolves (awaiting_input etc.)."""
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS task_registry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                submitter TEXT NOT NULL,
+                submitter_type TEXT NOT NULL,
+                transport_channel TEXT DEFAULT 'unknown',
+                assigned_to TEXT DEFAULT 'unassigned',
+                status TEXT NOT NULL DEFAULT 'received',
+                status_reason TEXT,
+                priority TEXT DEFAULT 'medium',
+                deadline TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                assigned_at TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                source_server TEXT,
+                target_server TEXT,
+                result TEXT,
+                metadata TEXT DEFAULT '{}',
+                status_history TEXT DEFAULT '[]',
+                activity TEXT DEFAULT '[]'
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON task_registry(task_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON task_registry(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_assigned_to ON task_registry(assigned_to)")
+        self.connection.commit()
+        cursor.close()
+
     def store_received_task(self, task_id: str, title: str, description: str,
                           submitter: str = "unknown", submitter_type: str = "system",
                           transport_channel: str = "unknown", assigned_to: Optional[str] = "unassigned",
@@ -180,42 +230,54 @@ class TaskStorage:
                 "reason": status_reason
             }
 
-            cursor.execute("""
-                INSERT INTO task_registry
-                (task_id, title, description, submitter, submitter_type, transport_channel,
-                 assigned_to, status, status_reason, priority, deadline, source_server, target_server,
-                 metadata, status_history)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (task_id)
-                DO UPDATE SET
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    submitter = EXCLUDED.submitter,
-                    submitter_type = EXCLUDED.submitter_type,
-                    transport_channel = EXCLUDED.transport_channel,
-                    assigned_to = EXCLUDED.assigned_to,
-                    status = EXCLUDED.status,
-                    status_reason = EXCLUDED.status_reason,
-                    priority = EXCLUDED.priority,
-                    deadline = EXCLUDED.deadline,
-                    source_server = EXCLUDED.source_server,
-                    target_server = EXCLUDED.target_server,
-                    updated_at = CURRENT_TIMESTAMP,
-                    metadata = task_registry.metadata || EXCLUDED.metadata,
-                    status_history = CASE
-                        WHEN EXISTS (
-                            SELECT 1 FROM jsonb_array_elements(task_registry.status_history) AS elem
-                            WHERE elem->>'status' = %s
-                        )
-                        THEN task_registry.status_history
-                        ELSE COALESCE(task_registry.status_history, '[]'::jsonb) || EXCLUDED.status_history
-                    END
-            """, (
-                task_id, title, description, submitter, submitter_type, transport_channel,
-                assigned_to, status, status_reason, priority, deadline, source_server, target_server,
-                json.dumps(metadata) if metadata else '{}', json.dumps([status_history_entry]),
-                status  # Additional parameter for the EXISTS check
-            ))
+            # read-modify-write instead of a jsonb upsert: portable across
+            # postgres and sqlite, same semantics (merge metadata, append
+            # status_history once per status)
+            cursor.execute(
+                "SELECT metadata, status_history FROM task_registry WHERE task_id = %s",
+                (task_id,))
+            row = cursor.fetchone()
+            meta_json = json.dumps(metadata) if metadata else '{}'
+            hist_json = json.dumps([status_history_entry])
+            if row:
+                try:
+                    base_meta = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or {})
+                except (TypeError, ValueError):
+                    base_meta = {}
+                try:
+                    hist = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or [])
+                except (TypeError, ValueError):
+                    hist = []
+                if isinstance(base_meta, dict) and metadata:
+                    base_meta.update(metadata)
+                    meta_json = json.dumps(base_meta)
+                if isinstance(hist, list) and not any(
+                        isinstance(h, dict) and h.get("status") == status for h in hist):
+                    hist.append(status_history_entry)
+                hist_json = json.dumps(hist)
+                cursor.execute("""
+                    UPDATE task_registry SET
+                        title = %s, description = %s, submitter = %s, submitter_type = %s,
+                        transport_channel = %s, assigned_to = %s, status = %s,
+                        status_reason = %s, priority = %s, deadline = %s, source_server = %s,
+                        target_server = %s, updated_at = CURRENT_TIMESTAMP,
+                        metadata = %s, status_history = %s
+                    WHERE task_id = %s
+                """, (title, description, submitter, submitter_type, transport_channel,
+                      assigned_to, status, status_reason, priority, deadline, source_server,
+                      target_server, meta_json, hist_json, task_id))
+            else:
+                cursor.execute("""
+                    INSERT INTO task_registry
+                    (task_id, title, description, submitter, submitter_type, transport_channel,
+                     assigned_to, status, status_reason, priority, deadline, source_server, target_server,
+                     metadata, status_history)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    task_id, title, description, submitter, submitter_type, transport_channel,
+                    assigned_to, status, status_reason, priority, deadline, source_server, target_server,
+                    meta_json, hist_json,
+                ))
 
             self.connection.commit()
             cursor.close()
@@ -336,8 +398,8 @@ class TaskStorage:
                     "source_server": row[17],
                     "target_server": row[18],
                     "result": row[19],
-                    "metadata": row[20],
-                    "status_history": row[21]
+                    "metadata": self._j(row[20]),
+                    "status_history": self._j(row[21])
                 }
 
             return None
@@ -388,8 +450,8 @@ class TaskStorage:
                     "source_server": row[17],
                     "target_server": row[18],
                     "result": row[19],
-                    "metadata": row[20],
-                    "status_history": row[21]
+                    "metadata": self._j(row[20]),
+                    "status_history": self._j(row[21])
                 })
 
             return tasks
@@ -440,8 +502,8 @@ class TaskStorage:
                     "source_server": row[17],
                     "target_server": row[18],
                     "result": row[19],
-                    "metadata": row[20],
-                    "status_history": row[21],
+                    "metadata": self._j(row[20]),
+                    "status_history": self._j(row[21]),
                     "archived": row[22]
                 })
 
@@ -501,8 +563,8 @@ class TaskStorage:
                     "source_server": row[17],
                     "target_server": row[18],
                     "result": row[19],
-                    "metadata": row[20],
-                    "status_history": row[21]
+                    "metadata": self._j(row[20]),
+                    "status_history": self._j(row[21])
                 })
 
             return tasks

@@ -27,11 +27,10 @@ class PostgresServiceRegistry:
         print(f"DEBUG: PostgresServiceRegistry initializing with host={host}, port={port}, database={database}, user={user}")
 
         try:
-            import psycopg2
-            import psycopg2.extras
-            self.psycopg2 = psycopg2
-            self.extras = psycopg2.extras
-            self._connect()
+            from . import db_compat
+            self.connection, self.backend = db_compat.connect(
+                host=self.host, port=self.port, database=self.database,
+                user=self.user, password=self.password)
             self._init_db()
         except ImportError:
             raise ImportError("psycopg2 is required for PostgreSQL registry support. Install it with: pip install psycopg2-binary")
@@ -132,7 +131,7 @@ class PostgresServiceRegistry:
             List of dictionaries containing service information
         """
         try:
-            cursor = self.connection.cursor(cursor_factory=self.extras.RealDictCursor)
+            cursor = self.connection.cursor(cursor_factory=getattr(getattr(self, 'extras', None), 'RealDictCursor', dict))
 
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen
@@ -171,7 +170,7 @@ class PostgresServiceRegistry:
             Service information dictionary or None if not found
         """
         try:
-            cursor = self.connection.cursor(cursor_factory=self.extras.RealDictCursor)
+            cursor = self.connection.cursor(cursor_factory=getattr(getattr(self, 'extras', None), 'RealDictCursor', dict))
 
             cursor.execute("""
                 SELECT id, name, description, endpoint, capabilities, registered_at, last_seen

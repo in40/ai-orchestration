@@ -22,6 +22,30 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+def _db_connect():
+    """Registry DB connection via db_compat (postgres, or sqlite fallback).
+    Also ensures task_deployments exists (fresh installs had no DDL)."""
+    import os as _os
+    from ..utils import db_compat
+    conn, _backend = db_compat.connect(
+        host=_os.environ.get("POSTGRES_HOST", "127.0.0.1"),
+        port=int(_os.environ.get("POSTGRES_PORT", "5432")),
+        database=_os.environ.get("POSTGRES_DB", "mcp_registry"),
+        user=_os.environ.get("POSTGRES_USER", "postgres"),
+        password=_os.environ.get("POSTGRES_PASSWORD", "postgres"))
+    try:
+        _cur = conn.cursor()
+        _cur.execute("""CREATE TABLE IF NOT EXISTS task_deployments (
+            task_id TEXT UNIQUE, container_id TEXT, container_port INTEGER,
+            host_port INTEGER, deployment_url TEXT, status TEXT DEFAULT 'running',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP, stopped_at TEXT,
+            git_commit_sha TEXT, docker_image TEXT, memory_limit TEXT, cpu_limit TEXT)""")
+        conn.commit()
+        _cur.close()
+    except Exception:
+        pass
+    return conn
+
 deployment_logger = logging.getLogger(__name__)
 
 # Default Git repository URL for deployment results
@@ -1270,9 +1294,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
         except Exception as e:
             deployment_logger.info(f"clear_deployment_url via MCP failed ({e}), direct write")
             try:
-                import psycopg2 as _pg
-                _c = _pg.connect(host="127.0.0.1", database="mcp_registry",
-                             user="postgres", password=os.environ.get("POSTGRES_PASSWORD", "postgres"))
+                _c = _db_connect()
                 _cur = _c.cursor()
                 _cur.execute("UPDATE task_registry SET metadata = metadata::jsonb - 'deployment_url' "
                              "WHERE task_id = %s", (task_id,))
@@ -1458,13 +1480,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                           deployment_url, git_url, docker_image, memory_limit, cpu_limit):
         """Store deployment in database"""
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                host="127.0.0.1",
-                database="mcp_registry",
-                user="postgres",
-                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
-            )
+            conn = _db_connect()
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO task_deployments
@@ -1492,15 +1508,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
         This ensures deployment failures are properly tracked in the task registry.
         """
         try:
-            import psycopg2
-            import json
-
-            conn = psycopg2.connect(
-                host="127.0.0.1",
-                database="mcp_registry",
-                user="postgres",
-                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
-            )
+            conn = _db_connect()
             cursor = conn.cursor()
 
             # Get current task data
@@ -1568,15 +1576,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                 self.task_storage.update_task_with_git_url(task_id, git_url, deployment_url)
             else:
                 # Fallback: direct database update
-                import psycopg2
-                import json
-
-                conn = psycopg2.connect(
-                    host="127.0.0.1",
-                    database="mcp_registry",
-                    user="postgres",
-                    password=os.environ.get("POSTGRES_PASSWORD", "postgres")
-                )
+                conn = _db_connect()
                 cursor = conn.cursor()
 
                 # Build metadata update
@@ -1619,13 +1619,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
     def _update_deployment_status(self, task_id, status):
         """Update deployment status in database"""
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                host="127.0.0.1",
-                database="mcp_registry",
-                user="postgres",
-                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
-            )
+            conn = _db_connect()
             cursor = conn.cursor()
             if status == "stopped":
                 cursor.execute("""
@@ -1646,16 +1640,10 @@ CMD ["python", "-m", "http.server", "{container_port}"]
     def _get_deployments(self, status_filter="running"):
         """Get deployments from database with actual Docker status"""
         import subprocess
-        import psycopg2
         from datetime import datetime, date
         
         try:
-            conn = psycopg2.connect(
-                host="127.0.0.1",
-                database="mcp_registry",
-                user="postgres",
-                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
-            )
+            conn = _db_connect()
             cursor = conn.cursor()
             if status_filter == "all":
                 cursor.execute("SELECT * FROM task_deployments ORDER BY created_at DESC")

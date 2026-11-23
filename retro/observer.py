@@ -129,6 +129,11 @@ def collect():
 
 
 def main():
+    if os.environ.get("USE_POSTGRES", "true").lower() in ("false", "0", "no"):
+        # retro analytics query postgres jsonb directly; sqlite hosts skip
+        # until the retro suite is ported (phase 2)
+        print("retro: postgres disabled (USE_POSTGRES=false) - skipping")
+        return
     m, digest = collect()
     conn = psycopg2.connect(**DB)
     cur = conn.cursor()
