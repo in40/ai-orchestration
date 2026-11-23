@@ -6,10 +6,11 @@
 ## Требования к хосту
 | Компонент | Зачем | Обязателен |
 |---|---|---|
-| python3.11+, node 18+, nginx, postgres, git | стек сервисов | да |
+| python3.11+ (с `python-is-python3`), node 18+, nginx, postgres, git | стек сервисов; QA-gate вызывает `python` | да |
 | OpenAI-совместимый LLM-эндпоинт (`LLM_PROVIDER_URL`, `LLM_MODEL`) | планировщик, гейты, ретро | да (сильная модель для coder-fallback) |
-| [opencode](https://github.com/sst/opencode) CLI + `~/.config/opencode/opencode.json` | основной режим сборки (сессия coder'а) | рекомендовано |
-| git-репозиторий результатов (`MCP_GIT_REPO_URL`, ssh-ключ) | хранение артефактов | да |
+| [opencode](https://github.com/sst/opencode) CLI (`curl -fsSL https://opencode.ai/install | bash`) + `~/.config/opencode/opencode.json` | основной режим сборки coder'а | **да** |
+| docker | запуск деплоев (devops + warden) | **да** |
+| git-репозиторий результатов (`MCP_GIT_REPO_URL`, ssh-ключ для root И пользователя) | хранение артефактов | да |
 | chrome-headless-shell | visual-gate и скриншоты (`HEADLESS_SHELL`) | опционально |
 | flux2-совместимый image API (`IMAGE_API_BASE`) | генерация картинок coder'ом | опционально |
 | nginx edge :3080 | публичные URL деплоев | да |
