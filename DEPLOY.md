@@ -11,7 +11,8 @@
 | [opencode](https://github.com/sst/opencode) CLI (`curl -fsSL https://opencode.ai/install | bash`) + `~/.config/opencode/opencode.json` | основной режим сборки coder'а | **да** |
 | docker | запуск деплоев (devops + warden) | **да** |
 | git-репозиторий результатов (`MCP_GIT_REPO_URL`, ssh-ключ для root И пользователя) | хранение артефактов | да |
-| chrome-headless-shell | visual-gate и скриншоты (`HEADLESS_SHELL`) | опционально |
+| chromium (или chrome-headless-shell) | visual-gate и скриншоты: `HEADLESS_SHELL=/usr/bin/chromium` | рекомендовано |
+| secure-search MCP (`SECURE_SEARCH_URL` в .env, подставляется в opencode.json) | поиск для coder'а | опционально |
 | flux2-совместимый image API (`IMAGE_API_BASE`) | генерация картинок coder'ом | опционально |
 | nginx edge :3080 | публичные URL деплоев | да |
 
