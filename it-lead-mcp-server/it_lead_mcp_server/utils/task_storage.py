@@ -206,9 +206,14 @@ class TaskStorage:
                 result TEXT,
                 metadata TEXT DEFAULT '{}',
                 status_history TEXT DEFAULT '[]',
-                activity TEXT DEFAULT '[]'
+                activity TEXT DEFAULT '[]',
+                archived INTEGER DEFAULT 0
             )
         """)
+        try:  # sqlite has no ADD COLUMN IF NOT EXISTS; older fallback DBs lack it
+            cursor.execute("ALTER TABLE task_registry ADD COLUMN archived INTEGER DEFAULT 0")
+        except Exception:
+            pass
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON task_registry(task_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON task_registry(status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_assigned_to ON task_registry(assigned_to)")
