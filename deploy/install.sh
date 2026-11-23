@@ -3,6 +3,7 @@
 # Usage: sudo ./deploy/install.sh [target-dir]   (default /opt/ai-orchestration)
 # Idempotent: safe to re-run after `git pull` to upgrade.
 set -euo pipefail
+export PATH="$PATH:/usr/sbin:/sbin"
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 TARGET=${1:-/opt/ai-orchestration}
