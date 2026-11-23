@@ -1272,7 +1272,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
             try:
                 import psycopg2 as _pg
                 _c = _pg.connect(host="127.0.0.1", database="mcp_registry",
-                             user="postgres", password="postgres")
+                             user="postgres", password=os.environ.get("POSTGRES_PASSWORD", "postgres"))
                 _cur = _c.cursor()
                 _cur.execute("UPDATE task_registry SET metadata = metadata::jsonb - 'deployment_url' "
                              "WHERE task_id = %s", (task_id,))
@@ -1463,7 +1463,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                 host="127.0.0.1",
                 database="mcp_registry",
                 user="postgres",
-                password="postgres"
+                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
             )
             cursor = conn.cursor()
             cursor.execute("""
@@ -1499,7 +1499,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                 host="127.0.0.1",
                 database="mcp_registry",
                 user="postgres",
-                password="postgres"
+                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
             )
             cursor = conn.cursor()
 
@@ -1575,7 +1575,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                     host="127.0.0.1",
                     database="mcp_registry",
                     user="postgres",
-                    password="postgres"
+                    password=os.environ.get("POSTGRES_PASSWORD", "postgres")
                 )
                 cursor = conn.cursor()
 
@@ -1624,7 +1624,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                 host="127.0.0.1",
                 database="mcp_registry",
                 user="postgres",
-                password="postgres"
+                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
             )
             cursor = conn.cursor()
             if status == "stopped":
@@ -1654,7 +1654,7 @@ CMD ["python", "-m", "http.server", "{container_port}"]
                 host="127.0.0.1",
                 database="mcp_registry",
                 user="postgres",
-                password="postgres"
+                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
             )
             cursor = conn.cursor()
             if status_filter == "all":

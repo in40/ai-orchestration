@@ -19,7 +19,7 @@ task_storage = TaskStorage(
     port=5432,
     database="mcp_registry",
     user="postgres",
-    password="postgres"
+    password=os.environ.get("POSTGRES_PASSWORD", "postgres")
 )
 
 # Serve static files (HTML, CSS, JS) from the webapp directory
