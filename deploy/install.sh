@@ -75,6 +75,11 @@ cp "$TARGET/deploy/nginx-edge.conf" /etc/nginx/conf.d/mcp-deployments.conf
 nginx -t && systemctl reload nginx
 
 log "systemd units (paths rewritten to $TARGET)"
+# postgres args are injected from the unit's own environment ($POSTGRES_*,
+# already defaulted via Environment= lines). A bare ${VAR:-*} default would
+# glob-expand if a .env value is empty or contains shell metacharacters.
+sed -i -E 's/--postgres-host \$\{POSTGRES_HOST:-[^}]*\}/--postgres-host $POSTGRES_HOST/; s/--postgres-port \$\{POSTGRES_PORT:-[^}]*\}/--postgres-port $POSTGRES_PORT/; s/--postgres-db \$\{POSTGRES_DB:-[^}]*\}/--postgres-db $POSTGRES_DB/; s/--postgres-user \$\{POSTGRES_USER:-[^}]*\}/--postgres-user $POSTGRES_USER/; s/--postgres-password \$\{POSTGRES_PASSWORD:-[^}]*\}/--postgres-password "$POSTGRES_PASSWORD"/' \
+  "$TARGET"/systemd/*.service 2>/dev/null || true
 # some VPS guests forbid mount namespaces (unshare EPERM) - strip sandbox
 # directives that force one, otherwise units die with status=226/NAMESPACE
 for u in "${UNITS[@]}"; do
