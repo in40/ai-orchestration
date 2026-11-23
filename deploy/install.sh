@@ -27,19 +27,18 @@ rsync -a --delete --exclude .git --exclude venv --exclude .venv \
 # shellcheck disable=SC1091
 set -a; . "$TARGET/.env"; set +a
 
-log "python venvs"
-for d in "$TARGET"/*/ "$TARGET/it-lead-mcp-server/web-ui/backend/"; do
+log "python venvs (global + per-server where present)"
+python3 -m venv "$TARGET/.venv"
+"$TARGET/.venv/bin/pip" -q install -U pip
+for r in "$TARGET"/*/requirements.txt "$TARGET/it-lead-mcp-server/web-ui/backend/requirements.txt"; do
+  [ -f "$r" ] && "$TARGET/.venv/bin/pip" -q install -r "$r"
+done
+"$TARGET/.venv/bin/pip" -q install fastapi uvicorn "psycopg2-binary" requests pydantic httpx
+for d in "$TARGET"/*/; do
   [ -f "$d/requirements.txt" ] || continue
   [ -d "$d/venv" ] || python3 -m venv "$d/venv"
   "$d/venv/bin/pip" -q install -U pip
   "$d/venv/bin/pip" -q install -r "$d/requirements.txt"
-done
-# baseline for servers without their own requirements.txt
-for d in "$TARGET"/*/; do
-  [ -f "$d/requirements.txt" ] && continue
-  [ -f "$d/setup.py" ] || [ -d "$d"/*_mcp_server 2>/dev/null ] || continue
-  [ -d "$d/venv" ] || python3 -m venv "$d/venv"
-  "$d/venv/bin/pip" -q install fastapi uvicorn "psycopg2-binary" requests pydantic httpx
 done
 
 log "web-ui frontend"
@@ -62,7 +61,10 @@ log "systemd units (paths rewritten to $TARGET)"
 for u in "${UNITS[@]}"; do
   for ext in service timer; do
     [ -f "$TARGET/systemd/$u.$ext" ] || continue
-    sed "s#/root/qwen/base#$TARGET#g" "$TARGET/systemd/$u.$ext" > "/etc/systemd/system/$u.$ext"
+    sed -e "s#/root/qwen/base#$TARGET#g" \
+        -e "s#\bpython -m#$TARGET/.venv/bin/python -m#g" \
+        -e "s#source venv/bin/activate#source $TARGET/.venv/bin/activate#" \
+        "$TARGET/systemd/$u.$ext" > "/etc/systemd/system/$u.$ext"
   done
 done
 # opencode serve is optional (needed for the opencode coder path)
