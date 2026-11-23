@@ -1379,7 +1379,7 @@ class TaskAssignmentManager:
                                detail="skipped (headless shell not found)")
             return None
         try:
-            d = f"/var/www/shots/{task_id}"
+            d = f"{os.environ.get('SHOTS_DIR', '/var/www/shots')}/{task_id}"
             os.makedirs(d, exist_ok=True)
             out = os.path.join(d, f"{stage}.png")
             subprocess.run([binp, "--headless", "--no-sandbox", "--disable-gpu",
@@ -1414,7 +1414,7 @@ class TaskAssignmentManager:
                 "jsonrpc": "2.0", "id": f"vis-{task_id}", "method": "tools/call",
                 "params": {"name": "visual_review", "arguments": {
                     "task_id": task_id,
-                    "image_path": f"/var/www/shots/{task_id}/deploy.png",
+                    "image_path": f"{os.environ.get('SHOTS_DIR', '/var/www/shots')}/{task_id}/deploy.png",
                     "task_description": (task_description or "")[:4000]}}},
                 timeout=300)
             out = r.json().get("result", {})
@@ -3223,7 +3223,8 @@ Please implement this corrected code in {original_language} and prepare it for d
         the results repo and adopt the tree if found."""
         import subprocess
         repo = "/tmp/mcp-vibe-coding-git/repo"
-        url = "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"
+        url = os.environ.get("MCP_GIT_REPO_URL",
+                             "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
         try:
             if not os.path.isdir(os.path.join(repo, ".git")):
                 subprocess.run(["git", "clone", "-q", "--filter=blob:none",

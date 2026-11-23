@@ -613,7 +613,7 @@ class DevOpsReleaseEngineerHandlers:
             if "/tree/main/" in git_url:
                 git_repo_url = git_url.split("/tree/main/")[0] + ".git"
             else:
-                git_repo_url = "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"
+                git_repo_url = DEFAULT_GIT_REPO_URL
 
             deployment_logger.info(f"Deploying from repo: {git_repo_url}, UUID: {result_uuid}")
 

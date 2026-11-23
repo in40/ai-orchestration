@@ -19,7 +19,8 @@ import time
 
 REPO = "/root/qwen/base"
 RESULTS_LOCAL = "/tmp/mcp-vibe-coding-git/repo"
-RESULTS_REPO = "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"
+RESULTS_REPO = os.environ.get("MCP_GIT_REPO_URL",
+    "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
 
 AREAS = {
     "web-ui-frontend": {

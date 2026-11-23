@@ -19,7 +19,7 @@ import subprocess
 RESULTS_LOCAL = "/tmp/mcp-vibe-coding-git/repo"
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 DISK_PURGE = ["/tmp/oc-builds/{task}", "/tmp/qa-{task}",
-              "/var/www/shots/{task}", "/tmp/qa-contracts/{task}.json"]
+              os.environ.get("SHOTS_DIR", "/var/www/shots") + "/{task}", "/tmp/qa-contracts/{task}.json"]
 
 
 def _sql(conn):
