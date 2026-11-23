@@ -53,11 +53,14 @@ class TaskStorage:
     @staticmethod
     def _j(v):
         """Parse a JSON column that sqlite stores as TEXT (postgres jsonb
-        arrives already parsed). Non-JSON values pass through untouched."""
-        if isinstance(v, (str, bytes)):
-            try:
-                return json.loads(v)
-            except (TypeError, ValueError):
+        arrives already parsed). Tolerates double-encoded values."""
+        for _ in range(3):
+            if isinstance(v, (str, bytes)):
+                try:
+                    v = json.loads(v)
+                except (TypeError, ValueError):
+                    return v
+            else:
                 return v
         return v
 
@@ -248,8 +251,11 @@ class TaskStorage:
                     hist = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or [])
                 except (TypeError, ValueError):
                     hist = []
-                if isinstance(base_meta, dict) and metadata:
-                    base_meta.update(metadata)
+                if isinstance(base_meta, dict):
+                    # always merge into the stored metadata (PG '||' semantics):
+                    # an empty/absent patch must not wipe existing keys
+                    if metadata:
+                        base_meta.update(metadata)
                     meta_json = json.dumps(base_meta)
                 if isinstance(hist, list) and not any(
                         isinstance(h, dict) and h.get("status") == status for h in hist):

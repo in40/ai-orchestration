@@ -451,3 +451,15 @@ upsert (portable), JSON cols normalized on read. registry (all 8 copies),
 devops (_db_connect x7 + task_deployments DDL now in code), web-ui updater
 via TaskStorage. retro suite skips on sqlite (phase 2). PG path regression-
 tested live; unit-tested all idioms on sqlite.
+
+## SQLite fallback phase 1.1 (deploy E2E findings) ✅
+Two real bugs found by the live sqlite E2E on the deploy host:
+1. _merge_metadata used COALESCE(metadata::jsonb,"{}") || ::jsonb - regex
+   missed the cast-inside-coalesce variant, sqlite did TEXT || concat and
+   corrupted the column ("}{"). All COALESCE concat variants now match;
+   tripwire: any untranslated "|| ?" raises instead of silently corrupting.
+2. store_received_task rewrite wiped metadata when called with {} (falsy)
+   - PG "||" semantics merge, empty patch = keep base. Fixed + tested both
+   backends.
+Also defensive: _fn_merge/_fn_append tolerate corrupted values; _j loops
+up to 3 parses for double-encoded columns.

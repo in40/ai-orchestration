@@ -24,8 +24,16 @@ import sqlite3
 
 
 def _fn_append(base, item):
-    arr = json.loads(base) if base else []
-    it = json.loads(item)
+    try:
+        arr = json.loads(base) if base else []
+    except (TypeError, ValueError):
+        arr = []
+    if not isinstance(arr, list):
+        arr = []
+    try:
+        it = json.loads(item)
+    except (TypeError, ValueError):
+        it = item
     if isinstance(it, list):
         arr.extend(it)
     else:
@@ -34,12 +42,22 @@ def _fn_append(base, item):
 
 
 def _fn_merge(base, patch):
-    d = json.loads(base) if base else {}
-    p = json.loads(patch) if isinstance(patch, str) else patch
+    try:
+        d = json.loads(base) if base else {}
+    except (TypeError, ValueError):
+        d = {}
+    if not isinstance(d, dict):
+        d = {}  # corrupted column value: start clean rather than fail the UPDATE
+    try:
+        p = json.loads(patch) if isinstance(patch, str) else patch
+    except (TypeError, ValueError):
+        p = None
     if isinstance(p, dict):
         d.update(p)
         return json.dumps(d)
-    return _fn_append(base, patch)  # '||' on arrays
+    if isinstance(p, list):
+        return json.dumps(p)
+    return json.dumps(d)
 
 
 def _fn_setx(doc, path, val):
@@ -68,11 +86,13 @@ class _Cursor:
          _setx_repl),
         (re.compile(r"jsonb_set\(\s*(\w+),\s*'(\{[^']*\})',\s*%s::jsonb\s*(?:,\s*true)?\s*\)"),
          _setx_repl),
-        (re.compile(r"COALESCE\((\w+),\s*'\[\]'::jsonb\)\s*\|\|\s*%s::jsonb"),
+        # COALESCE variants, tolerant of casts on either side:
+        # COALESCE(col,'[]'::jsonb) || %s::jsonb / COALESCE(col::jsonb,'[]') || %s::jsonb
+        (re.compile(r"COALESCE\((\w+)(?:::jsonb)?,\s*'\[\]'(?:::jsonb)?\)\s*\|\|\s*%s::jsonb"),
          lambda m: f"jsonb_append({m.group(1)}, ?)"),
-        (re.compile(r"COALESCE\((\w+),\s*'\{\}'::jsonb\)\s*\|\|\s*%s::jsonb"),
+        (re.compile(r"COALESCE\((\w+)(?:::jsonb)?,\s*'\{\}'(?:::jsonb)?\)\s*\|\|\s*%s::jsonb"),
          lambda m: f"jsonb_merge({m.group(1)}, ?)"),
-        (re.compile(r"\b(\w+) *\|\| *%s::jsonb"),
+        (re.compile(r"\b(\w+)(?:::jsonb)?\s*\|\|\s*%s::jsonb"),
          lambda m: f"jsonb_merge({m.group(1)}, ?)"),
         (re.compile(r"jsonb_array_elements\(([^)]+)\)"),
          lambda m: f"json_each({m.group(1)})"),
@@ -95,6 +115,11 @@ class _Cursor:
     def _t(self, sql):
         for rx, rep in _Cursor._RE:
             sql = rx.sub(rep, sql)
+        # tripwire: a missed jsonb concat would silently TEXT-concatenate
+        # ('}{') and corrupt the column in sqlite - fail loud instead
+        if re.search(r"\|\|\s*\?", sql):
+            raise ValueError("db_compat: untranslated jsonb concat in SQL: "
+                             + " ".join(sql.split())[:200])
         return sql
 
     def execute(self, sql, params=None):
