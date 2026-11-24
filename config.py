@@ -261,12 +261,12 @@ class Settings(BaseSettings):
     # =========================================================================
     
     BASE_DIR: str = Field(
-        default="/root/qwen/base",
+        default="",  # set BASE_DIR in .env
         description="Base directory for MCP system"
     )
     
     DATA_DIR: str = Field(
-        default="/root/qwen/base/data",
+        default="",  # set DATA_DIR in .env
         description="Data directory for storage"
     )
 
