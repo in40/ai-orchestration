@@ -343,6 +343,8 @@ def _opencode_coder_build(ws, tid, prompt):
                                        session=f"ses-build-{tid}", timeout=timeout)
     return ok, text, err
 
+
+def _get_or_clone_git_repo(repo_url: str, local_path: Path) -> Path:
     """
     Get or clone a git repository.
     
