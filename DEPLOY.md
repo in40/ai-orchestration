@@ -108,6 +108,28 @@ python3 scripts/promote_service.py promote --source results/<task>/ \
 Юнит на `python3` подходит только stdlib-сервисам; при зависимостях передайте
 `--exec "python -m <pkg>.server ..."` — install.sh перепишет `python -m` на venv.
 
+## Безопасный рестарт сервисов
+`mcp-implementation-engineer` держит долгие HTTP-запросы it-lead (opencode-сборка
+— до часа). Рестарт юнита **обрывает активную сборку**: задача падает в `failed`
+с `RemoteDisconnected` (проверено боем). Поэтому перед рестартом coder/it-lead:
+
+```bash
+# есть ли живые задачи?
+curl -s localhost:8000/api/tasks | python3 -c "import json,sys; \
+print([t['id']+'='+t['status'] for t in json.load(sys.stdin) \
+if t['status'] in ('in_progress','review','rework_in_progress','awaiting_input')])"
+```
+
+Если есть активные — дождаться, либо остановить задачи (кнопка ■ Stop /
+`cancel_task`). (Список сессий `GET :4097/api/session` для этой проверки не
+годится: он показывает и давно простаивающие сессии без признака завершенности.)
+Если рестарт назрел, а сборку жалко: workspace (`/tmp/oc-builds/<task>`) при
+рестарте **не теряется** — после рестарта восстановить задачу в 1 клик:
+`POST /api/tasks/<id>/restart {"from_step":"build"}` (резюм той же
+opencode-сессии). web-ui backend, наоборот, перезапускать можно свободно —
+его запросы короткие; порядок: `stop mcp-web-ui-watchdog` → `restart
+mcp-web-ui-backend` → `start mcp-web-ui-watchdog`.
+
 ## Откат/бэкап
 Код — git; состояние — `pg_dump mcp_registry` (или копия `data/*.db*` на SQLite);
 конфиги — `.env`,
