@@ -28,12 +28,12 @@ def reprocess_submitted_tasks():
         port=5432,
         database="mcp_registry",
         user="postgres",
-        password="postgres"
+        password=os.environ.get("POSTGRES_PASSWORD", "")
     )
 
     # Initialize LLM client
     llm_client = MockLlmClient(
-        llm_provider_url="http://192.168.51.105:1234/v1/chat/completions",
+        llm_provider_url=os.environ.get("LLM_PROVIDER_URL", ""),
         llm_model="qwen3.5-122b-a10b"
     )
 

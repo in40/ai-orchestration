@@ -519,8 +519,8 @@ def main():
                        default=10,
                        help='Maximum number of concurrent requests (default: 10)')
     parser.add_argument('--llm-provider-url',
-                       default='http://192.168.51.237:1234/v1/chat/completions',
-                       help='URL for the LLM provider (default: http://192.168.51.237:1234/v1/chat/completions)')
+                       default=None,
+                       help='URL for the LLM provider (set LLM_PROVIDER_URL in .env)')
     parser.add_argument('--llm-model',
                        default='qwen3.5-35b-a3b@q5_k_xl',
                        help='LLM model name (default: qwen3.5-35b-a3b@q5_k_xl)')
@@ -529,6 +529,8 @@ def main():
                        help='Directory to keep prompts (default: current directory)')
 
     args = parser.parse_args()
+    if not args.llm_provider_url:
+        parser.error('--llm-provider-url is required (set LLM_PROVIDER_URL in .env)')
 
     postgres_host = args.postgres_host
     if postgres_host == "localhost":

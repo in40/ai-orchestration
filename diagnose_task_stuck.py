@@ -161,7 +161,7 @@ def check_task_in_db(task_id):
             port=5432,
             database="mcp_registry",
             user="postgres",
-            password="postgres"
+            password=os.environ.get("POSTGRES_PASSWORD", "")
         )
         cur = conn.cursor()
         

@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     # =========================================================================
 
     LLM_PROVIDER_URL: str = Field(
-        default="http://192.168.51.237:1234/v1/chat/completions",
+        default="",  # MUST be set in .env file, no hardcoded default
         description="LLM API endpoint URL"
     )
 

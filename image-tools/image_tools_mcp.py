@@ -18,7 +18,15 @@ import sys
 import urllib.request
 import zlib
 
-BASE = os.environ.get("IMAGE_API_BASE", "http://192.168.51.105:8081")
+BASE = os.environ.get("IMAGE_API_BASE", "")
+
+
+def _base():
+    if not BASE:
+        raise RuntimeError(
+            "IMAGE_API_BASE is not set - add the image-generation API base "
+            "url to .env (e.g. http://host:8081) to enable image tools")
+    return BASE
 MODEL = os.environ.get("IMAGE_API_MODEL", "flux2-klein-4b")
 
 TOOLS = [
@@ -78,7 +86,7 @@ def generate(args):
     seed = _seed(args)
     body = {"model": MODEL, "prompt": args["prompt"],
             "size": args.get("size", "512x512"), "n": 1, "seed": seed}
-    req = urllib.request.Request(BASE + "/v1/images/generations",
+    req = urllib.request.Request(_base() + "/v1/images/generations",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     out = json.loads(urllib.request.urlopen(req, timeout=240).read().decode())
@@ -94,7 +102,7 @@ def edit(args):
     src = _safe(args["image_path"])
     dst = _safe(args.get("filename") or src[:-4] + "_edited.png")
     seed = _seed(args)
-    r = subprocess.run(["curl", "-s", "-m", "240", BASE + "/v1/images/edits",
+    r = subprocess.run(["curl", "-s", "-m", "240", _base() + "/v1/images/edits",
                         "-F", f"model={MODEL}", "-F", f"image=@{src}",
                         "-F", f"prompt={args['prompt']}", "-F", f"seed={seed}"],
                        capture_output=True, text=True, timeout=260)

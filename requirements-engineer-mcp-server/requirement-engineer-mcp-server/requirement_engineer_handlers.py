@@ -1156,7 +1156,9 @@ Please return a document containing:
         try:
             # Try to make a simple call to the LLM
             import requests
-            url = "http://192.168.51.237:1234/v1/models"
+            import os
+            _base = (os.environ.get("LLM_PROVIDER_URL") or "").rsplit("/chat/completions", 1)[0]
+            url = (_base or "http://127.0.0.1:1234/v1") + "/models"
             response = requests.get(url, timeout=5)
             if response.status_code == 200:
                 return "ok"

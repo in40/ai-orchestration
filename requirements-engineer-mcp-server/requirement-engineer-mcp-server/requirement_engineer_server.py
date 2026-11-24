@@ -444,13 +444,15 @@ def main():
                        help='Maximum number of concurrent requests (default: 10)')
     # LLM configuration
     parser.add_argument('--llm-provider-url',
-                       default='http://192.168.51.237:1234/v1/chat/completions',
-                       help='LLM provider URL (default: http://192.168.51.237:1234/v1/chat/completions)')
+                       default=None,
+                       help='LLM provider URL (set LLM_PROVIDER_URL in .env)')
     parser.add_argument('--llm-model',
                        default='qwen3-coder-next@q5_k_xl',
                        help='LLM model name (default: qwen3-coder-next@q5_k_xl)')
 
     args = parser.parse_args()
+    if not args.llm_provider_url:
+        parser.error('--llm-provider-url is required (set LLM_PROVIDER_URL in .env)')
 
     # Convert localhost to 127.0.0.1 to avoid IPv6 resolution issues
     postgres_host = args.postgres_host
