@@ -20,7 +20,7 @@ Environment=RESULTS_DIR=/tmp/mcp-vibe-coding-git/docs-repo/results
 ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
     export MCP_ADVERTISE_HOST="${MCP_ADVERTISE_HOST:-${DEPLOYMENT_HOST:-}}"; \
     export RESULTS_REPO="${RESULTS_REPO:-${MCP_GIT_REPO_URL:-}}"; \
-    exec /root/qwen/base/.venv/bin/python main.py serve'
+    exec python3 main.py serve'
 
 Restart=always
 RestartSec=5
