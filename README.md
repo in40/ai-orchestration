@@ -29,7 +29,10 @@ curl -fsSL https://raw.githubusercontent.com/in40/ai-orchestration/v0.5.11/deplo
 export LLM_PROVIDER_URL=http://LLM-ХОСТ:8081/v1/chat/completions
 export LLM_MODEL=имя-модели
 export MCP_GIT_REPO_URL=ssh://user@results-хост/home/user/mcp-results.git
-export DEPLOYMENT_HOST=публичный-ip-этого-хоста
+export DEPLOYMENT_HOST=публичный-ip-этого-хоста  # опционально: по умолчанию
+#                                    берётся первый IP хоста; нужен, если
+#                                    адрес наружу другой (NAT, не-первый
+#                                    интерфейс) или хотите DNS-имя
 export USE_POSTGRES=false          # true = PostgreSQL
 # если на хосте уже есть ключ для results-репо:
 export RESULTS_SSH_KEY_B64=$(base64 -w0 /root/.ssh/id_ed25519)
