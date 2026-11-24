@@ -197,7 +197,11 @@ class TeamManagementMcpServer:
             print(f"DEBUG: Registration payload prepared: {payload['params']['id']}")
 
             print(f"DEBUG: Sending registration request to {registry_url}")
-            response = requests.post(registry_url, json=payload)
+            try:
+                response = requests.post(registry_url, json=payload, timeout=5)
+            except Exception as _re:
+                print(f"Initial registration did not reach the registry ({_re.__class__.__name__}); heartbeat will retry")
+                response = None
             if response is not None:
                 print(f"DEBUG: Registration response status: {response.status_code}")
 
