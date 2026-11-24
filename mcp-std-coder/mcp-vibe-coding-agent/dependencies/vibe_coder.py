@@ -304,7 +304,45 @@ def _ensure_git_config(repo_path: Path, user_name: str = "mcp-agent", user_email
     )
 
 
-def _get_or_clone_git_repo(repo_url: str, local_path: Path) -> Path:
+def _is_transient_llm_err(err) -> bool:
+    """Provider/model hiccup recoverable by resuming the SAME session.
+
+    The provider rejects a tool_call whose arguments are not a JSON object
+    ("tool_calls[].function.arguments for 'shell' must decode to an object")
+    when the model emits malformed JSON mid-build; the AI SDK drops the step
+    and opencode exits rc=1. The session and workspace survive, so a 'continue'
+    message usually finishes the build - far cheaper than discarding a ~30-min
+    opencode build and degrading to per-file fan-out (task-1795526291181:
+    a complete AngularJS site was thrown away this way)."""
+    e = str(err or "")
+    return ("must decode to an object" in e
+            or ("invalid-request" in e and "tool_call" in e))
+
+
+RESUME_AFTER_GLITCH = (
+    "Your previous tool call was rejected by the LLM provider (malformed JSON "
+    "in tool arguments) and that step was lost. Nothing on disk was rolled "
+    "back: inspect the current state of the workspace, then continue the "
+    "build - implement the remaining MANIFEST.md files, verify, and finish. "
+    "Re-issue any interrupted command as a fresh tool call with valid JSON "
+    "arguments.")
+
+
+def _opencode_coder_build(ws, tid, prompt):
+    """opencode_agent for the build session + transient-glitch retries."""
+    from .opencode_run import opencode_agent
+    timeout = int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400"))
+    ok, text, err = opencode_agent("coder", ws, prompt,
+                                   session=f"ses-build-{tid}", timeout=timeout)
+    for retry in range(2):
+        if ok or not _is_transient_llm_err(err):
+            break
+        print(f"⚠️ build {tid}: transient provider error, resuming session "
+              f"(retry {retry + 1}/2): {str(err)[:150]}", flush=True)
+        ok, text, err = opencode_agent("coder", ws, RESUME_AFTER_GLITCH,
+                                       session=f"ses-build-{tid}", timeout=timeout)
+    return ok, text, err
+
     """
     Get or clone a git repository.
     
@@ -1424,10 +1462,7 @@ Overall project goal:
                                if base_tree else
                                "Read MANIFEST.md and AGENTS.md, implement every file, then "
                                "verify and fix until green.")
-                ok, text, err = opencode_agent(
-                    "coder", ws, instruction,
-                    session=f"ses-build-{tid}",
-                    timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
+                ok, text, err = _opencode_coder_build(ws, tid, instruction)
                 if not ok:
                     return {"error": f"build_project agent failed: {err[:300]}"}
                 need = _read_need_info(ws)
@@ -1460,11 +1495,8 @@ Overall project goal:
                 return {"error": "resume_build: workspace is gone (host restart?) - "
                                  "rebuild from scratch required"}
             try:
-                from .opencode_run import opencode_agent
-                ok, text, err = opencode_agent(
-                    "coder", ws, str(arguments.get("message", "Continue.")),
-                    session=f"ses-build-{tid}",
-                    timeout=int(os.environ.get("OPENCODE_BUILD_TIMEOUT", "2400")))
+                ok, text, err = _opencode_coder_build(
+                    ws, tid, str(arguments.get("message", "Continue.")))
                 if not ok:
                     return {"error": f"resume_build agent failed: {err[:300]}"}
                 need = _read_need_info(ws)

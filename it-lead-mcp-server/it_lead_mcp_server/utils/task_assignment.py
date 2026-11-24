@@ -872,9 +872,9 @@ class TaskAssignmentManager:
                       f"({len(out.get('files', []))} files, {stats})", flush=True)
                 return out["git_url"]
             print(f"⚠️ build_project {task_id} fell back to fan-out: "
-                  f"{str(out.get('error') if isinstance(out, dict) else out)[:200]}", flush=True)
+                  f"{str(out.get('error') if isinstance(out, dict) else out)[:600]}", flush=True)
         except Exception as e:
-            print(f"⚠️ build_project {task_id} error, falling back: {str(e)[:200]}", flush=True)
+            print(f"⚠️ build_project {task_id} error, falling back: {str(e)[:600]}", flush=True)
         return None
 
     # ------------------------------------------------------------------
