@@ -176,8 +176,12 @@ class McpServer:
                     _adv = self.host
                 elif not _adv:
                     try:
-                        _s = _sock.socket()
-                        _s.connect(("10.255.255.255", 1))
+                        _s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+                        # UDP connect sends nothing - it only resolves the
+                        # source route. A TCP connect here blackholes (and
+                        # hangs ~2 min in SYN_SENT) on hosts whose gateway
+                        # drops unrouted SYNs instead of refusing them.
+                        _s.connect((self.registry_host or "127.0.0.1", 1))
                         _adv = _s.getsockname()[0]
                         _s.close()
                     except Exception:
