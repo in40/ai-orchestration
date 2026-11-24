@@ -49,7 +49,10 @@ web-ui (:8000 backend + :5173 frontend), edge-proxy :3080,
 - `LLM_PROVIDER_URL` / `LLM_MODEL` — мозг конвейера
 - `MCP_GIT_REPO_URL` — ssh-url репозитория артефактов (нужен ssh-доступ)
 - `DEPLOYMENT_HOST` — адрес хоста для публичных URL деплоев
-- `POSTGRES_*` — БД реестра задач (таблицы создаются сервисами)
+- `POSTGRES_*` — БД реестра задач (таблицы создаются сервисами); при
+  `USE_POSTGRES=true` локальный кластер ставится/создаётся установщиком,
+  не-локальный `POSTGRES_HOST` = внешний кластер (роль/БД создаёт админ,
+  `POSTGRES_PASSWORD` обязателен)
 - `USE_POSTGRES=false` — работать на SQLite вместо PostgreSQL (см. ниже)
 - `SHOTS_DIR`, `HEADLESS_SHELL`, `IMAGE_API_BASE` — vision/generation
 

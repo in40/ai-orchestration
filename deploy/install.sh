@@ -33,7 +33,11 @@ for c in python3 node npm git nginx; do
   command -v "$c" >/dev/null || { echo "MISSING: $c - install it first (see DEPLOY.md)"; exit 1; }
 done
 if [ "$USE_PG" != "false" ]; then
-  command -v psql >/dev/null || { echo "MISSING: psql - install postgresql (or set USE_POSTGRES=false in $TARGET/.env to use sqlite)"; exit 1; }
+  case "${POSTGRES_HOST:-127.0.0.1}" in
+    127.0.0.1|localhost|::1|"")
+      command -v psql >/dev/null || { echo "MISSING: psql - install postgresql (or set USE_POSTGRES=false in $TARGET/.env to use sqlite)"; exit 1; }
+      ;;
+  esac
 fi
 
 log "python venvs (global + per-server where present)"
@@ -59,6 +63,8 @@ log "web-ui frontend"
 
 log "database"
 if [ "$USE_PG" != "false" ]; then
+case "${POSTGRES_HOST:-127.0.0.1}" in
+  127.0.0.1|localhost|::1|"")
 PG() { if command -v sudo >/dev/null; then sudo -u postgres "$@"; else su postgres -c "$(printf '%q ' "$@")"; fi; }
 PG psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER:-postgres}'" | grep -q 1 || \
   PG psql -c "CREATE USER ${POSTGRES_USER:-postgres} PASSWORD '${POSTGRES_PASSWORD:-postgres}'"
@@ -66,6 +72,11 @@ PG psql -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB:-mcp_regist
   PG createdb "${POSTGRES_DB:-mcp_registry}"
 PG psql -c "ALTER USER ${POSTGRES_USER:-postgres} PASSWORD '${POSTGRES_PASSWORD:-postgres}'" >/dev/null
 # tables are created by the services themselves (CREATE TABLE IF NOT EXISTS)
+    ;;
+  *)
+    log "external postgres at ${POSTGRES_HOST} - skipping local role/db creation (assumed pre-provisioned)"
+    ;;
+esac
 else
 log "USE_POSTGRES=false - sqlite fallback (db_compat), skipping postgres setup"
 fi

@@ -76,6 +76,8 @@ ssh-ключа results-репо и self-E2E — см. разделы «Конф�
 | `MCP_GIT_REPO_URL` | ssh-url git-репозитория артефактов (`results/<task>/`) |
 | `DEPLOYMENT_HOST` | адрес хоста для публичных URL деплоев (иначе — первый IP) |
 | `USE_POSTGRES` | `true` (по умолчанию) или `false` = SQLite без сервера БД |
+| `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` | только при `USE_POSTGRES=true`; по умолчанию локальный кластер `127.0.0.1:5432/mcp_registry/postgres` — установщик сам ставит сервер и создаёт роль/БД. Не-локальный `POSTGRES_HOST` = **внешний** кластер: локальный сервер не ставится, роль и БД должны быть уже созданы вашим админом |
+| `POSTGRES_PASSWORD` | для локального генерируется, если не задан; для **внешнего обязателен** |
 | `RESULTS_SSH_KEY_B64` | base64 приватного ключа для results-репо; без него будет сгенерирован свой и выведен публичный — авторизуйте его на results-сервере |
 
 Опционально: `SECURE_SEARCH_URL` (поиск для coder'а), `IMAGE_API_BASE`

@@ -13,7 +13,12 @@
 #   ORCH_DIR                   install target (/opt/ai-orchestration)
 #   DEPLOYMENT_HOST            public IP/DNS (first host IP)
 #   USE_POSTGRES               true|false (true; false = sqlite fallback)
-#   POSTGRES_PASSWORD          generated when USE_POSTGRES=true
+#   POSTGRES_HOST/PORT/DB/USER connection to PostgreSQL (defaults 127.0.0.1:5432
+#                              /mcp_registry/postgres). A non-local host means
+#                              an EXTERNAL cluster: no local server is
+#                              installed, role/db must already exist, and
+#                              POSTGRES_PASSWORD is REQUIRED.
+#   POSTGRES_PASSWORD          generated when local; required when external
 #   SECURE_SEARCH_URL          search MCP for opencode agents (optional)
 #   OPENCODE_VERSION           pin opencode CLI (latest)
 #   RESULTS_SSH_KEY_B64        base64 private key for the results repo (optional;
@@ -42,6 +47,17 @@ REPO_REF=${REPO_REF:-v0.5.11}
 ORCH_DIR=${ORCH_DIR:-/opt/ai-orchestration}
 SRC=${SRC:-/root/ai-orchestration}
 USE_POSTGRES=${USE_POSTGRES:-true}
+# Postgres connection details (defaults = local cluster, provisioned by us).
+# A non-local POSTGRES_HOST means an EXTERNAL pre-existing cluster: we do not
+# install a server and cannot create role/db (needs admin on that host) -
+# pre-create role $POSTGRES_USER and db $POSTGRES_DB and set POSTGRES_PASSWORD.
+POSTGRES_HOST=${POSTGRES_HOST:-127.0.0.1}
+POSTGRES_PORT=${POSTGRES_PORT:-5432}
+POSTGRES_DB=${POSTGRES_DB:-mcp_registry}
+POSTGRES_USER=${POSTGRES_USER:-postgres}
+PG_LOCAL=0
+case "$POSTGRES_HOST" in 127.0.0.1|localhost|::1|"") PG_LOCAL=1;; esac
+[ -n "$POSTGRES_HOST" ] || POSTGRES_HOST=127.0.0.1
 DEPLOYMENT_HOST=${DEPLOYMENT_HOST:-$(hostname -I | awk '{print $1}')}
 LLM_PROVIDER_URL=${LLM_PROVIDER_URL:-}
 LLM_MODEL=${LLM_MODEL:-}
@@ -57,8 +73,10 @@ apt-get update -qq
 apt-get install -y -qq $PKGS >/dev/null
 apt-get install -y -qq chromium >/dev/null 2>&1 || apt-get install -y -qq chromium-browser >/dev/null 2>&1 || log "WARN: chromium not found (visual gate disabled)"
 command -v docker >/dev/null || { apt-get install -y -qq docker.io >/dev/null && systemctl enable --now docker; }
-if [ "$USE_POSTGRES" != "false" ] && ! command -v psql >/dev/null; then
+if [ "$USE_POSTGRES" != "false" ] && [ "$PG_LOCAL" = 1 ] && ! command -v psql >/dev/null; then
   apt-get install -y -qq postgresql >/dev/null && systemctl enable --now postgresql
+elif [ "$USE_POSTGRES" != "false" ] && [ "$PG_LOCAL" = 0 ]; then
+  log "external postgres at $POSTGRES_HOST:$POSTGRES_PORT - no local server will be installed"
 fi
 else
   log "WARN: no apt-get - skipping distro packages (install python3/node/nginx/docker manually)"
@@ -113,7 +131,15 @@ EOF
 fi
 mkdir -p "$ORCH_DIR"
 if [ ! -f "$ORCH_DIR/.env" ] || [ "${PROVISION_FORCE_ENV:-0}" = 1 ]; then
-  PG_PW=${POSTGRES_PASSWORD:-$(openssl rand -hex 12)}
+  if [ "$USE_POSTGRES" = "false" ]; then
+    PG_PW=${POSTGRES_PASSWORD:-postgres}
+  elif [ -n "${POSTGRES_PASSWORD:-}" ]; then
+    PG_PW=$POSTGRES_PASSWORD
+  elif [ "$PG_LOCAL" = 1 ]; then
+    PG_PW=$(openssl rand -hex 12)
+  else
+    echo "FATAL: external POSTGRES_HOST=$POSTGRES_HOST requires POSTGRES_PASSWORD in env (the cluster is not ours to provision)"; exit 1
+  fi
   OC_PW=$(openssl rand -hex 12)
   cat > "$ORCH_DIR/.env" <<EOF
 BASE_DIR=$ORCH_DIR
@@ -122,10 +148,10 @@ DEPLOYMENT_HOST=$DEPLOYMENT_HOST
 LLM_PROVIDER_URL=$LLM_PROVIDER_URL
 LLM_MODEL=$LLM_MODEL
 USE_POSTGRES=$USE_POSTGRES
-POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
-POSTGRES_DB=mcp_registry
-POSTGRES_USER=postgres
+POSTGRES_HOST=$POSTGRES_HOST
+POSTGRES_PORT=$POSTGRES_PORT
+POSTGRES_DB=$POSTGRES_DB
+POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=${PG_PW}
 MCP_GIT_REPO_URL=${MCP_GIT_REPO_URL:-}
 SECURE_SEARCH_URL=${SECURE_SEARCH_URL:-}
