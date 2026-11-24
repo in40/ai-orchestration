@@ -3543,15 +3543,31 @@ Please generate the complete, corrected code with proper {metadata.get('language
                         try:
                             ep = self.routing_engine.get_agent_endpoint(
                                 "implementation-engineer").replace("0.0.0.0", "127.0.0.1")
-                            r = requests.post(ep, json={
-                                "jsonrpc": "2.0", "id": f"restart-{task_id}",
-                                "method": "tools/call", "params": {
-                                    "name": "resume_build", "arguments": {
-                                        "task_id": task_id,
-                                        "message": "RETRY after a failed run: inspect the "
-                                                   "current workspace state, fix anything "
-                                                   "broken, verify, and finish the build."}}},
-                                timeout=3600)
+                            # same observability as _build_via_opencode: a start
+                            # event + the SSE watcher streaming agent_step entries,
+                            # otherwise the history looks dead for the whole build
+                            self._log_activity(task_id, "build_project",
+                                               agent="implementation-engineer",
+                                               detail="opencode session resumed (restart from build)")
+                            sid = f"ses-build-{task_id}"
+                            stop = threading.Event()
+                            watcher = threading.Thread(
+                                target=self._watch_session,
+                                args=(task_id, sid, stop), daemon=True)
+                            watcher.start()
+                            threading.Event().wait(3)  # let the SSE stream connect
+                            try:
+                                r = requests.post(ep, json={
+                                    "jsonrpc": "2.0", "id": f"restart-{task_id}",
+                                    "method": "tools/call", "params": {
+                                        "name": "resume_build", "arguments": {
+                                            "task_id": task_id,
+                                            "message": "RETRY after a failed run: inspect the "
+                                                       "current workspace state, fix anything "
+                                                       "broken, verify, and finish the build."}}},
+                                    timeout=3600)
+                            finally:
+                                stop.set()
                             out = r.json().get("result", {})
                             if isinstance(out, dict) and isinstance(out.get("result"), dict):
                                 out = out["result"]
