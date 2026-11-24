@@ -1,0 +1,29 @@
+[Unit]
+Description=MCP Documentation Engineer (auto-docs per task)
+Documentation=https://github.com/in40/ai-orchestration
+After=network-online.target mcp-registry.service
+Wants=mcp-registry.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/qwen/base/documentation-engineer-mcp-server
+EnvironmentFile=/root/qwen/base/.env
+
+# Fixed service config
+Environment=PORT=3074
+Environment=REGISTRY_URL=http://127.0.0.1:3031
+Environment=HEARTBEAT_INTERVAL=30
+Environment=RESULTS_DIR=/tmp/mcp-vibe-coding-git/docs-repo/results
+
+# MCP_ADVERTISE_HOST and RESULTS_REPO are derived from the install .env
+# (DEPLOYMENT_HOST / MCP_GIT_REPO_URL) so nothing host-specific is baked in.
+ExecStart=/bin/bash -c 'source /root/qwen/base/.env 2>/dev/null || true; \
+    export MCP_ADVERTISE_HOST="${MCP_ADVERTISE_HOST:-${DEPLOYMENT_HOST:-}}"; \
+    export RESULTS_REPO="${RESULTS_REPO:-${MCP_GIT_REPO_URL:-}}"; \
+    exec /root/qwen/base/.venv/bin/python main.py serve'
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
