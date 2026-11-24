@@ -35,7 +35,7 @@ import {
   Link,
   Tooltip
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon, Visibility as VisibilityIcon, ContentCopy as CopyIcon, Archive as ArchiveIcon, Unarchive as UnarchiveIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, History as HistoryIcon, Delete as DeleteIcon, OpenInNew as OpenInNewIcon, Close as CloseIcon, Description as DescriptionIcon, Launch as LaunchIcon, Refresh as RefreshIcon, Build as BuildIcon, RestartAlt as RestartAltIcon, Visibility as VisibilityIcon, ContentCopy as CopyIcon, Archive as ArchiveIcon, Unarchive as UnarchiveIcon, StopCircle as StopIcon } from '@mui/icons-material';
 import axios from 'axios';
 
 // Import enhanced AddTaskForm component
@@ -367,6 +367,26 @@ const TaskManagement = () => {
     }
   };
 
+  const handleCancel = async (task) => {
+    const taskId = task.task_id || task.id;
+    if (!window.confirm(
+        `Stop task ${taskId}?\n` +
+        'The running coder build session will be aborted and the task marked ' +
+        'cancelled. You can restart it later from the failed step.')) return;
+    try {
+      const response = await axios.post(`/api/tasks/${taskId}/cancel`);
+      const res = response.data?.result || {};
+      alert(res.session_aborted
+        ? 'Задача остановлена, сборка прервана.'
+        : 'Задача помечена остановленной (живой сборочной сессии не найдено).');
+      const tasksResponse = await axios.get('/api/tasks');
+      setTasks(tasksResponse.data);
+    } catch (err) {
+      console.error("Error cancelling task:", err);
+      alert(`Failed to stop: ${err.response?.data?.detail || 'Unknown error'}`);
+    }
+  };
+
   const handleRestart = async (task) => {
     const taskId = task.task_id || task.id;
     if (!window.confirm(
@@ -588,6 +608,19 @@ const TaskManagement = () => {
                           title="Redeploy Task"
                         >
                           <BuildIcon />
+                        </IconButton>
+                      )}
+                      {/* Stop button: abort an active build/gate run (cancelled
+                          is terminal; the task can be restarted later) */}
+                      {['submitted', 'in_progress', 'review', 'awaiting_input',
+                        'rework_in_progress'].includes(task.status) && (
+                        <IconButton
+                          color="error"
+                          aria-label="stop task"
+                          onClick={() => handleCancel(task)}
+                          title="Stop task (cancel run)"
+                        >
+                          <StopIcon />
                         </IconButton>
                       )}
                       {/* Restart-from-failed-step: cheap retry that reuses the

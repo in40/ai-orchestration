@@ -2397,8 +2397,14 @@ class TaskAssignmentManager:
         return {"description": task_description}
 
     def _update_task_status(self, task_id: str, status: str, status_reason: str,
-                          metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """Update task status with history tracking"""
+                          metadata: Optional[Dict[str, Any]] = None,
+                          force: bool = False) -> bool:
+        """Update task status with history tracking.
+
+        'cancelled' is terminal for the pipeline: once an operator cancels a
+        task, the still-unwinding build/gate threads must not overwrite it
+        (they would mark it failed). Explicit transitions (cancel, restart)
+        pass force=True."""
         try:
             if not self.task_storage:
                 return False
@@ -2407,6 +2413,9 @@ class TaskAssignmentManager:
             task = self.task_storage.get_task(task_id)
             if not task:
                 print(f"⚠️ Task {task_id} not found for status update")
+                return False
+            if not force and task.get("status") == "cancelled" and status != "cancelled":
+                print(f"⛔ status update '{status}' ignored for cancelled task {task_id}")
                 return False
 
             # Merge metadata
@@ -3419,6 +3428,43 @@ Please generate the complete, corrected code with proper {metadata.get('language
             import traceback
             traceback.print_exc()
 
+    def cancel_task(self, task_id: str) -> Dict[str, Any]:
+        """Operator stop: mark an active task cancelled and abort the coder's
+        opencode build session if one is running. Unwinding pipeline threads
+        cannot overwrite 'cancelled' (see _update_task_status guard)."""
+        if not self.task_storage:
+            return {"success": False, "error": "no task storage"}
+        task_obj = self.task_storage.get_task(task_id)
+        if not task_obj:
+            return {"success": False, "error": f"task not found: {task_id}"}
+        status = task_obj.get("status", "")
+        if status in ("cancelled",):
+            return {"success": True, "already": True, "status": status}
+        if status not in ("submitted", "in_progress", "review", "awaiting_input",
+                          "rework_in_progress", "needs_revision"):
+            return {"success": False,
+                    "error": f"task is {status}; nothing to cancel"}
+        self._update_task_status(task_id, "cancelled", "cancelled by operator",
+                                 force=True)
+        self._log_activity(task_id, "cancelled", agent="it-lead",
+                           detail=f"operator cancel (was {status})")
+        aborted = False
+        try:
+            ep = self.routing_engine.get_agent_endpoint("implementation-engineer")
+            ep = ep.replace("0.0.0.0", "127.0.0.1")
+            r = requests.post(ep, json={
+                "jsonrpc": "2.0", "id": f"cancel-{task_id}", "method": "tools/call",
+                "params": {"name": "abort_build", "arguments": {"task_id": task_id}}},
+                timeout=30)
+            body = r.json().get("result", {})
+            if isinstance(body, dict) and isinstance(body.get("result"), dict):
+                body = body["result"]
+            aborted = bool(isinstance(body, dict) and body.get("success"))
+        except Exception as e:
+            print(f"cancel_task {task_id}: session abort not confirmed ({e})", flush=True)
+        return {"success": True, "task_id": task_id, "status": "cancelled",
+                "session_aborted": aborted}
+
     def restart_task(self, task_id: str, from_step: str = "auto") -> Dict[str, Any]:
         """Restart a failed/stale task from a sensible step instead of redoing
         everything. from_step:
@@ -3483,7 +3529,8 @@ Please generate the complete, corrected code with proper {metadata.get('language
                     "error": f"cannot restart from {from_step}: task has no "
                              "artifact (git_url) - restart from build instead"}
 
-        self._update_task_status(task_id, "in_progress", f"restarted from {from_step}")
+        self._update_task_status(task_id, "in_progress", f"restarted from {from_step}",
+                                 force=True)
         self._log_activity(task_id, "restarted", agent="it-lead",
                            detail=f"from_step={from_step} git_url={'yes' if git_url else 'no'} "
                                   f"workspace={'yes' if ws.exists() else 'no'}")

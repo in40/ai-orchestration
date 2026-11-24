@@ -51,6 +51,19 @@ class HumanInterfaceHandlers:
                 }
             },
             {
+                "name": "cancel_task",
+                "description": "Stop an active task (submitted/in_progress/review/"
+                               "awaiting_input/rework_in_progress/needs_revision): "
+                               "marks it cancelled and aborts the coder's running "
+                               "opencode build session. Cancelled is terminal - the "
+                               "unwinding pipeline will not mark it failed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"task_id": {"type": "string"}},
+                    "required": ["task_id"]
+                }
+            },
+            {
                 "name": "restart_task",
                 "description": "Restart a failed/needs_revision task from a sensible step "
                                "without redoing the whole pipeline: 'auto' infers the "
@@ -313,6 +326,13 @@ class HumanInterfaceHandlers:
             return self._request_task_rework(arguments)
         elif tool_name == "restart_task":
             return self._restart_task(arguments)
+        elif tool_name == "cancel_task":
+            if not self.task_assignment_manager:
+                return {"success": False, "error": "task assignment manager unavailable"}
+            task_id = arguments.get("task_id", "")
+            if not task_id:
+                return {"success": False, "error": "task_id required"}
+            return self.task_assignment_manager.cancel_task(task_id)
         elif tool_name == "answer_clarification":
             return self._answer_clarification(arguments)
         elif tool_name == "get_pending_clarifications":

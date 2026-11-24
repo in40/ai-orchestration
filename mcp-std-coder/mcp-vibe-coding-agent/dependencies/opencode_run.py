@@ -39,6 +39,18 @@ def _serve_up(timeout=3):
     return cfg if _health["ok"] else None
 
 
+def abort_session(sid: str) -> bool:
+    """Delete (abort) a running serve session; the poll loops then error out
+    and the caller unwinds. Used by operator-initiated task cancellation."""
+    url, pw = _serve_cfg()
+    try:
+        r = requests.delete(url + f"/api/session/{sid}",
+                            auth=("opencode", pw), timeout=15)
+        return r.status_code < 400
+    except Exception:
+        return False
+
+
 def _via_serve(agent, workdir, prompt, session, timeout, model):
     """Returns (text, err)."""
     url, pw = _serve_cfg()

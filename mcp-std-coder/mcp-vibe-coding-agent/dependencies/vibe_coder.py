@@ -1289,6 +1289,17 @@ def register_vibe_coding_tool(server_handlers):
                 "required": ["task_id", "message"],
             },
         })
+    if not any(t["name"] == "abort_build" for t in server_handlers.tools):
+        server_handlers.tools.append({
+            "name": "abort_build",
+            "description": "Abort a running build_project opencode session for a task "
+                           "(operator cancellation). The build thread then unwinds with an error.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+            },
+        })
 
     # Notify that tools have changed
     if hasattr(server_handlers, 'notification_manager') and server_handlers.notification_manager:
@@ -1519,6 +1530,17 @@ Overall project goal:
                 return out
             except Exception as e:
                 return {"error": f"resume_build failed: {type(e).__name__}: {e}"}
+
+        if tool["name"] == "abort_build":
+            # operator cancellation: kill the serve session so the blocked
+            # build/resume call unwinds promptly instead of running to timeout
+            tid = arguments.get("task_id", "unassigned")
+            try:
+                from .opencode_run import abort_session
+                ok = abort_session(f"ses-build-{tid}")
+                return {"success": bool(ok), "session": f"ses-build-{tid}"}
+            except Exception as e:
+                return {"success": False, "error": str(e)[:200]}
 
         if tool["name"] == "patch_file":
             path = arguments.get("path", "")

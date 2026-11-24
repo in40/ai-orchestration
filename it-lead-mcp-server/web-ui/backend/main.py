@@ -898,6 +898,30 @@ async def reject_retro_proposal(pid: int, body: dict = None):
                                {"id": pid, "reason": (body or {}).get("reason", "")})
 
 
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task_endpoint(task_id: str):
+    """Stop an active task: marks it cancelled and aborts the coder session."""
+    logger.info(f"Cancelling task {task_id}")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={"jsonrpc": "2.0", "id": f"cancel-{task_id}",
+                      "method": "tools/call",
+                      "params": {"name": "cancel_task",
+                                 "arguments": {"task_id": task_id}}})
+            if response.status_code == 200:
+                res = response.json().get("result", {})
+                if isinstance(res, dict) and not res.get("success"):
+                    raise HTTPException(status_code=409,
+                                        detail=str(res.get("error", "cancel rejected"))[:300])
+                return {"success": True, "result": res}
+            raise HTTPException(status_code=500,
+                                detail=f"IT Lead returned {response.status_code}: {response.text[:200]}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Error connecting to IT Lead: {str(e)}")
+
+
 @app.post("/api/tasks/{task_id}/restart")
 async def restart_task_endpoint(task_id: str, body: dict = None):
     """Restart a failed/stale task from a step: from_step = auto|build|gates|deploy."""
