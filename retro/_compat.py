@@ -30,6 +30,7 @@ def _db_params():
 DB = _db_params()
 
 
-def connect():
-    """Returns (connection, backend) - psycopg2 or the sqlite facade."""
-    return db_compat.connect(**DB)
+def connect(**kw):
+    """Returns (connection, backend) - psycopg2 or the sqlite facade.
+    Accepts (and overrides with) the legacy psycopg2.connect(**DB) kwargs."""
+    return db_compat.connect(**{**DB, **kw})

@@ -193,9 +193,9 @@ class QaEngineerMcpServer:
 
             # Prepare registration payload
             self.service_info = {
-                "id": f"team-management-server-{self.host}-{self.port}",
+                "id": f"qa-engineer-server-{self.host}-{self.port}",
                 "name": f"QA Engineer MCP Server on {self.host}:{self.port}",
-                "description": f"Team management server providing qa engineer services on {self.host}:{self.port}",
+                "description": f"QA engineer server providing artifact validation on {self.host}:{self.port}",
                 "endpoint": endpoint_url,
                 "capabilities": {
                     "tools": [tool["name"] for tool in self.server_handlers.tools],
@@ -319,13 +319,13 @@ class QaEngineerMcpServer:
 
     def start(self):
         """Start the MCP server"""
-        print(f"Starting Team Management MCP server with {self.transport_type} transport...")
+        print(f"Starting QA Engineer MCP server with {self.transport_type} transport...")
         self.running = True
 
         # Start the transport
         self.transport.start(self._message_callback)
 
-        print(f"Team Management MCP server running with {self.transport_type} transport on port {self.port}")
+        print(f"QA Engineer MCP server running with {self.transport_type} transport on port {self.port}")
 
         # Start client if client mode is enabled
         if self.enable_client_mode and self.client:
@@ -361,7 +361,7 @@ class QaEngineerMcpServer:
 
     def stop(self):
         """Stop the MCP server"""
-        print("Stopping Team Management MCP server...")
+        print("Stopping QA Engineer MCP server...")
 
         # Stop client if client mode is enabled
         if self.enable_client_mode and self.client:
@@ -379,11 +379,11 @@ class QaEngineerMcpServer:
 
         self.running = False
         self.transport.stop()
-        print("Team Management MCP server stopped")
+        print("QA Engineer MCP server stopped")
 
 
 def main():
-    """Main entry point for the Team Management MCP server"""
+    """Main entry point for the QA Engineer MCP server"""
     parser = argparse.ArgumentParser(description='Team Management MCP (Model Context Protocol) Server')
     parser.add_argument('--transport',
                        choices=['stdio', 'http', 'streamable-http'],
