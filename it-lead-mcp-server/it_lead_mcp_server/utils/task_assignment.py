@@ -3543,6 +3543,19 @@ Please generate the complete, corrected code with proper {metadata.get('language
                         try:
                             ep = self.routing_engine.get_agent_endpoint(
                                 "implementation-engineer").replace("0.0.0.0", "127.0.0.1")
+                            # clear a stuck session from the interrupted run: serve
+                            # queues prompts behind a phantom-busy session and never
+                            # runs them silently. The workspace is the source of truth
+                            # and the RETRY prompt is self-contained, so a fresh
+                            # session over the same workspace is the correct restart.
+                            try:
+                                requests.post(ep, json={
+                                    "jsonrpc": "2.0", "id": f"abort-{task_id}",
+                                    "method": "tools/call", "params": {
+                                        "name": "abort_build",
+                                        "arguments": {"task_id": task_id}}}, timeout=30)
+                            except Exception:
+                                pass
                             # same observability as _build_via_opencode: a start
                             # event + the SSE watcher streaming agent_step entries,
                             # otherwise the history looks dead for the whole build
