@@ -10,7 +10,7 @@ TARGET=${1:-/opt/ai-orchestration}
 UNITS=(mcp-registry mcp-requirements-engineer mcp-implementation-engineer
        mcp-qa-engineer mcp-security-reviewer mcp-devops-release-engineer
        mcp-team-management mcp-it-lead mcp-web-ui-backend mcp-web-ui-frontend
-       mcp-deployment-warden mcp-retro-observer mcp-document-store
+       mcp-deployment-warden mcp-retro-observer
        mcp-documentation-engineer)
 
 log() { echo "[install] $*"; }

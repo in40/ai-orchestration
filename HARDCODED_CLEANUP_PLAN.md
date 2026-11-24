@@ -171,8 +171,10 @@ mcp-results.git (кроме текстов ошибок/докстрок), local
 фронтенде — нет.
 
 Остатки (вне runtime, осознанно не тронуты):
-- `document-store-mcp-server/*` — сервис не активен (inactive), пути в его
-  конфиге/registry_integration; починить при включении сервиса.
+- `document-store-mcp-server/*` — удалён: это порт сервиса из другого проекта
+  (`/root/qwen/ai_agent`, «smart ingestion»), занесённый сюда случайно
+  (коммит `09cfa1f`) и никогда не работавший в оркестрации (юнита нет, deps не
+  поставлены, пайплайн его не дёргает). Убран из репо и из install.sh UNITS.
 - корневые одноразовые dev-скрипты `fix_*.py`, `patch_*.py`,
   `update_llm_prompts.py`, `trace_task.py`, `add_git_endpoints.py`,
   `check_state.py` — исторические миграционные tools, никем не
