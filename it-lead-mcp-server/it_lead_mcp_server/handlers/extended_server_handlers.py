@@ -827,6 +827,11 @@ class ExtendedItLeadServerHandlers:
                 print(f"ERROR in human_interface_handlers.handle_tools_call: {e}")
                 import traceback
                 traceback.print_exc()
+                # unknown tools return None; a raised exception here is a REAL
+                # failure (e.g. products mirror not configured). Return it to
+                # the caller instead of falling through to "tool not found",
+                # which the web-ui rendered as a silent no-op.
+                return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
             # Advanced Orchestration
             try:

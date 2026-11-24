@@ -45,9 +45,8 @@ const Products = () => {
     setBusy(true);
     try {
       const r = await axios.post('/api/products', imp);
-      if (r.data && r.data.success === false) alert('Ошибка: ' + r.data.error);
-      setImportOpen(false);
-      setImp({ name: '', description: '', seed_task_id: '', source_url: '', readonly: false });
+      if (!r.data || r.data.success !== true) alert('Ошибка: ' + ((r.data && (r.data.error || r.data.message)) || 'product import failed'));
+      else { setImportOpen(false); setImp({ name: '', description: '', seed_task_id: '', source_url: '', readonly: false }); }
       refresh();
     } catch (e) { alert('Ошибка: ' + (e.response?.data?.detail || e.message)); }
     setBusy(false);

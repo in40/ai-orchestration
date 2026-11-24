@@ -860,7 +860,13 @@ async def _it_lead_tool(name: str, arguments: dict):
     if response.status_code != 200:
         raise HTTPException(status_code=502,
                             detail=f"IT Lead error {response.status_code}: {response.text[:200]}")
-    return response.json().get("result", {}) or {}
+    payload = response.json()
+    # JSON-RPC error envelope must not be silently unwrapped to {}
+    if isinstance(payload, dict) and payload.get("error"):
+        err = payload["error"]
+        raise HTTPException(status_code=409,
+                            detail=str(err.get("message", err))[:300])
+    return payload.get("result", {}) or {}
 
 
 @app.get("/api/clarifications/pending")
