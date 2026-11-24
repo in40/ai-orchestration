@@ -22,8 +22,10 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // WebSocket hook for real-time updates
-  const { sendMessage, lastMessage } = useWebSocket('ws://localhost:8000/ws');
+  // WebSocket hook for real-time updates - connect through the vite proxy
+  // (relative host) so the dashboard works from any machine, not just the server
+  const { sendMessage, lastMessage } = useWebSocket(
+    `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`);
 
   // Load initial data - use dynamic planner endpoint for all agents from registry
   const loadData = async () => {

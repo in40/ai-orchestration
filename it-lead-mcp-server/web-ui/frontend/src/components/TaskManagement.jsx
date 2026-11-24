@@ -752,10 +752,10 @@ const TaskManagement = () => {
                         variant="outlined"
                         size="small"
                         startIcon={<OpenInNewIcon />}
-                        href={selectedTaskHistory.git_url.replace('ssh://', 'http://').replace(/:\d+/, '')}
+                        href={(selectedTaskHistory.git_url || '').replace('ssh://', 'http://').replace(/:\d+/, '')}
                         target="_blank"
                         rel="noopener noreferrer"
-                        disabled={!selectedTaskHistory.git_url.includes('192.168.51')}
+                        disabled={!/^(ssh|https?):\/\//.test(selectedTaskHistory.git_url || '')}
                       >
                         Git Server Web
                       </Button>
