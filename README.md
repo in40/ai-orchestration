@@ -7,33 +7,67 @@ security → devops + documentation** с web-дашбордом, колокол�
 
 Работает на одном хосте (Debian 12+ / Ubuntu 24), PostgreSQL или SQLite.
 
-## Установка на чистый хост (одна команда)
+## Установка
 
-С управляющей машины, где есть ssh-root на целевой хост:
+Ставится одним самодостаточным файлом `deploy/provision.sh`: он ставит
+зависимости ОС (git/curl/rsync через apt/dnf/yum/apk), клонирует этот
+репозиторий с GitHub, генерирует `.env` и `opencode.json`, вызывает
+`deploy/install.sh` и в финале заводит self-E2E задачу через весь конвейер.
+Идемпотентен: повторный запуск = переконфигурация/апгрейд.
+
+### Вариант 1 — прямо на хосте (без управляющей машины)
+
+Зайти на целевой хост по ssh под root и выполнить:
+
+```bash
+# 1. забрать установщик (единственный нужный файл)
+curl -fsSL https://raw.githubusercontent.com/in40/ai-orchestration/v0.5.11/deploy/provision.sh -o /tmp/provision.sh
+# нет curl? wget -O /tmp/provision.sh <тот же url>; совсем голо — скопировать
+# файл любым способом (scp с ноутбука, paste)
+
+# 2. настройки (см. таблицу ниже)
+export LLM_PROVIDER_URL=http://LLM-ХОСТ:8081/v1/chat/completions
+export LLM_MODEL=имя-модели
+export MCP_GIT_REPO_URL=ssh://user@results-хост/home/user/mcp-results.git
+export DEPLOYMENT_HOST=публичный-ip-этого-хоста
+export USE_POSTGRES=false          # true = PostgreSQL
+# если на хосте уже есть ключ для results-репо:
+export RESULTS_SSH_KEY_B64=$(base64 -w0 /root/.ssh/id_ed25519)
+
+# 3. запуск (от root)
+bash /tmp/provision.sh
+```
+
+Готово через ~10–15 минут: `E2E PASS - dashboard: http://ХОСТ:5173`.
+
+### Вариант 2 — удалённо с управляющей машины
 
 ```bash
 scp deploy/provision.sh root@ХОСТ:/tmp/
-ssh root@ХОСТ "
-  export LLM_PROVIDER_URL=http://LLM-ХОСТ:8081/v1/chat/completions
-  export LLM_MODEL=имя-модели
-  export MCP_GIT_REPO_URL=ssh://user@results-хост/home/user/mcp-results.git
-  export RESULTS_SSH_KEY_B64=\$(base64 -w0 /path/to/ssh-ключ)   # опционально
-  export DEPLOYMENT_HOST=публичный-ip-или-dns-хоста
-  export USE_POSTGRES=false        # true = PostgreSQL
-  bash /tmp/provision.sh"
+ssh root@ХОСТ "bash -lc 'export LLM_PROVIDER_URL=... LLM_MODEL=... \
+  MCP_GIT_REPO_URL=... DEPLOYMENT_HOST=... USE_POSTGRES=false; bash /tmp/provision.sh'"
 ```
-
-`provision.sh` самодостаточен (единственный файл, который нужно перенести):
-ставит git/curl/rsync из пакетного менеджера дистрибутива (apt/dnf/yum/apk),
-клонирует этот репозиторий с GitHub, генерирует `.env` и `opencode.json`,
-вызывает `deploy/install.sh` и в финале заводит self-E2E задачу через весь
-конвейер. Успех — строка `E2E PASS - dashboard: http://ХОСТ:5173`.
-Скрипт идемпотентен: повторный запуск = переконфигурация/апгрейд.
 
 Пример готового запуска для своей сети — `deploy/provision.lan.example.sh`
 (скопируйте и подставьте свои адреса; ключ держите вне git).
 
-### Обязательные переменные
+### Вариант 3 — совсем вручную (без provision.sh)
+
+Если нужен полный контроль каждого шага:
+
+```bash
+apt-get install -y git curl rsync      # или dnf/yum/apk
+git clone https://github.com/in40/ai-orchestration && cd ai-orchestration
+cp .env.example .env                   # заполнить LLM_*, MCP_GIT_REPO_URL,
+                                       # DEPLOYMENT_HOST, POSTGRES_*
+./deploy/install.sh                    # идемпотентен; повтор после git pull = апгрейд
+```
+
+Устанавливает то же самое, но без генерации `.env`/`opencode.json`,
+ssh-ключа results-репо и self-E2E — см. разделы «Конфигурация» и «Проверка»
+в [DEPLOY.md](DEPLOY.md).
+
+### Переменные окружения
 
 | Переменная | Что |
 |---|---|
