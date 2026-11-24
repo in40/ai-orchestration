@@ -17,8 +17,14 @@ from typing import Dict, Any
 
 from .server_handlers import McpServerHandlers
 
-DEFAULT_RESULTS_REPO = os.environ.get(
-    "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+def results_repo_url():
+    """ssh-url of the results repository; required, no silent default."""
+    url = (os.environ.get("MCP_GIT_REPO_URL") or "").strip()
+    if not url:
+        raise RuntimeError(
+            "MCP_GIT_REPO_URL is not set - add the ssh url of the results "
+            "repository to .env (e.g. ssh://user@host/home/user/mcp-results.git)")
+    return url
 
 
 class QaEngineerServerHandlers(McpServerHandlers):
@@ -135,7 +141,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
         # used to fail the smoke at stage=fetch for perfectly good code.
         try:
             subprocess.run(["git", "clone", "--depth", "1", "--filter=blob:none",
-                            "--sparse", "-q", DEFAULT_RESULTS_REPO, workdir],
+                            "--sparse", "-q", results_repo_url(), workdir],
                            check=True, capture_output=True, timeout=180)
             subprocess.run(["git", "-C", workdir, "sparse-checkout", "set",
                             f"results/{uuid}"],
@@ -143,7 +149,7 @@ class QaEngineerServerHandlers(McpServerHandlers):
         except Exception:
             shutil.rmtree(workdir, ignore_errors=True)
             os.makedirs(workdir)
-            subprocess.run(["git", "clone", "--depth", "1", DEFAULT_RESULTS_REPO, workdir],
+            subprocess.run(["git", "clone", "--depth", "1", results_repo_url(), workdir],
                            check=True, capture_output=True, timeout=300)
         result_dir = os.path.join(workdir, "results", uuid)
         if not os.path.isdir(result_dir):

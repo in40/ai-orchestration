@@ -286,7 +286,9 @@ class DevOpsReleaseEngineerMcpServer:
         try:
             # Get Git repo URL from environment or use default
             import os
-            git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+            git_repo_url = os.environ.get("MCP_GIT_REPO_URL") or ""
+            if not git_repo_url:
+                raise RuntimeError("MCP_GIT_REPO_URL is not set - set it in .env")
 
             print(f"Validating Git repository: {git_repo_url}")
 

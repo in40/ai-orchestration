@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict, List
-from config import settings
+from config import settings, results_repo_url
 
 
 class CodingTask(BaseModel):
@@ -401,9 +401,7 @@ def git_push_llm_response(
             language = detected
     
     # Get repository URL from settings or environment
-    repo_url = getattr(settings, 'mcp_git_repo_url', None)
-    if not repo_url:
-        repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    repo_url = results_repo_url()
 
     # Configure local clone path
     local_repo_path = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
@@ -605,8 +603,7 @@ def _read_need_info(ws):
 def _push_tree(task_id: str, src_dir) -> dict:
     """Copy a built workspace into results/<task_id>/ of the results repo and push."""
     import shutil as _sh
-    repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
-        "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    repo_url = results_repo_url()
     local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
     _get_or_clone_git_repo(repo_url, local)
     dest = local / "results" / task_id
@@ -648,8 +645,7 @@ def _derive_requirements(task_id: str) -> str:
     """Deterministically build requirements.txt from sibling .py imports in the repo."""
     import ast as _ast
     import sys as _sys
-    repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
-        "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    repo_url = results_repo_url()
     local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
     _get_or_clone_git_repo(repo_url, local)
     root = local / "results" / task_id
@@ -701,8 +697,7 @@ def git_push_single_file(task_id: str, rel_path: str, content: str) -> Dict[str,
     rel = os.path.normpath(str(rel_path))
     if not rel or rel.startswith("..") or os.path.isabs(rel):
         return {"success": False, "error": f"invalid path: {rel_path}"}
-    repo_url = getattr(settings, 'mcp_git_repo_url', None) or \
-        os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+    repo_url = results_repo_url()
     local_repo_path = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
     try:
         _get_or_clone_git_repo(repo_url, local_repo_path)
@@ -1335,9 +1330,7 @@ Overall project goal:
                         # direct clone URL (product mirror)
                         repo, sub = base_tree, ""
                     else:
-                        repo = os.environ.get(
-                            "MCP_GIT_REPO_URL",
-                            "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                        repo = results_repo_url()
                         sub = ""
                     tmp = Path(tempfile.gettempdir()) / f"rework-clone-{tid}"
                     _sh.rmtree(str(tmp), ignore_errors=True)
@@ -1497,8 +1490,7 @@ Overall project goal:
             path = arguments.get("path", "")
             tid = arguments.get("task_id", "unassigned")
             try:
-                repo_url = getattr(settings, 'mcp_git_repo_url', None) or os.environ.get(
-                    "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                repo_url = results_repo_url()
                 local = Path(tempfile.gettempdir()) / "mcp-vibe-coding-git" / "repo"
                 _get_or_clone_git_repo(repo_url, local)
                 fp = local / "results" / tid / path

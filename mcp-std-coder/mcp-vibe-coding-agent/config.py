@@ -29,3 +29,14 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def results_repo_url():
+    """ssh-url of the results repository (settings override, then env).
+    Required: a silent default would push customer artifacts elsewhere."""
+    url = (settings.mcp_git_repo_url or os.environ.get("MCP_GIT_REPO_URL") or "").strip()
+    if not url:
+        raise RuntimeError(
+            "MCP_GIT_REPO_URL is not set - add the ssh url of the results "
+            "repository to .env (e.g. ssh://user@host/home/user/mcp-results.git)")
+    return url

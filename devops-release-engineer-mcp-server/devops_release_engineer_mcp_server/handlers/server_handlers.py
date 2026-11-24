@@ -49,7 +49,14 @@ def _db_connect():
 deployment_logger = logging.getLogger(__name__)
 
 # Default Git repository URL for deployment results
-DEFAULT_GIT_REPO_URL = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+def _results_repo_url():
+    """ssh-url of the results repository; required, no silent default."""
+    url = (os.environ.get("MCP_GIT_REPO_URL") or "").strip()
+    if not url:
+        raise RuntimeError(
+            "MCP_GIT_REPO_URL is not set - add the ssh url of the results "
+            "repository to .env (e.g. ssh://user@host/home/user/mcp-results.git)")
+    return url
 
 
 class DevOpsReleaseEngineerHandlers:
@@ -399,7 +406,7 @@ class DevOpsReleaseEngineerHandlers:
         import tempfile
         import os
 
-        git_repo_url = git_url or DEFAULT_GIT_REPO_URL
+        git_repo_url = git_url or _results_repo_url()
 
         deployment_logger.info(f"Validating Git repository: {git_repo_url}")
 
@@ -637,7 +644,7 @@ class DevOpsReleaseEngineerHandlers:
             if "/tree/main/" in git_url:
                 git_repo_url = git_url.split("/tree/main/")[0] + ".git"
             else:
-                git_repo_url = DEFAULT_GIT_REPO_URL
+                git_repo_url = _results_repo_url()
 
             deployment_logger.info(f"Deploying from repo: {git_repo_url}, UUID: {result_uuid}")
 

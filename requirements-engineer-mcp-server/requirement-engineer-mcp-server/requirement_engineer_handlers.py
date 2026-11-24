@@ -127,7 +127,9 @@ class RequirementEngineerHandlers(McpServerHandlers):
         try:
             from mcp_std_server.utils.agent_git_helper import get_agent_git_helper
             import os
-            repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+            repo_url = (os.environ.get("MCP_GIT_REPO_URL") or "").strip()
+            if not repo_url:
+                raise RuntimeError("MCP_GIT_REPO_URL is not set - set it in .env")
             
             helper = get_agent_git_helper(
                 agent_name="requirements-engineer",

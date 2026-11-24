@@ -17,10 +17,10 @@ import subprocess
 import threading
 import time
 
+from .env_helpers import results_repo_url
+
 REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
 RESULTS_LOCAL = "/tmp/mcp-vibe-coding-git/repo"
-RESULTS_REPO = os.environ.get("MCP_GIT_REPO_URL",
-    "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
 
 AREAS = {
     "web-ui-frontend": {
@@ -58,7 +58,7 @@ def file_self_fix(conn, complaint, area, manager, log_activity=None):
         return {"success": False, "error": f"unknown area {area!r}; allowed: {sorted(AREAS)}"}
     _sql(conn)
     tid = f"selffix-{int(time.time())}"
-    tree_url = f"{RESULTS_REPO.rsplit('.git', 1)[0]}/tree/main/results/{tid}"
+    tree_url = f"{results_repo_url().rsplit('.git', 1)[0]}/tree/main/results/{tid}"
     cur = conn.cursor()
     cur.execute("INSERT INTO task_registry (task_id, title, description, submitter, "
                 "submitter_type, status, metadata) VALUES "

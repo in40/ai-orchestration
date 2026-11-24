@@ -11,8 +11,14 @@ from typing import Dict, Any
 
 from .server_handlers import McpServerHandlers
 
-DEFAULT_RESULTS_REPO = os.environ.get(
-    "MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+def results_repo_url():
+    """ssh-url of the results repository; required, no silent default."""
+    url = (os.environ.get("MCP_GIT_REPO_URL") or "").strip()
+    if not url:
+        raise RuntimeError(
+            "MCP_GIT_REPO_URL is not set - add the ssh url of the results "
+            "repository to .env (e.g. ssh://user@host/home/user/mcp-results.git)")
+    return url
 
 PATTERNS = [
     ("high", "eval-call", re.compile(r"(?<![\w.])eval\s*\(")),
@@ -72,7 +78,7 @@ class SecurityReviewerHandlers(McpServerHandlers):
                 uuid = m.group(1)
             workdir = os.path.join(tempfile.gettempdir(), f"sec-{uuid}")
             subprocess.run(["rm", "-rf", workdir], check=False)
-            subprocess.run(["git", "clone", "--depth", "1", DEFAULT_RESULTS_REPO, workdir],
+            subprocess.run(["git", "clone", "--depth", "1", results_repo_url(), workdir],
                            check=True, capture_output=True, timeout=60)
             root = os.path.join(workdir, "results", uuid)
             if not os.path.isdir(root):

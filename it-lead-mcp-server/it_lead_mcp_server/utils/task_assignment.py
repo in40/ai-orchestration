@@ -17,6 +17,7 @@ from typing import Dict, List, Any, Optional
 from .task_routing_engine import TaskRoutingEngine, RoutingDecision
 from .llm_task_planner import LLMTaskPlanner
 from .mcp_registry_client import McpRegistryClient  # NEW: MCP protocol-based registry client
+from .env_helpers import results_repo_url
 
 
 class TaskAssignmentManager:
@@ -452,8 +453,7 @@ class TaskAssignmentManager:
         try:
             shutil.rmtree(work, ignore_errors=True)
             subprocess.run(["git", "clone", "--depth", "1",
-                            os.environ.get("MCP_GIT_REPO_URL",
-                                           "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"),
+                            results_repo_url(),
                             work], check=True, capture_output=True, timeout=90)
             root = os.path.join(work, "results", task_id)
             review = None
@@ -685,8 +685,7 @@ class TaskAssignmentManager:
         try:
             shutil.rmtree(work, ignore_errors=True)
             subprocess.run(["git", "clone", "--depth", "1",
-                            os.environ.get("MCP_GIT_REPO_URL",
-                                           "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git"),
+                            results_repo_url(),
                             work], check=True, capture_output=True, timeout=90)
             root = os.path.join(work, "results", task_id)
             client = next((os.path.join(dp, f) for dp, _, fs in os.walk(root)
@@ -2159,7 +2158,7 @@ class TaskAssignmentManager:
                 subprocess.run(["git", "config", "user.name", "MCP Agent"], cwd=git_workdir, check=True, capture_output=True)
 
             # Get git repo URL
-            git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+            git_repo_url = results_repo_url()
 
             # Clone/pull repo
             if not os.path.exists(os.path.join(git_workdir, ".git")):
@@ -2919,7 +2918,7 @@ class TaskAssignmentManager:
                                 deploy_flag = inner_metadata.get("deploy_after_implementation", False)
                                 
                                 # Use the configured git repo URL
-                                git_repo_url = os.environ.get("MCP_GIT_REPO_URL", "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+                                git_repo_url = results_repo_url()
                                 
                                 # Clone/pull repo
                                 if not os.path.exists(os.path.join(git_workdir, ".git")):
@@ -3223,8 +3222,7 @@ Please implement this corrected code in {original_language} and prepare it for d
         the results repo and adopt the tree if found."""
         import subprocess
         repo = "/tmp/mcp-vibe-coding-git/repo"
-        url = os.environ.get("MCP_GIT_REPO_URL",
-                             "ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git")
+        url = results_repo_url()
         try:
             if not os.path.isdir(os.path.join(repo, ".git")):
                 subprocess.run(["git", "clone", "-q", "--filter=blob:none",

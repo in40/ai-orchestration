@@ -166,8 +166,8 @@ class Settings(BaseSettings):
     # =========================================================================
     
     GIT_SERVER_HOST: str = Field(
-        default="192.168.51.187",
-        description="Git repository server hostname"
+        default="",
+        description="Git repository server hostname (set in .env)"
     )
     
     GIT_SERVER_PORT: int = Field(
@@ -176,13 +176,13 @@ class Settings(BaseSettings):
     )
     
     GIT_REPO_PATH: str = Field(
-        default="/home/sorokin/mcp-results",
-        description="Path to Git repository on server"
+        default="",
+        description="Path to Git repository on server (set in .env)"
     )
     
     GIT_REPO_URL: str = Field(
-        default="ssh://sorokin@192.168.51.187/home/sorokin/mcp-results.git",
-        description="Full Git repository URL for cloning"
+        default="",
+        description="Full Git repository URL for cloning (set MCP_GIT_REPO_URL in .env)"
     )
     
     GIT_LOCAL_CLONE_PATH: str = Field(
@@ -195,13 +195,13 @@ class Settings(BaseSettings):
     # =========================================================================
     
     WEB_UI_PUBLIC_URL: str = Field(
-        default="http://192.168.51.1:8000",
-        description="Public URL for Web UI (used for generating links)"
+        default="",
+        description="Public URL for Web UI (set in .env)"
     )
     
     WEB_UI_FRONTEND_URL: str = Field(
-        default="http://192.168.51.1:5173",
-        description="Public URL for Web UI frontend"
+        default="",
+        description="Public URL for Web UI frontend (set in .env)"
     )
     
     # =========================================================================
