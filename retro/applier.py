@@ -22,7 +22,7 @@ TARGETS = {
 
 def _db():
     from observer import DB, connect
-    return connect(**DB)
+    return connect(**DB)[0]
 
 
 def _baseline_metric(cur):

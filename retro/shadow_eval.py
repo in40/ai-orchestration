@@ -56,7 +56,7 @@ def main():
     ap.add_argument("--samples", type=int, default=5)
     args = ap.parse_args()
 
-    conn = connect(**DB)
+    conn, _backend = connect(**DB)
     cur = conn.cursor()
     cur.execute("SELECT task_id, metadata::text, activity::text FROM task_registry "
                 "WHERE metadata::jsonb ? 'git_url' ORDER BY created_at DESC LIMIT 40")

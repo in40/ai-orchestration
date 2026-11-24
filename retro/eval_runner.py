@@ -58,7 +58,7 @@ def main():
         res = run_one(args.base_url, spec)
         results.append(res)
         print(" ", res, flush=True)
-    conn = connect(**DB)
+    conn, _backend = connect(**DB)
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS retro_eval_runs("
                 "id serial PRIMARY KEY, ts timestamptz DEFAULT now(), results jsonb)")

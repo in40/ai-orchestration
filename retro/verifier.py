@@ -30,7 +30,7 @@ WATCH_DAYS = 14
 
 
 def main():
-    conn = connect(**DB)
+    conn, _backend = connect(**DB)
     cur = conn.cursor()
     cur.execute("SET lock_timeout = 10000")
     cur.execute("ALTER TABLE retro_proposals ADD COLUMN IF NOT EXISTS commit_sha text")

@@ -128,7 +128,7 @@ def auto_apply_note(title, patch_text):
 
 
 def main():
-    conn = connect(**DB)
+    conn, _backend = connect(**DB)
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS retro_proposals("
                 "id serial PRIMARY KEY, ts timestamptz DEFAULT now(), title text, "
