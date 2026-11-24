@@ -3465,6 +3465,31 @@ Please generate the complete, corrected code with proper {metadata.get('language
         return {"success": True, "task_id": task_id, "status": "cancelled",
                 "session_aborted": aborted}
 
+    def _failure_brief(self, task_id: str) -> str:
+        """Last failure evidence from the activity log, so a restart tells the
+        coder WHY the previous run died (deploy errors in particular happen
+        after the coder's session is gone - without this it retries blind)."""
+        try:
+            task = self.task_storage.get_task(task_id) or {}
+            acts = task.get("activity") or []
+            if isinstance(acts, str):
+                acts = json.loads(acts)
+            notes = []
+            for a in reversed(acts if isinstance(acts, list) else []):
+                if not isinstance(a, dict):
+                    continue
+                ev = str(a.get("event", ""))
+                d = str(a.get("detail") or "")[:300]
+                if ev in ("build_failed", "rework_failed") or \
+                   (ev in ("deploy_done", "deploy") and "error" in d.lower()) or \
+                   (ev in ("qa_gate", "security_gate") and "fail" in d.lower()):
+                    notes.append(f"{ev}: {d}")
+                if len(notes) >= 3:
+                    break
+            return " | ".join(reversed(notes))
+        except Exception:
+            return ""
+
     def restart_task(self, task_id: str, from_step: str = "auto") -> Dict[str, Any]:
         """Restart a failed/stale task from a sensible step instead of redoing
         everything. from_step:
@@ -3534,6 +3559,9 @@ Please generate the complete, corrected code with proper {metadata.get('language
         self._log_activity(task_id, "restarted", agent="it-lead",
                            detail=f"from_step={from_step} git_url={'yes' if git_url else 'no'} "
                                   f"workspace={'yes' if ws.exists() else 'no'}")
+        # tell the retry WHY the previous run died - deploy/gate failures happen
+        # after the coder session ends, so without this it repeats the same mistake
+        brief = self._failure_brief(task_id)
 
         def _run():
             try:
@@ -3575,9 +3603,13 @@ Please generate the complete, corrected code with proper {metadata.get('language
                                     "method": "tools/call", "params": {
                                         "name": "resume_build", "arguments": {
                                             "task_id": task_id,
-                                            "message": "RETRY after a failed run: inspect the "
-                                                       "current workspace state, fix anything "
-                                                       "broken, verify, and finish the build."}}},
+                                            "message": ("RETRY after a failed run."
+                                                        + (f" Previous failure from the pipeline "
+                                                           f"history: {brief}." if brief else "")
+                                                        + " Inspect the current workspace state, "
+                                                        "fix the ROOT CAUSE of that failure "
+                                                        "(do not just re-run the same steps), "
+                                                        "verify, and finish the build.")}}},
                                     timeout=3600)
                             finally:
                                 stop.set()
@@ -3603,8 +3635,10 @@ Please generate the complete, corrected code with proper {metadata.get('language
                     # no live workspace but artifact exists: rework-style rebuild
                     self._execute_rework_plan(
                         task_id,
-                        "RETRY after a failed run: re-verify the existing tree, "
-                        "fix anything broken, and complete the gates.",
+                        "RETRY after a failed run." + (f" Previous failure from the "
+                        f"pipeline history: {brief}." if brief else "") +
+                        " Re-verify the existing tree, fix the ROOT CAUSE of that "
+                        "failure, and complete the gates.",
                         git_url, want_deploy=want_deploy)
                 elif from_step == "gates":
                     self._execute_multifile_plan(task_id, desc, [],
