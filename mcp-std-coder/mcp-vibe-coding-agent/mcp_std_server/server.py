@@ -218,26 +218,31 @@ class McpServer:
                     if response.status_code == 200:
                         break
                 except Exception as e:
-                    if attempt == 23:
-                        raise
+                    pass  # registry may still be booting; heartbeat re-registers every 30s
                 _t.sleep(5)
-            print(f"DEBUG: Registration response status: {response.status_code}")
-            print(f"DEBUG: Registration response text: {response.text}")
-
-            if response.status_code == 200:
-                print(f"Successfully registered with registry at {self.registry_host}:{self.registry_port}")
-
-                # Initialize remote heartbeat manager to maintain registration
-                registry_base_url = f"http://{self.registry_host}:{self.registry_port}"
-                self.remote_heartbeat_manager = RemoteHeartbeatManager(
-                    registry_url=registry_base_url,
-                    service_info=self.service_info,
-                    heartbeat_interval=30,  # Every 30 seconds
-                    max_age_minutes=10      # Registry considers service stale after 10 minutes
-                )
-                self.remote_heartbeat_manager.start()
+            if response is None:
+                print("DEBUG: Registration never reached the registry (will retry via heartbeat)")
             else:
-                print(f"Failed to register with registry: {response.status_code} - {response.text}")
+                print(f"DEBUG: Registration response status: {response.status_code}")
+                print(f"DEBUG: Registration response text: {response.text}")
+
+            if response is not None and response.status_code == 200:
+                print(f"Successfully registered with registry at {self.registry_host}:{self.registry_port}")
+            else:
+                print("Initial registration did not succeed; heartbeat will keep retrying")
+
+            # Start the heartbeat regardless of the first attempt's outcome:
+            # it re-registers every 30s, so a boot-race where the registry was
+            # not yet listening self-heals instead of leaving this service
+            # invisible in the TEAM view until a manual restart.
+            registry_base_url = f"http://{self.registry_host}:{self.registry_port}"
+            self.remote_heartbeat_manager = RemoteHeartbeatManager(
+                registry_url=registry_base_url,
+                service_info=self.service_info,
+                heartbeat_interval=30,  # Every 30 seconds
+                max_age_minutes=10      # Registry considers service stale after 10 minutes
+            )
+            self.remote_heartbeat_manager.start()
 
         except ImportError:
             print("Warning: 'requests' library not available. Install it to enable auto-registration with registry.")
