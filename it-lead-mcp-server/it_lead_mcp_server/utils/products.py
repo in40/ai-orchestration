@@ -8,6 +8,7 @@ requires confirm='publish' (UI button / bell action by a human).
 Ported from the team's prototype (task-1795202524381) onto platform rails:
 postgres storage, mirrors on .187 via ssh, PAT from /root/qwen/base/.env.
 """
+from pathlib import Path
 import json
 import os
 import re
@@ -23,7 +24,7 @@ SSH_TARGET = os.environ.get("PROJECTS_SSH") or None
 PROJECTS_DIR = os.environ.get("PROJECTS_DIR") or None
 GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "in40")
 GITHUB_API = "https://api.github.com"
-PAT_FILE = os.environ.get("BASE_DIR", "/root/qwen/base") + "/.env"
+PAT_FILE = (os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[3])) + "/.env"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 GIT_ID = ["-c", "user.name=it-lead", "-c", "user.email=it-lead@pipeline.local"]
 

@@ -8,6 +8,7 @@ Dynamic Planning Architecture:
 - Routes tasks based on agent capabilities
 """
 
+from pathlib import Path
 import asyncio
 import json
 import logging
@@ -1995,7 +1996,7 @@ def _results_dir(task_id: str) -> str:
         pass
     d = os.path.join(repo, "results", task_id)
     if not os.path.isdir(d):
-        d = os.path.join(os.environ.get("BASE_DIR", "/root/qwen/base"),
+        d = os.path.join((os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[3])),
                          "mcp-results", "results", task_id)
     return d
 

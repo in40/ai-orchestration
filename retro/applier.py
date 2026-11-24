@@ -5,6 +5,7 @@ convention files (read at build/plan time, so no service restart is needed
 and revert is a plain git revert), or open a pipeline task for R2 hires.
 Gates, security rules and the retro system itself are not reachable here.
 """
+from pathlib import Path
 import json
 import os
 import subprocess
@@ -13,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
+REPO = (os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[1]))
 TARGETS = {
     "agents_md": os.path.join(REPO, "retro/conventions.md"),
     "planner": os.path.join(REPO, "retro/planner_notes.md"),

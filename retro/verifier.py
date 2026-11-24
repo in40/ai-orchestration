@@ -13,6 +13,7 @@ and a digest row notifies the bell. Changes that survive WATCH_DAYS are
 watched identically and reverted the same way. The verifier never
 touches gates/security - only commits made by the applier/self-fix.
 """
+from pathlib import Path
 import json
 import os
 import subprocess
@@ -23,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from observer import DB, connect  # noqa: E402
 from applier import _baseline_metric  # noqa: E402
 
-REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
+REPO = (os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[1]))
 MIN_TASKS = 5
 DROP_TOLERANCE = 0.15
 WATCH_DAYS = 14

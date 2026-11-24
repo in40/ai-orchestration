@@ -11,6 +11,7 @@ R1/R2 wait in retro_proposals (status=proposed) and surface in the UI bell.
 The proposer NEVER edits gates, security rules or its own scoring - and the
 eval files are outside its reach by construction.
 """
+from pathlib import Path
 import json
 import os
 import re
@@ -23,7 +24,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from observer import DB, _j, connect  # noqa: E402
 
-REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
+REPO = (os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[1]))
 ALLOWED = {"note": "R0", "agents_md": "R1", "planner": "R1", "hire": "R2"}
 
 

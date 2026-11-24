@@ -8,6 +8,7 @@ This module uses the MCP Registry Client to discover agent endpoints via MCP pro
 It communicates with the central MCP Registry Server (port 3031) via HTTP POST to /mcp,
 following proper MCP architecture - NOT direct database access.
 """
+from pathlib import Path
 import json
 import os
 import time
@@ -784,7 +785,7 @@ class TaskAssignmentManager:
         """Retro skill library travels with the build request (MCP argument),
         so the coder host needs no shared filesystem with IT Lead."""
         try:
-            with open(os.environ.get("BASE_DIR", "/root/qwen/base") + "/retro/conventions.md") as f:
+            with open((os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[3])) + "/retro/conventions.md") as f:
                 return f.read()[:4000]
         except Exception:
             return ""

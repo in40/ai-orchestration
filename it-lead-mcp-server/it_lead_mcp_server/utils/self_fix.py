@@ -10,6 +10,7 @@ Safety model:
 - the coder never sees the live repo: it works on a copy in results/
 - merge is human-only (bell), revert is a git revert of the recorded commit
 """
+from pathlib import Path
 import json
 import os
 import shutil
@@ -19,7 +20,7 @@ import time
 
 from .env_helpers import results_repo_url
 
-REPO = os.environ.get("BASE_DIR", "/root/qwen/base")
+REPO = (os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[3]))
 RESULTS_LOCAL = "/tmp/mcp-vibe-coding-git/repo"
 
 AREAS = {
@@ -247,7 +248,7 @@ def approve(conn, pid):
     subprocess.run(["git", "-C", REPO, "push", "-q", "origin", "v0.5.11"],
                    capture_output=True)
     import sys as _sys
-    _bd = os.environ.get("BASE_DIR", "/root/qwen/base")
+    _bd = (os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[3]))
     if _bd + "/retro" not in _sys.path:
         _sys.path.insert(0, _bd + "/retro")
     from applier import _baseline_metric

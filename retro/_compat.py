@@ -4,10 +4,11 @@ sqlite fallback through db_compat (same facade as the services).
 BASE_DIR (from systemd EnvironmentFile / .env) locates both the it-lead
 package (db_compat lives there) and the .env with POSTGRES_PASSWORD.
 """
+from pathlib import Path
 import os
 import sys
 
-BASE = os.environ.get("BASE_DIR", "/root/qwen/base")
+BASE = (os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, os.path.join(BASE, "it-lead-mcp-server"))
 from it_lead_mcp_server.utils import db_compat  # noqa: E402
 
