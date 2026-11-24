@@ -19,8 +19,8 @@ import urllib.error
 import urllib.request
 
 RESULTS_LOCAL = "/tmp/mcp-vibe-coding-git/repo"
-SSH_TARGET = os.environ.get("PROJECTS_SSH", "sorokin@192.168.51.187")
-PROJECTS_DIR = os.environ.get("PROJECTS_DIR", "/home/sorokin/projects")
+SSH_TARGET = os.environ.get("PROJECTS_SSH") or None
+PROJECTS_DIR = os.environ.get("PROJECTS_DIR") or None
 GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "in40")
 GITHUB_API = "https://api.github.com"
 PAT_FILE = os.environ.get("BASE_DIR", "/root/qwen/base") + "/.env"
@@ -78,10 +78,16 @@ def _run(args, timeout=180, cwd=None):
 
 
 def _ssh_git(args, timeout=180):
+    if not SSH_TARGET:
+        raise RuntimeError("products mirror not configured: set PROJECTS_SSH "
+                           "(user@host) and PROJECTS_DIR in .env")
     return _run(["ssh", SSH_TARGET, "git", *args], timeout=timeout)
 
 
 def _mirror_url(name):
+    if not SSH_TARGET or not PROJECTS_DIR:
+        raise RuntimeError("products mirror not configured: set PROJECTS_SSH "
+                           "(user@host) and PROJECTS_DIR in .env")
     return f"ssh://{SSH_TARGET}{PROJECTS_DIR}/{name}.git"
 
 
