@@ -36,9 +36,11 @@ class TaskStorage:
             raise
 
     def _init_postgres(self):
-        """Initialize PostgreSQL database for task storage"""
+        """Initialize task storage: postgres when enabled/reachable,
+        sqlite fallback via db_compat (same facade as the other services)"""
         try:
-            self.conn = psycopg2.connect(
+            from . import db_compat
+            self.conn, self.backend = db_compat.connect(
                 host=self.host,
                 port=self.port,
                 database=self.database,
