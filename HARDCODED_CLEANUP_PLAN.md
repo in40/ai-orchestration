@@ -149,3 +149,31 @@ E3. Мёртвые утилиты с абсолютными путями (`add_g
 
 Оценка: F ~30 мин; A ~1 ч; B ~1 ч; C ~20 мин; D ~40 мин; E ~40 мин;
 приёмка ~1 ч. Каждый коммит: `cleanup(x): ...` + строка в IMPROVEMENT_BACKLOG.md.
+
+---
+
+## СТАТУС: выполнено (F, A, B, C, D, E)
+
+Все фазы закоммичены и проверены на обоих бэкендах:
+- deploy (sqlite): E2E `cleanup-e2e-*` → done, QA PASS, артефакт запушен;
+  реестр 8/8; retro-цепочка зелёная.
+- основной хост (postgres): `pg-cleanup-*` → done, QA PASS; db_compat
+  PG-путь проверен (password=None→env).
+
+Пойманный по ходу регресс (исправлен): coder `llm_base_url` после фазы B
+остался без значения (юнит экспортирует LLM_PROVIDER_URL, а не
+LLM_BASE_URL) → generate_file давал '/chat/completions'. Теперь
+деривится из LLM_PROVIDER_URL со снятием /chat/completions.
+
+Приёмочные grep: в runtime-коде не осталось 192.168.* (кроме
+config.NETWORK_DOMAIN — SSRF-allowlist, env-переопределяем),
+mcp-results.git (кроме текстов ошибок/докстрок), localhost:8000 в
+фронтенде — нет.
+
+Остатки (вне runtime, осознанно не тронуты):
+- `document-store-mcp-server/*` — сервис не активен (inactive), пути в его
+  конфиге/registry_integration; починить при включении сервиса.
+- корневые одноразовые dev-скрипты `fix_*.py`, `patch_*.py`,
+  `update_llm_prompts.py`, `trace_task.py`, `add_git_endpoints.py`,
+  `check_state.py` — исторические миграционные tools, никем не
+  импортируются; кандидаты на удаление (требуется решение).
