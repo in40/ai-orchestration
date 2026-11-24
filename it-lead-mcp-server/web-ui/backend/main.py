@@ -892,6 +892,38 @@ async def reject_retro_proposal(pid: int, body: dict = None):
                                {"id": pid, "reason": (body or {}).get("reason", "")})
 
 
+@app.post("/api/tasks/{task_id}/restart")
+async def restart_task_endpoint(task_id: str, body: dict = None):
+    """Restart a failed/stale task from a step: from_step = auto|build|gates|deploy."""
+    from_step = (body or {}).get("from_step", "auto")
+    if from_step not in ("auto", "build", "gates", "deploy"):
+        raise HTTPException(status_code=400,
+                            detail="from_step must be auto/build/gates/deploy")
+    logger.info(f"Restarting task {task_id} from {from_step}")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"http://{IT_LEAD_HOST}:{IT_LEAD_PORT}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"restart-{task_id}",
+                    "method": "tools/call",
+                    "params": {"name": "restart_task",
+                               "arguments": {"task_id": task_id, "from_step": from_step}}
+                }
+            )
+            if response.status_code == 200:
+                res = response.json().get("result", {})
+                if isinstance(res, dict) and not res.get("success"):
+                    raise HTTPException(status_code=409,
+                                        detail=str(res.get("error", "restart rejected"))[:300])
+                return {"success": True, "result": res}
+            raise HTTPException(status_code=500,
+                                detail=f"IT Lead returned {response.status_code}: {response.text[:200]}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Error connecting to IT Lead: {str(e)}")
+
+
 @app.post("/api/tasks/{task_id}/archive")
 async def archive_task_endpoint(task_id: str, body: dict = None):
     return await _it_lead_tool("archive_task", {

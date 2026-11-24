@@ -51,6 +51,26 @@ class HumanInterfaceHandlers:
                 }
             },
             {
+                "name": "restart_task",
+                "description": "Restart a failed/needs_revision task from a sensible step "
+                               "without redoing the whole pipeline: 'auto' infers the "
+                               "failed step from artifacts/activity; 'build' resumes the "
+                               "coder (live opencode workspace) or rebuilds from the "
+                               "artifact tree; 'gates' reruns QA/security/docs on the "
+                               "existing artifact; 'deploy' reruns only deployment.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task to restart"},
+                        "from_step": {"type": "string",
+                                      "enum": ["auto", "build", "gates", "deploy"],
+                                      "description": "Step to restart from",
+                                      "default": "auto"}
+                    },
+                    "required": ["task_id"]
+                }
+            },
+            {
                 "name": "answer_clarification",
                 "description": "Answer clarification question(s) the pipeline asked the requestor "
                                "(task in awaiting_input). Answers are injected into re-planning.",
@@ -291,6 +311,8 @@ class HumanInterfaceHandlers:
             return self._escalate_to_human(arguments)
         elif tool_name == "request_task_rework":
             return self._request_task_rework(arguments)
+        elif tool_name == "restart_task":
+            return self._restart_task(arguments)
         elif tool_name == "answer_clarification":
             return self._answer_clarification(arguments)
         elif tool_name == "get_pending_clarifications":
@@ -519,6 +541,16 @@ class HumanInterfaceHandlers:
                 "urgency": "medium",
                 "recommended_action": "No recommendation due to error"
             }
+
+    def _restart_task(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Restart a failed/stale task from a chosen step (see TaskAssignmentManager.restart_task)."""
+        if not self.task_assignment_manager:
+            return {"success": False, "error": "task assignment manager unavailable"}
+        task_id = arguments.get("task_id", "")
+        if not task_id:
+            return {"success": False, "error": "task_id required"}
+        return self.task_assignment_manager.restart_task(
+            task_id, arguments.get("from_step", "auto"))
 
     def _request_task_rework(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Request rework on a completed task that is not acceptable"""

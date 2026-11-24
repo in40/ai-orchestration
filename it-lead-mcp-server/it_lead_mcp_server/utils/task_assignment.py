@@ -12,6 +12,7 @@ from pathlib import Path
 import json
 import os
 import time
+import tempfile
 import requests  # Use sync HTTP client to match existing server handler pattern
 import threading  # Added for background polling
 from typing import Dict, List, Any, Optional
@@ -3417,6 +3418,138 @@ Please generate the complete, corrected code with proper {metadata.get('language
             print(f"❌ Error triggering rework workflow: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
+    def restart_task(self, task_id: str, from_step: str = "auto") -> Dict[str, Any]:
+        """Restart a failed/stale task from a sensible step instead of redoing
+        everything. from_step:
+          auto   - infer from artifacts (git_url/workspace) and last activity
+          build  - rerun the coder: resume a live opencode workspace if present,
+                   else rebuild from the existing artifact tree (rework mode)
+          gates  - rerun QA/security/docs on the existing artifact (no build)
+          deploy - rerun only the devops deployment of the existing artifact
+        Runs in a background thread; returns immediately with the chosen step."""
+        if not self.task_storage:
+            return {"success": False, "error": "no task storage"}
+        task_obj = self.task_storage.get_task(task_id)
+        if not task_obj:
+            return {"success": False, "error": f"task not found: {task_id}"}
+        status = task_obj.get("status", "")
+        if status in ("submitted", "in_progress", "review", "rework_in_progress",
+                      "awaiting_input"):
+            return {"success": False,
+                    "error": f"task is {status}; restart applies to "
+                             "failed/needs_revision/cancelled/done"}
+        if from_step not in ("auto", "build", "gates", "deploy"):
+            return {"success": False, "error": f"unknown from_step: {from_step}"}
+        metadata = task_obj.get("metadata", {}) or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        git_url = (metadata.get("git_url") or "").strip() or \
+                  (self._recover_git_url(task_id) or "")
+        desc = task_obj.get("description", "")
+        want_deploy = bool(metadata.get("deploy_after_implementation"))
+        ws = Path(tempfile.gettempdir()) / "oc-builds" / task_id
+
+        if from_step == "auto":
+            # last activity event tells where it died; fall back to artifacts
+            last_ev = ""
+            try:
+                acts = task_obj.get("activity") or task_obj.get("activity_log") or []
+                for a in reversed(acts if isinstance(acts, list) else []):
+                    ev = a.get("event") if isinstance(a, dict) else str(a)
+                    if ev and ev not in ("restarted",):
+                        last_ev = str(ev)
+                        break
+            except Exception:
+                pass
+            if last_ev.startswith("deploy") and git_url:
+                from_step = "deploy"
+            elif last_ev.startswith(("qa_", "security_", "docs", "gate")) and git_url:
+                from_step = "gates"
+            elif git_url and not ws.exists():
+                from_step = "gates"
+            else:
+                from_step = "build"
+
+        if from_step == "build" and not git_url and not ws.exists():
+            return {"success": False,
+                    "error": "nothing to restart from: no artifact tree and no "
+                             "opencode workspace - resubmit the task instead"}
+        if from_step in ("gates", "deploy") and not git_url:
+            return {"success": False,
+                    "error": f"cannot restart from {from_step}: task has no "
+                             "artifact (git_url) - restart from build instead"}
+
+        self._update_task_status(task_id, "in_progress", f"restarted from {from_step}")
+        self._log_activity(task_id, "restarted", agent="it-lead",
+                           detail=f"from_step={from_step} git_url={'yes' if git_url else 'no'} "
+                                  f"workspace={'yes' if ws.exists() else 'no'}")
+
+        def _run():
+            try:
+                if from_step == "build":
+                    if ws.exists():
+                        # live workspace: resume the SAME opencode session
+                        try:
+                            ep = self.routing_engine.get_agent_endpoint(
+                                "implementation-engineer").replace("0.0.0.0", "127.0.0.1")
+                            r = requests.post(ep, json={
+                                "jsonrpc": "2.0", "id": f"restart-{task_id}",
+                                "method": "tools/call", "params": {
+                                    "name": "resume_build", "arguments": {
+                                        "task_id": task_id,
+                                        "message": "RETRY after a failed run: inspect the "
+                                                   "current workspace state, fix anything "
+                                                   "broken, verify, and finish the build."}}},
+                                timeout=3600)
+                            out = r.json().get("result", {})
+                            if isinstance(out, dict) and isinstance(out.get("result"), dict):
+                                out = out["result"]
+                            if isinstance(out, dict) and out.get("success") and out.get("git_url"):
+                                git = out["git_url"]
+                                self._merge_metadata(task_id, {"git_url": git})
+                                self._execute_multifile_plan(
+                                    task_id, desc, [], metadata=metadata,
+                                    prebuilt_git_url=git)
+                                return
+                            self._update_task_status(
+                                task_id, "failed",
+                                f"restart(build/resume) failed: "
+                                f"{str(out.get('error') if isinstance(out, dict) else out)[:300]}")
+                            return
+                        except Exception as e:
+                            self._update_task_status(
+                                task_id, "failed", f"restart(build/resume) error: {str(e)[:300]}")
+                            return
+                    # no live workspace but artifact exists: rework-style rebuild
+                    self._execute_rework_plan(
+                        task_id,
+                        "RETRY after a failed run: re-verify the existing tree, "
+                        "fix anything broken, and complete the gates.",
+                        git_url, want_deploy=want_deploy)
+                elif from_step == "gates":
+                    self._execute_multifile_plan(task_id, desc, [],
+                                                 metadata=metadata,
+                                                 prebuilt_git_url=git_url)
+                elif from_step == "deploy":
+                    res = self._deploy_multifile(task_id, git_url)
+                    if isinstance(res, dict) and res.get("error"):
+                        self._update_task_status(task_id, "failed",
+                                                 f"restart(deploy) failed: {str(res['error'])[:300]}")
+                    else:
+                        self._log_activity(task_id, "deploy_restarted_done",
+                                           agent="devops-engineer", detail=str(res)[:200])
+                        self._update_task_status(task_id, "done", "redeployed on restart")
+            except Exception as e:
+                self._update_task_status(task_id, "failed",
+                                         f"restart error: {type(e).__name__}: {str(e)[:300]}")
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"success": True, "task_id": task_id, "restarted_from": from_step,
+                "artifact": bool(git_url), "workspace": ws.exists()}
 
     def _execute_rework_plan(self, task_id, rework_prompt, base_git_url, want_deploy=True):
         """In-place rework: fix the existing artifact tree (or rebuild from the

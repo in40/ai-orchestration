@@ -367,6 +367,26 @@ const TaskManagement = () => {
     }
   };
 
+  const handleRestart = async (task) => {
+    const taskId = task.task_id || task.id;
+    if (!window.confirm(
+        `Restart task ${taskId} from the failed step?\n` +
+        'The pipeline picks the step automatically: coder session resume / ' +
+        'rebuild from artifact, gates rerun, or redeploy - whatever did not ' +
+        'complete. Nothing is rebuilt twice.')) return;
+    try {
+      const response = await axios.post(`/api/tasks/${taskId}/restart`, { from_step: 'auto' });
+      const res = response.data?.result || {};
+      alert(`Restarting from "${res.restarted_from || 'auto'}"` +
+            (res.workspace ? ' (coder workspace resumed)' : ''));
+      const tasksResponse = await axios.get('/api/tasks');
+      setTasks(tasksResponse.data);
+    } catch (err) {
+      console.error("Error restarting task:", err);
+      alert(`Failed to restart: ${err.response?.data?.detail || 'Unknown error'}`);
+    }
+  };
+
   const handleOpenReworkDialog = (task) => {
     setSelectedTaskForRework(task);
     setReworkForm({
@@ -568,6 +588,19 @@ const TaskManagement = () => {
                           title="Redeploy Task"
                         >
                           <BuildIcon />
+                        </IconButton>
+                      )}
+                      {/* Restart-from-failed-step: cheap retry that reuses the
+                          opencode workspace / built artifact instead of redoing
+                          the whole pipeline (backend infers the failed step) */}
+                      {['failed', 'needs_revision', 'cancelled'].includes(task.status) && (
+                        <IconButton
+                          color="success"
+                          aria-label="restart from failed step"
+                          onClick={() => handleRestart(task)}
+                          title="Restart from failed step"
+                        >
+                          <RefreshIcon />
                         </IconButton>
                       )}
                       {/* Request Rework Button - completed/failed/rejected tasks can all be
