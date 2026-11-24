@@ -78,6 +78,33 @@ openssl req -x509 -newkey rsa:2048 -keyout /root/certs/dash.key \
 ```
 vite подхватит сертификаты автоматически (см. vite.config.js).
 
+## Промоушен сервиса, собранного конвейером
+Конвейер кладёт код в results-репо (`results/<task>/`), но сервис становится
+ставящимся на любой хост только когда он задекларирован в оркестрационном репо:
+`systemd/<name>.service` + строка в `deploy/install.sh` (`UNITS`). Раньше этот
+шаг был ручным, и documentation-engineer через него провалился (юнит сделали
+вручную только на проде → на свежих хостах 8 сервисов, на проде 9).
+
+`scripts/promote_service.py` (stdlib-only) закрывает разрыв:
+- `check` — структурный гейт: каждый юнит из `systemd/` ставится install.sh,
+  каждая запись `UNITS` имеет файл юнита, нет коллизий портов; `*-mcp-server/`
+  без юнита показывается как подсказка. `--strict` → exit 1 (для CI/QA),
+  `--json` — машиночитаемо, `--deliverable DIR` — проверить заготовку.
+- `promote --source <results/task|*-mcp-server/>` — генерит портируемый юнит
+  (env-driven, без хардкодов хоста; `MCP_ADVERTISE_HOST`/`RESULTS_REPO` из
+  `.env`) и добавляет его в `UNITS`. `--copy` кладёт код в репо, `--commit`/
+  `--push` — git. Идемпотентно; `--dry-run` — предпросмотр.
+- `ports` — занятые/свободные порты (новый сервис берёт следующий свободный от 3075).
+
+```
+python3 scripts/promote_service.py check --strict
+python3 scripts/promote_service.py promote --source results/<task>/ \
+    --name foo-engineer --copy --commit
+./deploy/install.sh   # хост подхватит новый сервис
+```
+Юнит на `python3` подходит только stdlib-сервисам; при зависимостях передайте
+`--exec "python -m <pkg>.server ..."` — install.sh перепишет `python -m` на venv.
+
 ## Откат/бэкап
 Код — git; состояние — `pg_dump mcp_registry` (или копия `data/*.db*` на SQLite);
 конфиги — `.env`,
