@@ -21,9 +21,12 @@
 #   POSTGRES_PASSWORD          generated when local; required when external
 #   SECURE_SEARCH_URL          search MCP for opencode agents (optional)
 #   OPENCODE_VERSION           pin opencode CLI (latest)
-#   RESULTS_SSH_KEY_B64        base64 private key for the results repo (optional;
-#                              otherwise the generated root key is printed for
-#                              you to authorize on the results server)
+#   MCP_GIT_REPO_URL           artifacts repo: ssh url, git+ssh, or any path git
+#                              understands (default: local bare repo at
+#                              $ORCH_DIR/data/mcp-results.git - created here)
+#   RESULTS_SSH_KEY_B64        base64 private key for a REMOTE results repo
+#                              (only needed when MCP_GIT_REPO_URL points at
+#                              another host over ssh)
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive PATH="$PATH:/usr/sbin:/sbin"
 log() { echo "[provision] $*"; }
@@ -130,7 +133,28 @@ if [ -n "$OPENCODE_BASE_URL" ] && { [ ! -f /root/.config/opencode/opencode.json 
 EOF
 fi
 mkdir -p "$ORCH_DIR"
+ensure_local_results_repo() {
+  # No external artifact repo configured: keep results in a local bare repo on
+  # this host. git clones/pushes local paths natively - no ssh, no keys.
+  # data/ is excluded from install.sh's rsync --delete, so it survives upgrades.
+  LOCAL_RESULTS=$ORCH_DIR/data/mcp-results.git
+  mkdir -p "$ORCH_DIR/data"
+  if [ ! -d "$LOCAL_RESULTS" ]; then
+    git init -q --bare "$LOCAL_RESULTS"
+    git -C "$LOCAL_RESULTS" symbolic-ref HEAD refs/heads/main
+    # seed main with an empty commit: services clone/push 'main' explicitly,
+    # and a clone of a truly empty repo has no branch to build on
+    SEED=$(mktemp -d)
+    git -C "$SEED" init -q -b main 2>/dev/null || { git -C "$SEED" init -q && git -C "$SEED" checkout -q -b main; }
+    git -C "$SEED" -c user.email=orch@local -c user.name=provision commit -q --allow-empty -m "results repo"
+    git -C "$SEED" push -q "$LOCAL_RESULTS" main
+    rm -rf "$SEED"
+  fi
+  MCP_GIT_REPO_URL=$LOCAL_RESULTS
+  log "results repo: local bare $LOCAL_RESULTS (set MCP_GIT_REPO_URL to use a shared one)"
+}
 if [ ! -f "$ORCH_DIR/.env" ] || [ "${PROVISION_FORCE_ENV:-0}" = 1 ]; then
+  [ -n "${MCP_GIT_REPO_URL:-}" ] || ensure_local_results_repo
   if [ "$USE_POSTGRES" = "false" ]; then
     PG_PW=${POSTGRES_PASSWORD:-postgres}
   elif [ -n "${POSTGRES_PASSWORD:-}" ]; then
@@ -162,6 +186,11 @@ OPENCODE_PASSWORD=${OC_PW}
 EOF
   chmod 600 "$ORCH_DIR/.env"
   log "wrote $ORCH_DIR/.env (PROVISION_FORCE_ENV=1 to regenerate)"
+elif [ -z "${MCP_GIT_REPO_URL:-}" ] && grep -q '^MCP_GIT_REPO_URL=$' "$ORCH_DIR/.env"; then
+  # existing .env predates the local fallback and has an empty url - wire it up
+  ensure_local_results_repo
+  sed -i "s#^MCP_GIT_REPO_URL=\$#MCP_GIT_REPO_URL=$LOCAL_RESULTS#" "$ORCH_DIR/.env"
+  log "patched empty MCP_GIT_REPO_URL in existing .env -> $LOCAL_RESULTS"
 fi
 
 log "6/7 install.sh"

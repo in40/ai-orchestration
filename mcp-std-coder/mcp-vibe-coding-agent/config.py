@@ -38,6 +38,6 @@ def results_repo_url():
     url = (settings.mcp_git_repo_url or os.environ.get("MCP_GIT_REPO_URL") or "").strip()
     if not url:
         raise RuntimeError(
-            "MCP_GIT_REPO_URL is not set - add the ssh url of the results "
-            "repository to .env (e.g. ssh://user@host/home/user/mcp-results.git)")
+            "MCP_GIT_REPO_URL is not set - add the results repo url (ssh url, or a local path git can clone) "
+            "repo to .env (e.g. ssh://user@host/home/user/mcp-results.git or /srv/mcp-results.git)")
     return url

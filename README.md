@@ -28,14 +28,14 @@ curl -fsSL https://raw.githubusercontent.com/in40/ai-orchestration/v0.5.11/deplo
 # 2. настройки (см. таблицу ниже)
 export LLM_PROVIDER_URL=http://LLM-ХОСТ:8081/v1/chat/completions
 export LLM_MODEL=имя-модели
-export MCP_GIT_REPO_URL=ssh://user@results-хост/home/user/mcp-results.git
-export DEPLOYMENT_HOST=публичный-ip-этого-хоста  # опционально: по умолчанию
-#                                    берётся первый IP хоста; нужен, если
-#                                    адрес наружу другой (NAT, не-первый
-#                                    интерфейс) или хотите DNS-имя
 export USE_POSTGRES=false          # true = PostgreSQL
-# если на хосте уже есть ключ для results-репо:
-export RESULTS_SSH_KEY_B64=$(base64 -w0 /root/.ssh/id_ed25519)
+# опционально — общий results-репозиторий (иначе заведётся локальный
+# bare-репо в /opt/ai-orchestration/data/mcp-results.git, ключи не нужны):
+# export MCP_GIT_REPO_URL=ssh://user@results-хост/home/user/mcp-results.git
+# export RESULTS_SSH_KEY_B64=$(base64 -w0 /root/.ssh/id_ed25519)
+# опционально — адрес наружу (по умолчанию первый IP хоста; нужен при NAT,
+# нескольких интерфейсах или если хотите DNS-имя):
+# export DEPLOYMENT_HOST=публичный-ip-или-dns
 
 # 3. запуск (от root)
 bash /tmp/provision.sh
@@ -76,16 +76,20 @@ ssh-ключа results-репо и self-E2E — см. разделы «Конф�
 |---|---|
 | `LLM_PROVIDER_URL` | OpenAI-совместимый chat endpoint (планировщик, гейты, ретро) |
 | `LLM_MODEL` | модель для конвейера |
-| `MCP_GIT_REPO_URL` | ssh-url git-репозитория артефактов (`results/<task>/`) |
 | `DEPLOYMENT_HOST` | адрес хоста для публичных URL деплоев (иначе — первый IP) |
 | `USE_POSTGRES` | `true` (по умолчанию) или `false` = SQLite без сервера БД |
 | `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` | только при `USE_POSTGRES=true`; по умолчанию локальный кластер `127.0.0.1:5432/mcp_registry/postgres` — установщик сам ставит сервер и создаёт роль/БД. Не-локальный `POSTGRES_HOST` = **внешний** кластер: локальный сервер не ставится, роль и БД должны быть уже созданы вашим админом |
 | `POSTGRES_PASSWORD` | для локального генерируется, если не задан; для **внешнего обязателен** |
-| `RESULTS_SSH_KEY_B64` | base64 приватного ключа для results-репо; без него будет сгенерирован свой и выведен публичный — авторизуйте его на results-сервере |
+| `MCP_GIT_REPO_URL` | git-репозиторий артефактов (`results/<task>/`): ssh-url или любой путь, который понимает git. По умолчанию создаётся **локальный bare-репозиторий** на хосте (`$ORCH_DIR/data/mcp-results.git`) — настраивать не нужно |
+| `RESULTS_SSH_KEY_B64` | только для удалённого results-репо: base64 приватного ключа с правом push на него |
 
 Опционально: `SECURE_SEARCH_URL` (поиск для coder'а), `IMAGE_API_BASE`
 (генерация картинок), `REPO_REF` (ветка, по умолчанию `v0.5.11`),
 `ORCH_DIR` (каталог установки, по умолчанию `/opt/ai-orchestration`).
+
+Фактически безальтернативны только `LLM_PROVIDER_URL` + `LLM_MODEL`: остальное
+либо имеет рабочие дефолты (SQLite, локальный results-репозиторий, первый IP),
+либо отключается.
 
 ## Что поднимается (9 сервисов)
 
