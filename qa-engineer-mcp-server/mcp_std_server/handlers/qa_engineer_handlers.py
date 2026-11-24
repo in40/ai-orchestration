@@ -339,6 +339,14 @@ When unsure, verdict=pass and put the doubt into issues.
                         'the code (external backend URL, API key, model name, test dataset), '
                         'add "need_info": [{"field": "UPPER_SNAKE", "question": "...", '
                         '"why": "..."}] (max 3) to your JSON. Never guess secrets.')
+                    instruction += (
+                        '\nDEPLOY IMAGE CONSTRAINT: the container is python:3.11-slim - it '
+                        'has python+pip but NO node/npm/yarn. The "install" field may only '
+                        'contain commands that work there (e.g. pip install -r '
+                        'requirements.txt). If the repo already ships prebuilt frontend '
+                        'output (dist/ or build/ committed), do NOT add any npm build step '
+                        'to install - run the server directly so it serves the prebuilt '
+                        'bundle.')
                     ok, text, err = opencode_agent(
                         "contract-planner", result_dir,
                         instruction,

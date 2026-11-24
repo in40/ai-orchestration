@@ -1127,6 +1127,20 @@ CMD ["/bin/sh", "-c", "{run}"]
             rc["env"] = {**(rc.get("env") or {}), **extra}
             deployment_logger.info(f"deploy_env merged from task metadata: {sorted(extra)}")
         if rc.get("kind") in ("service", "cli", "static"):
+            # defense: the deploy image is python:3.11-slim (no node/npm). A
+            # contract that rebuilds the frontend with npm is only correct when
+            # no build output is committed; if dist/ (or build/) is in the tree,
+            # the app serves the prebuilt bundle and the npm step must go.
+            inst = str(rc.get("install") or "")
+            if re.search(r"\b(npm|yarn|pnpm)\b", inst):
+                cwd = str(rc.get("cwd") or "").strip("/")
+                roots = [deploy_dir] + ([os.path.join(deploy_dir, cwd)] if cwd else [])
+                if any(os.path.isdir(os.path.join(r, d))
+                       for r in roots for d in ("dist", "build")):
+                    deployment_logger.info(
+                        f"run contract install '{inst}' needs node, but prebuilt "
+                        "dist/ is committed - dropping the install step")
+                    rc.pop("install", None)
             hc = rc.get("healthcheck") or {}
             if hc.get("port"):
                 container_port = int(hc["port"])
