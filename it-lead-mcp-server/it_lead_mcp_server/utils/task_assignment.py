@@ -793,7 +793,16 @@ class TaskAssignmentManager:
     def _build_via_opencode(self, task_id, task_description, file_manifest,
                             coder_endpoint, metadata, base_tree=None):
         """Phase A: one opencode coder session for the whole manifest.
-        Returns git_url on success, None to fall back to per-file fan-out.
+        Returns (git_url, why, err):
+          (url, "ok", "")        - build succeeded
+          (None, "failed", err) - opencode was available but the build failed;
+                                  callers must NOT silently substitute a
+                                  degraded fan-out artifact (task-1795526291181
+                                  shipped an Angular stub this way)
+          (None, "unavailable", err) - no opencode on this host: per-file
+                                  fan-out is the legitimate mode
+          (None, "awaiting_input", err) - clarification went unanswered;
+                                  the task status already reflects that
         base_tree: rework mode - coder fixes the seeded existing tree instead
         of creating files from the manifest."""
         try:
@@ -846,7 +855,7 @@ class TaskAssignmentManager:
                     self._update_task_status(task_id, "needs_revision",
                                              "clarification timeout during build")
                     self._log_activity(task_id, "clarification_timeout", agent="it-lead")
-                    return None
+                    return None, "awaiting_input", "clarification timeout during build"
                 self._log_activity(task_id, "clarification_resumed", agent="it-lead",
                                    detail="coder session resumed with requestor answers")
                 self._update_task_status(task_id, "in_progress",
@@ -870,12 +879,14 @@ class TaskAssignmentManager:
                     self._merge_metadata(task_id, {"opencode_usage": {"build": stats}})
                 print(f"🧩 build_project {task_id}: ok via {out.get('session')} "
                       f"({len(out.get('files', []))} files, {stats})", flush=True)
-                return out["git_url"]
-            print(f"⚠️ build_project {task_id} fell back to fan-out: "
-                  f"{str(out.get('error') if isinstance(out, dict) else out)[:600]}", flush=True)
+                return out["git_url"], "ok", ""
+            err = str(out.get("error") if isinstance(out, dict) else out)[:600]
+            why = "unavailable" if "binary not found" in err else "failed"
+            print(f"⚠️ build_project {task_id} -> {why}: {err}", flush=True)
         except Exception as e:
-            print(f"⚠️ build_project {task_id} error, falling back: {str(e)[:600]}", flush=True)
-        return None
+            err, why = str(e)[:600], "failed"
+            print(f"⚠️ build_project {task_id} -> {why}: {err}", flush=True)
+        return None, why, err
 
     # ------------------------------------------------------------------
     # Clarifications: pipeline -> requestor Q&A (pause / answer / resume).
@@ -1029,8 +1040,11 @@ class TaskAssignmentManager:
                     _t.sleep(10 * (attempt + 1))
             return path, last
 
-        # Phase A: one self-verifying opencode coder session for the whole manifest;
-        # per-file fan-out remains the fallback. prebuilt_git_url skips building (rework).
+        # Phase A: one self-verifying opencode coder session for the whole
+        # manifest. Fan-out is the LEGITIMATE mode only when opencode is absent
+        # (OPENCODE_BUILD=0 / no binary); a failed build must fail the task
+        # honestly, not silently ship a degraded per-file stub.
+        # prebuilt_git_url skips building (rework).
         git_url = prebuilt_git_url
         results = None
         if not git_url and os.environ.get("OPENCODE_BUILD", "1") != "0":
@@ -1053,8 +1067,26 @@ class TaskAssignmentManager:
                                            detail=f"building on product '{prow[0]}' mirror")
             except Exception:
                 base = None
-            git_url = self._build_via_opencode(task_id, task_description, file_manifest,
-                                               coder_endpoint, metadata, base_tree=base)
+            git_url, why, berr = self._build_via_opencode(
+                task_id, task_description, file_manifest,
+                coder_endpoint, metadata, base_tree=base)
+            if git_url is None and why == "failed":
+                # opencode was available but the build failed: fail the task
+                # with the real error instead of shipping a degraded stub.
+                self._log_activity(task_id, "build_failed",
+                                   agent="implementation-engineer",
+                                   detail=(berr or "")[:500])
+                self._update_task_status(
+                    task_id, "failed",
+                    f"opencode build failed: {(berr or '')[:300]}")
+                return
+            if git_url is None and why == "awaiting_input":
+                # status already set to needs_revision by the timeout path
+                return
+            # why == "unavailable" -> fall through to per-file fan-out (legit)
+            if git_url is None and why == "unavailable":
+                self._log_activity(task_id, "build_mode", agent="it-lead",
+                                   detail="opencode unavailable on host -> per-file fan-out")
         if git_url is None:
             results = {}
             with ThreadPoolExecutor(max_workers=3) as ex:
@@ -3409,8 +3441,9 @@ Please generate the complete, corrected code with proper {metadata.get('language
             self._log_activity(task_id, "contract_invalidated", agent="it-lead",
                                detail="stale run contract dropped before rework")
             if base_git_url:
-                git_url = self._build_via_opencode(task_id, rework_prompt, [],
-                                                   coder_endpoint, {}, base_tree=base_git_url)
+                git_url, _why, _berr = self._build_via_opencode(
+                    task_id, rework_prompt, [],
+                    coder_endpoint, {}, base_tree=base_git_url)
                 if not git_url:
                     self._update_task_status(task_id, "needs_revision",
                                              "rework failed: fix build error")
