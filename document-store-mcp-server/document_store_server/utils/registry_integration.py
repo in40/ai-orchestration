@@ -39,7 +39,7 @@ class DocumentStoreRegistryIntegration:
                 port=5432,
                 database="mcp_registry",
                 user="postgres",
-                password=os.environ.get("POSTGRES_PASSWORD", "postgres")
+                password=os.environ.get("POSTGRES_PASSWORD")
             )
         except Exception as e:
             print(f"❌ Failed to initialize PostgreSQL registry: {e}")

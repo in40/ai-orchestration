@@ -20,7 +20,7 @@ def update_task_to_done(task_id):
         port=5432,
         database="mcp_registry",
         user="postgres",
-        password=os.environ.get("POSTGRES_PASSWORD", "postgres")
+        password=os.environ.get("POSTGRES_PASSWORD")
     )
 
     # Update task to done status with completion result

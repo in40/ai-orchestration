@@ -32,7 +32,7 @@ def _db_connect():
         port=int(_os.environ.get("POSTGRES_PORT", "5432")),
         database=_os.environ.get("POSTGRES_DB", "mcp_registry"),
         user=_os.environ.get("POSTGRES_USER", "postgres"),
-        password=_os.environ.get("POSTGRES_PASSWORD", "postgres"))
+        password=_os.environ.get("POSTGRES_PASSWORD"))
     try:
         _cur = conn.cursor()
         _cur.execute("""CREATE TABLE IF NOT EXISTS task_deployments (

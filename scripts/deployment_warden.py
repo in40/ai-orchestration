@@ -8,7 +8,7 @@ PSQL = ["psql", "-h", "127.0.0.1", "-U", "postgres", "-d", "mcp_registry", "-tAc
 
 def q(sql, params=None):
     return subprocess.run(PSQL + [sql], capture_output=True, text=True,
-                          env={**os.environ, "PGPASSWORD": os.environ.get("POSTGRES_PASSWORD", "postgres")})
+                          env={**os.environ, "PGPASSWORD": os.environ.get("POSTGRES_PASSWORD")})
 
 
 def main():

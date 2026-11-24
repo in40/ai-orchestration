@@ -211,8 +211,11 @@ class SqliteConn:
 
 
 def connect(host="localhost", port=5432, database="mcp_registry",
-            user="postgres", password="***", verbose=True):
-    """Returns (connection, backend) - backend is 'postgres' or 'sqlite'."""
+            user="postgres", password=None, verbose=True):
+    """Returns (connection, backend) - backend is 'postgres' or 'sqlite'.
+    password=None falls back to the POSTGRES_PASSWORD env (never a literal)."""
+    if password is None:
+        password = os.environ.get("POSTGRES_PASSWORD")
     if os.environ.get("USE_POSTGRES", "true").lower() not in ("false", "0", "no"):
         try:
             import psycopg2
