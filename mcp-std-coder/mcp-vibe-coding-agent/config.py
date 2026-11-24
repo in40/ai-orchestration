@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
 
     # LM Studio configuration
-    llm_base_url: str = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENCODE_BASE_URL") or ""
+    llm_base_url: str = (os.environ.get("LLM_BASE_URL") or os.environ.get("OPENCODE_BASE_URL")
+                         or os.environ.get("LLM_PROVIDER_URL", "").replace("/chat/completions", "") or "")
     llm_model: Optional[str] = None  # REQUIRED from config
 
     # PostgreSQL configuration for persistent task storage
