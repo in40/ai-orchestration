@@ -5,11 +5,13 @@ Script to update task status directly in PostgreSQL
 import json
 import sys
 import os
+from pathlib import Path
+_BASE_DIR = os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[3])
 
 # Add paths
-sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base') + '/it-lead-mcp-server')
-sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base') + '/it-lead-mcp-server/it_lead_mcp_server')
-sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base'))
+sys.path.insert(0, _BASE_DIR + '/it-lead-mcp-server')
+sys.path.insert(0, _BASE_DIR + '/it-lead-mcp-server/it_lead_mcp_server')
+sys.path.insert(0, _BASE_DIR)
 
 from utils.task_storage import TaskStorage
 

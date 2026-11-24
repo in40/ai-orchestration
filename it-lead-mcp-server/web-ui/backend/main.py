@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+_BASE_DIR = os.environ.get("BASE_DIR") or str(Path(__file__).resolve().parents[3])
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
@@ -25,7 +26,7 @@ from datetime import datetime
 
 # Import configuration
 import sys
-sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base'))
+sys.path.insert(0, _BASE_DIR)
 from config import get_settings
 
 # Get settings
@@ -50,7 +51,7 @@ except ImportError:
     except ImportError:
         # If modules are in different location, add to path
         import sys
-        sys.path.insert(0, os.environ.get('BASE_DIR', '/root/qwen/base') + '/it-lead-mcp-server/it_lead_mcp_server/utils')
+        sys.path.insert(0, _BASE_DIR + '/it-lead-mcp-server/it_lead_mcp_server/utils')
         from git_result_storage import get_git_storage
         from file_result_storage import get_file_storage
         from result_router import get_result_router
