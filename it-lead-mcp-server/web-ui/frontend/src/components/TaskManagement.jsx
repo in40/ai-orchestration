@@ -1222,6 +1222,32 @@ const TaskManagement = () => {
           }}>
             {detailTask?.description || '(no description)'}
           </Box>
+          {(() => {
+            const cp = detailTask?.creation_params || {};
+            const rows = [
+              ['Продукт', cp.product_name ? `${cp.product_name} (#${cp.product_id})` : 'с нуля (без продукта)'],
+              ['Deploy после сборки', cp.deploy ? 'да' : 'нет'],
+              ['Язык / стек', cp.language || '—'],
+              ['Framework', cp.framework || '—'],
+              ['Нужен клиент', cp.requires_client ? 'да' : 'нет'],
+              ['Acceptance', cp.acceptance || '—'],
+            ];
+            return (
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>Параметры создания</Typography>
+                <Table size="small">
+                  <TableBody>
+                    {rows.map(([k, v]) => (
+                      <TableRow key={k}>
+                        <TableCell sx={{ border: 0, pl: 0, color: 'text.secondary', width: 180 }}>{k}</TableCell>
+                        <TableCell sx={{ border: 0, wordBreak: 'break-word' }}>{String(v)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Box>
+            );
+          })()}
           {(detailTask?.git_url || detailTask?.deployment_url) && (
             <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
               {[

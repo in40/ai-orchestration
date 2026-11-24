@@ -1080,6 +1080,38 @@ async def delete_task_endpoint(task_data: dict):
     
     return {"message": "Task status updated successfully", "task_id": update.task_id}
 
+def _extract_creation_params(task: dict) -> dict:
+    """Normalize what the requestor chose at creation time (product, deploy,
+    framework, ...) so the UI can show it after the fact. The form values are
+    stored under metadata.original_arguments[.original_arguments].metadata."""
+    md = task.get("metadata") or {}
+    if isinstance(md, str):
+        try:
+            md = json.loads(md)
+        except Exception:
+            md = {}
+    src = md
+    node = md
+    for _ in range(3):  # assign_task -> async wrapper nests original_arguments deeper
+        node = (node.get("original_arguments") or {}) if isinstance(node, dict) else {}
+        if isinstance(node, dict) and isinstance(node.get("metadata"), dict):
+            src = node["metadata"]
+    def g(key):
+        for d in (src, md):
+            if isinstance(d, dict) and d.get(key) not in (None, "", [], {}):
+                return d[key]
+        return None
+    return {
+        "product_id": g("product_id"),
+        "deploy": g("deploy_after_implementation"),
+        "framework": g("framework"),
+        "language": g("programming_language"),
+        "requires_client": g("requires_client"),
+        "acceptance": g("acceptance_criteria"),
+        "business_context": g("business_context"),
+    }
+
+
 async def fetch_tasks_from_it_lead():
     """Fetch actual tasks from IT Lead server's task storage"""
     logger.info("Fetching tasks from IT Lead server")
@@ -1124,7 +1156,8 @@ async def fetch_tasks_from_it_lead():
                                 "progress": task.get("progress_percentage", 0),
                                 "git_url": metadata.get("git_url"),
                                 "deployment_url": metadata.get("deployment_url"),
-                                "storage_type": metadata.get("storage_type")
+                                "storage_type": metadata.get("storage_type"),
+                                "creation_params": _extract_creation_params(task)
                             })
                     return formatted_tasks
                 else:
@@ -1196,6 +1229,19 @@ async def get_tasks():
     if not tasks:
         logger.info("No tasks retrieved from IT Lead server, returning empty list")
         return []
+
+    # resolve product_id -> product name once, for the creation-params view
+    if any((t.get("creation_params") or {}).get("product_id") for t in tasks):
+        try:
+            res = await _it_lead_tool("list_products", {})
+            names = {p["id"]: p["name"] for p in (res.get("products") or [])}
+            for t in tasks:
+                cp = t.get("creation_params") or {}
+                if cp.get("product_id"):
+                    cp["product_name"] = names.get(cp["product_id"],
+                                                   f"#{cp['product_id']}")
+        except Exception as e:
+            logger.warning(f"product name resolution failed: {e}")
 
     return tasks
 
