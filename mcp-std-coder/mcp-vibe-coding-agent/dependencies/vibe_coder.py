@@ -649,6 +649,12 @@ def _push_tree(task_id: str, src_dir) -> dict:
     dest = local / "results" / task_id
     if dest.exists():
         _sh.rmtree(str(dest))
+    # drop any stale index entry FIRST: if a previous push recorded this path
+    # as a gitlink (submodule), plain `git add <dir>` refuses to replace it
+    # and the commit silently contains nothing new
+    subprocess.run(["git", "rm", "-r", "--cached", "--ignore-unmatch",
+                    f"results/{task_id}"],
+                   cwd=str(local), capture_output=True)
     _sh.copytree(str(src_dir), str(dest))
     for scaffold in ("MANIFEST.md", "AGENTS.md", ".need_info.json"):
         f = dest / scaffold
