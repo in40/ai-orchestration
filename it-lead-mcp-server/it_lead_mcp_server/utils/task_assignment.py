@@ -158,6 +158,86 @@ class TaskAssignmentManager:
         except Exception as e:
             print(f"⚠️ orphan sweep failed: {e}")
 
+        # Auto-recovery sweeper: needs_revision parked with an auto_retry
+        # marker (transient infra failures: spec generation, approval
+        # timeout) is retried by the IT Lead itself when the due time comes.
+        # Humans stay for decisions, not for poking retry buttons.
+        threading.Thread(target=self._auto_recovery_loop, daemon=True).start()
+
+    def _auto_recovery_loop(self, interval: int = 120):
+        import time as _t
+        while True:
+            _t.sleep(interval)
+            try:
+                if not self.task_storage:
+                    continue
+                cur = self.task_storage.connection.cursor()
+                cur.execute(
+                    "SELECT task_id, metadata FROM task_registry "
+                    "WHERE status='needs_revision' "
+                    "AND metadata->'auto_retry' IS NOT NULL")
+                rows = cur.fetchall()
+                self.task_storage.connection.commit()
+                cur.close()
+                now = _t.time()
+                for tid, raw in rows:
+                    try:
+                        md = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+                        ar = md.get("auto_retry") or {}
+                        if not ar or now < float(ar.get("next_at", 0)):
+                            continue
+                        left = int(ar.get("attempts_left", 0))
+                        if left <= 0:
+                            self._log_activity(
+                                tid, "auto_retry_exhausted", agent="it-lead",
+                                detail=f"reason={ar.get('reason')}: дальше нужен "
+                                       "человек (restart из UI)")
+                            self._merge_metadata(tid, {"auto_retry": None})
+                            continue
+                        # atomic claim: only proceed if THIS thread flips the
+                        # row (status still needs_revision); a manual restart
+                        # in the meantime makes the UPDATE match 0 rows
+                        claim = self.task_storage.connection.cursor()
+                        claim.execute(
+                            "UPDATE task_registry SET metadata = "
+                            "COALESCE(metadata::jsonb,'{}') || %s::jsonb "
+                            "WHERE task_id=%s AND status='needs_revision'",
+                            (json.dumps({"auto_retry": {
+                                **ar, "attempts_left": left - 1,
+                                "next_at": now + 3600}}), tid))
+                        claimed = claim.rowcount
+                        self.task_storage.connection.commit()
+                        claim.close()
+                        if not claimed:
+                            continue
+                        self._log_activity(
+                            tid, "auto_retry", agent="it-lead",
+                            detail=f"reason={ar.get('reason')}, attempts left: "
+                                   f"{left - 1}")
+                        self._auto_retry_task(tid)
+                    except Exception as e:
+                        print(f"⚠️ auto-recovery tick for {tid}: {e}", flush=True)
+            except Exception as e:
+                print(f"⚠️ auto-recovery loop: {e}", flush=True)
+
+    def _auto_retry_task(self, task_id):
+        """Re-run the original pipeline for an auto-recoverable task: same
+        description, same creation metadata (product/spec_first/deploy flags
+        survive), fresh planning."""
+        try:
+            task, md = self._md_of(task_id)
+            orig = ((md.get("original_arguments") or {}).get("metadata")
+                    or md.get("metadata") or {})
+            meta = {k: orig[k] for k in
+                    ("deploy_after_implementation", "requires_client",
+                     "spec_first", "product_id") if k in orig}
+            self.assign_and_forward_task(
+                task_id, task.get("description", ""),
+                priority=task.get("priority", "medium") or "medium",
+                metadata=meta)
+        except Exception as e:
+            print(f"⚠️ auto-retry {task_id} failed to launch: {e}", flush=True)
+
     def _init_result_router(self):
         """Initialize result router for storing agent results"""
         try:
@@ -1017,10 +1097,10 @@ class TaskAssignmentManager:
         return _re.sub(r"[^a-z0-9-]+", "-", str(task_id).lower()).strip("-")[:60]
 
     def _generate_spec_via_agent(self, task_id, task_description, mirror, feedback=""):
-        """Preferred path for product tasks: the spec-writer agent explores
+        """Spec generation for product tasks: the spec-writer agent explores
         the real mirror (living specs + code) and writes the change files.
-        Returns {relpath: content} or None (caller falls back to the plain
-        LLM call)."""
+        Returns {relpath: content} or None - there is no silent LLM fallback
+        for product tasks; the caller parks the task for auto-retry."""
         try:
             import subprocess as _sp, tempfile as _tf, shutil as _sh
             work = _tf.mkdtemp(prefix="spec-agent-")
@@ -1306,23 +1386,45 @@ class TaskAssignmentManager:
         mirror = self._product_mirror(metadata)
         feedback = ""
         for rnd in range(1, 4):
-            change = None
             if mirror:
                 change = self._generate_spec_via_agent(
                     task_id, task_description, mirror, feedback)
-                if change:
-                    self._log_activity(task_id, "spec_generated_by", agent="it-lead",
-                                       detail="spec-writer agent (mirror explored)")
+                src = "spec-writer agent (mirror explored)"
+                why = "spec-writer agent не смог собрать change (см. logs it-lead)"
+            else:
+                # greenfield has no mirror to explore: the LLM call IS the
+                # primary path there, not a fallback.
+                change = self._generate_spec_change(task_description, metadata,
+                                                    feedback)
+                src = "LLM (greenfield, no code to read)"
+                why = "генерация спеки не удалась (см. logs it-lead)"
             if not change:
-                change = self._generate_spec_change(task_description, metadata, feedback)
-            if not change:
+                # No silent degradation to the bare planner manifest, and no
+                # LLM fallback for product tasks: a spec that did not come
+                # from the real code must not sneak into the build. The task
+                # parks in needs_revision and the auto-recovery sweeper below
+                # re-runs it (infra failures are usually transient).
+                self._update_task_status(
+                    task_id, "needs_revision", f"spec_gen_failed: {why}",
+                    metadata={"auto_retry": {"reason": "spec_gen_failed",
+                                             "attempts_left": 3,
+                                             "next_at": time.time() + 120}})
                 self._log_activity(task_id, "spec_generation_failed", agent="it-lead",
-                                   detail="continuing with the planner manifest")
-                return None
+                                   detail=why)
+                return "STOP"
+            self._log_activity(task_id, "spec_generated_by", agent="it-lead",
+                               detail=src)
             verdict = self._spec_approval_gate(task_id, change, rnd)
             if verdict is None:
-                self._update_task_status(task_id, "needs_revision",
-                                         "спека не утверждена (таймаут ответа)")
+                # the requestor fell asleep: re-ask the approval automatically
+                # (the bell question is re-raised on each retry) instead of
+                # dead-ending in needs_revision
+                self._update_task_status(
+                    task_id, "needs_revision",
+                    "спека не утверждена (таймаут ответа)",
+                    metadata={"auto_retry": {"reason": "spec_approval_timeout",
+                                             "attempts_left": 2,
+                                             "next_at": time.time() + 3600}})
                 return "STOP"
             v, comment = verdict
             if v == "approve":
@@ -3925,7 +4027,7 @@ Please generate the complete, corrected code with proper {metadata.get('language
                              "artifact (git_url) - restart from build instead"}
 
         self._update_task_status(task_id, "in_progress", f"restarted from {from_step}",
-                                 force=True)
+                                 metadata={"auto_retry": None}, force=True)
         self._log_activity(task_id, "restarted", agent="it-lead",
                            detail=f"from_step={from_step} git_url={'yes' if git_url else 'no'} "
                                   f"workspace={'yes' if ws.exists() else 'no'}")
