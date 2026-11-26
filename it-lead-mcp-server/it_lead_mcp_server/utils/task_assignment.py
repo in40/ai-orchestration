@@ -922,7 +922,7 @@ class TaskAssignmentManager:
             if not field or field in known:
                 continue
             entry = {"id": f"clr-{int(time.time())}-{i}", "field": field,
-                     "question": str(it.get("question") or field)[:500],
+                     "question": str(it.get("question") or field)[:6000],
                      "why": str(it.get("why") or "")[:300],
                      "asked_by": asked_by, "status": "pending",
                      "asked_at": time.time()}
@@ -991,6 +991,157 @@ class TaskAssignmentManager:
             self._update_task_status(task_id, "needs_revision",
                                      f"clarification resume error: {str(e)[:150]}")
 
+    # ------------------------------------------------------------------
+    # Spec-first (P2, OpenSpec format): agree the change with the requestor
+    # BEFORE any code is written. Storage follows the task type: product
+    # tasks push the change folder into the mirror; greenfield tasks keep it
+    # in task metadata. Approval rides the existing clarifications bell.
+    # ------------------------------------------------------------------
+    SPEC_APPROVE_WORDS = ("утвердить", "утв", "approve", "accept", "yes", "да",
+                          "ок", "оk", "go", "принять", "поехали")
+
+    def _generate_spec_change(self, task_description, metadata, feedback=""):
+        """One LLM call -> OpenSpec change as {relpath: markdown} or None."""
+        if not self.llm_client:
+            return None
+        try:
+            pid = self._pid_from(metadata or {})
+            product_note = ("This iterates on an existing product whose repo the "
+                            "coder will clone; if it contains openspec/specs/, "
+                            "treat those as the current behavior.") if pid else ""
+            fb = (f"\nRequestor feedback on the previous draft - incorporate:\n{feedback}\n"
+                  if feedback else "")
+            prompt = (
+                "You are a requirements engineer using the OpenSpec format.\n"
+                f"Task from the requestor:\n\"\"\"{task_description[:4000]}\"\"\"\n"
+                f"{product_note}{fb}\n"
+                "Answer ONLY a JSON object mapping file paths to markdown, keys:\n"
+                '"proposal.md" (## Why / ## What changes / ## Impact),\n'
+                '"design.md" (technical approach; deploy image is python-only stdlib '
+                'unless the repo already uses node),\n'
+                '"tasks.md" (checklist "- [ ] 1.1 ...", each item one verifiable step),\n'
+                '"specs/<capability>/spec.md" (delta: "## ADDED Requirements" / '
+                '"## MODIFIED Requirements" with "### Requirement: X" (SHALL/ДОЛЖЕН) '
+                'and "#### Scenario: Y" with **WHEN**/**THEN** bullets).\n'
+                "Under 250 lines total. Russian prose, English paths/keys.")
+            raw = self.llm_client.call_llm(prompt, temperature=0.3, timeout=240)
+            from .opencode_run import extract_json
+            data = extract_json(raw)
+            if not isinstance(data, dict) or "tasks.md" not in data:
+                return None
+            return {str(k): str(v) for k, v in data.items()
+                    if isinstance(v, str) and v.strip() and "/" in k or k.endswith(".md")}
+        except Exception as e:
+            print(f"⚠️ spec generation failed: {e}", flush=True)
+            return None
+
+    def _spec_approval_gate(self, task_id, change, rnd):
+        """Bell question with the full change text. Returns
+        ('approve'|'revise', comment) or None on timeout."""
+        body = "\n\n".join(f"──── {p} ────\n{c}" for p, c in sorted(change.items()))
+        field = "SPEC_APPROVAL" if rnd == 1 else f"SPEC_APPROVAL_R{rnd}"
+        self._create_clarifications(task_id, [{
+            "field": field,
+            "question": ("SPEC APPROVAL — согласование спецификации до кода. "
+                         "Ответьте «утвердить», или напишите замечания — "
+                         "план будет переработан.\n\n" + body)[:6000],
+            "why": "spec-first: человек утверждает change до написания кода"}],
+            asked_by="it-lead")
+        self._update_task_status(task_id, "awaiting_input",
+                                 f"ожидание утверждения спеки (раунд {rnd})")
+        self._log_activity(task_id, "spec_proposed", agent="it-lead",
+                           detail=f"round {rnd}: " + ", ".join(sorted(change)))
+        if not self._wait_for_clarifications(task_id):
+            return None
+        ans = ""
+        _, md = self._md_of(task_id)
+        for c in (md.get("clarifications") or []):
+            if c.get("field") == field and c.get("status") == "answered":
+                ans = str(c.get("answer") or "")
+        low = ans.strip().lower()
+        if any(low.startswith(w) for w in self.SPEC_APPROVE_WORDS):
+            return "approve", ""
+        return "revise", ans[:500]
+
+    def _push_spec_change(self, task_id, change, metadata):
+        """Product tasks: commit the change folder into the mirror so the
+        coder clones it and the future archive step finds it there."""
+        try:
+            import subprocess as _sp
+            pid = self._pid_from(metadata or {})
+            if not pid:
+                return
+            with self.task_storage.connection.cursor() as cur:
+                cur.execute("SELECT mirror_url, name FROM products WHERE id=%s",
+                            (int(pid),))
+                row = cur.fetchone()
+            self.task_storage.connection.commit()
+            if not row or not row[0]:
+                return
+            import re as _re
+            slug = _re.sub(r"[^a-z0-9-]+", "-", task_id.lower()).strip("-")[:60]
+            import tempfile as _tf, shutil as _sh
+            work = _tf.mkdtemp(prefix="spec-change-")
+            _sp.run(["git", "clone", "-q", row[0], work], check=True,
+                    capture_output=True, timeout=180)
+            cdir = os.path.join(work, "openspec", "changes", slug)
+            for rel, content in change.items():
+                fp = os.path.join(cdir, *rel.split("/"))
+                os.makedirs(os.path.dirname(fp), exist_ok=True)
+                open(fp, "w").write(content)
+            _sp.run(["git", "-C", work, "config", "user.email", "it-lead@local"],
+                    check=True)
+            _sp.run(["git", "-C", work, "config", "user.name", "it-lead"], check=True)
+            _sp.run(["git", "-C", work, "add", "-A"], check=True)
+            r = _sp.run(["git", "-C", work, "commit", "-q", "-m",
+                         f"openspec: change {slug} (spec-first, approved)"],
+                        capture_output=True, timeout=60)
+            if r.returncode == 0:
+                _sp.run(["git", "-C", work, "push", "-q", "origin", "main"],
+                        capture_output=True, timeout=180)
+            _sh.rmtree(work, ignore_errors=True)
+            self._log_activity(task_id, "spec_pushed", agent="it-lead",
+                               detail=f"mirror '{row[1]}': openspec/changes/{slug}/")
+        except Exception as e:
+            print(f"⚠️ spec mirror push failed (non-fatal): {e}", flush=True)
+
+    def _spec_first_flow(self, task_id, task_description, metadata):
+        """Returns: 'STOP' (status already set), or None to continue the
+        build; on approval the change rides to the coder via
+        metadata['spec_context'] and is stored in task metadata."""
+        feedback = ""
+        for rnd in range(1, 4):
+            change = self._generate_spec_change(task_description, metadata, feedback)
+            if not change:
+                self._log_activity(task_id, "spec_generation_failed", agent="it-lead",
+                                   detail="continuing with the planner manifest")
+                return None
+            verdict = self._spec_approval_gate(task_id, change, rnd)
+            if verdict is None:
+                self._update_task_status(task_id, "needs_revision",
+                                         "спека не утверждена (таймаут ответа)")
+                return "STOP"
+            v, comment = verdict
+            if v == "approve":
+                self._merge_metadata(task_id, {"spec_change": change})
+                self._push_spec_change(task_id, change, metadata)
+                text = "\n\n".join(f"## {p}\n{c}" for p, c in sorted(change.items()))
+                if isinstance(metadata, dict):
+                    metadata["spec_context"] = (
+                        "APPROVED SPEC (OpenSpec change). Implement exactly this; "
+                        "treat the WHEN/THEN scenarios as the acceptance criteria.\n\n"
+                        + text)[:14000]
+                self._log_activity(task_id, "spec_approved", agent="it-lead",
+                                   detail=f"round {rnd}, files: "
+                                          + ", ".join(sorted(change)))
+                return None
+            feedback = comment
+            self._log_activity(task_id, "spec_rejected", agent="it-lead",
+                               detail=f"round {rnd}: {comment[:150]}")
+        self._update_task_status(task_id, "needs_revision",
+                                 "спека отклонена 3 раза — переформулируйте задачу")
+        return "STOP"
+
     def _execute_multifile_plan(self, task_id: str, task_description: str, file_manifest: list,
                                 llm_plan: dict = None, metadata: dict = None, route: str = "gated",
                                 prebuilt_git_url: str = None, deploy_task_id: str = None):
@@ -1008,6 +1159,12 @@ class TaskAssignmentManager:
             self._update_task_status(task_id, "failed", "implementation-engineer unavailable for fan-out")
             return
         coder_endpoint = coder_endpoint.replace("0.0.0.0", "127.0.0.1")
+        # spec-first (P2): agree the change with the requestor before coding.
+        # Runs inside the plan thread, so the approval wait never blocks the
+        # assignment request.
+        if not prebuilt_git_url and self._md_flag(metadata, "spec_first"):
+            if self._spec_first_flow(task_id, task_description, metadata) == "STOP":
+                return
         # "Requires client": guarantee a verification client regardless of planner mood
         if not prebuilt_git_url and self._md_flag(metadata, "requires_client") and \
                 not any(str(f.get("path", "")).endswith("client.py") for f in file_manifest):

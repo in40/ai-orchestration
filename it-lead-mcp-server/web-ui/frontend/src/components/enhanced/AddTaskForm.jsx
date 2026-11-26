@@ -15,6 +15,7 @@ import {
   Select,
   MenuItem,
   Checkbox,
+  FormControlLabel,
   ListItemText,
   FormHelperText,
   Accordion,
@@ -484,6 +485,21 @@ const AddTaskForm = ({
                 Если выбран — кодер клонирует зеркало продукта и работает поверх него
               </FormHelperText>
             </FormControl>
+
+            {/* Spec-first (OpenSpec): change proposal + human approval before code */}
+            <FormControlLabel
+              sx={{ mt: 1 }}
+              control={
+                <Checkbox
+                  checked={!!taskData.context?.spec_first}
+                  onChange={(e) => setTaskData(prev => ({
+                    ...prev,
+                    context: { ...prev.context, spec_first: e.target.checked || undefined }
+                  }))}
+                />
+              }
+              label="Спека перед кодом (change + утверждение в колокольчике)"
+            />
 
             {/* Acceptance Criteria */}
             <TextField

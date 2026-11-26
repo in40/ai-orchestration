@@ -347,6 +347,11 @@ When unsure, verdict=pass and put the doubt into issues.
                         'output (dist/ or build/ committed), do NOT add any npm build step '
                         'to install - run the server directly so it serves the prebuilt '
                         'bundle.')
+                    instruction += (
+                        '\nIf the artifact contains openspec/changes/*/specs or '
+                        'openspec/specs directories, derive the healthcheck/smoke '
+                        'expectations from their WHEN/THEN scenarios (visible UI '
+                        'effects of the scenarios, checked against the running app).')
                     ok, text, err = opencode_agent(
                         "contract-planner", result_dir,
                         instruction,
