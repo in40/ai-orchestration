@@ -654,7 +654,7 @@ def _push_tree(task_id: str, src_dir) -> dict:
         f = dest / scaffold
         if f.exists():
             f.unlink()
-    for pat in (".qa_venv", "__pycache__", ".pytest_cache", "node_modules"):
+    for pat in (".qa_venv", "__pycache__", ".pytest_cache", "node_modules", ".git"):
         for junk in dest.rglob(pat):
             _sh.rmtree(str(junk), ignore_errors=True)
     for junk in dest.rglob("*.pyc"):
