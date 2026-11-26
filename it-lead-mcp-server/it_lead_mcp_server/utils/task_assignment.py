@@ -998,7 +998,18 @@ class TaskAssignmentManager:
     # in task metadata. Approval rides the existing clarifications bell.
     # ------------------------------------------------------------------
     SPEC_APPROVE_WORDS = ("утвердить", "утв", "approve", "accept", "yes", "да",
-                          "ок", "оk", "go", "принять", "поехали")
+                          "ок", "ok", "go", "принять", "поехали")
+
+    def _spec_first_enabled(self, metadata):
+        """Policy: spec-first is ON by default for product iterations (the
+        mirror carries living specs, so agreeing the change before code is
+        the team's default workflow). Explicit false in context opts out;
+        greenfield tasks stay opt-in via the checkbox."""
+        if self._md_flag(metadata, "spec_first"):
+            return True
+        if '"spec_first": false' in json.dumps(metadata or {}).lower():
+            return False
+        return bool(self._pid_from(metadata or {}))
 
     def _generate_spec_change(self, task_description, metadata, feedback=""):
         """One LLM call -> OpenSpec change as {relpath: markdown} or None."""
@@ -1162,7 +1173,11 @@ class TaskAssignmentManager:
         # spec-first (P2): agree the change with the requestor before coding.
         # Runs inside the plan thread, so the approval wait never blocks the
         # assignment request.
-        if not prebuilt_git_url and self._md_flag(metadata, "spec_first"):
+        if not prebuilt_git_url and self._spec_first_enabled(metadata):
+            if not self._md_flag(metadata, "spec_first") and self._pid_from(metadata or {}):
+                self._log_activity(task_id, "spec_first_auto", agent="it-lead",
+                                   detail="product task: spec-first is the default, "
+                                          "context.spec_first=false opts out")
             if self._spec_first_flow(task_id, task_description, metadata) == "STOP":
                 return
         # "Requires client": guarantee a verification client regardless of planner mood

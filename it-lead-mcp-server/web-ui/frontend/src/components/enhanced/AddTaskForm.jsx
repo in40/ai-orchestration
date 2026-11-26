@@ -494,11 +494,11 @@ const AddTaskForm = ({
                   checked={!!taskData.context?.spec_first}
                   onChange={(e) => setTaskData(prev => ({
                     ...prev,
-                    context: { ...prev.context, spec_first: e.target.checked || undefined }
+                    context: { ...prev.context, spec_first: e.target.checked }
                   }))}
                 />
               }
-              label="Спека перед кодом (change + утверждение в колокольчике)"
+              label="Спека перед кодом (для продуктовых задач включено по умолчанию; снимите галку, чтобы выключить)"
             />
 
             {/* Acceptance Criteria */}
