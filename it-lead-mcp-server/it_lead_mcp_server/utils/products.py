@@ -490,3 +490,68 @@ def rollback_upstream(conn, product_id, tag):
         return {"success": True, "detail": f"main зеркала откатан к {tag}"}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Mirror file browser (P3): read-only view into the product mirror on .187.
+# Done over ssh with plumbing commands - no clone, no upload-archive needed.
+# ---------------------------------------------------------------------------
+FILE_SIZE_CAP = 512_000
+
+
+def _mirror_path(name):
+    return f"{PROJECTS_DIR}/{name}.git"
+
+
+def list_product_files(conn, product_id):
+    cur = conn.cursor()
+    row = _load_product(cur, product_id)
+    if not row or not row[1]:
+        return {"success": False, "error": "продукт не найден или нет зеркала"}
+    lt = _ssh_git(["-C", _mirror_path(row[0]), "ls-tree", "-r", "--long", "main"],
+                  timeout=60)
+    if lt.returncode != 0:
+        return {"success": False, "error": redact(lt.stderr)[:200]}
+    files = []
+    for ln in lt.stdout.splitlines():
+        # "<mode> <type> <sha> <size>\t<path>" (--long pads size with spaces)
+        try:
+            meta, path = ln.split("\t", 1)
+            mode, typ, sha, size = meta.split()
+            files.append({"path": path, "size": int(size) if size.isdigit() else -1,
+                          "sha": sha if typ == "blob" else ""})
+        except ValueError:
+            continue
+    return {"success": True, "product": row[0], "files": files}
+
+
+def get_product_file(conn, product_id, path):
+    if not path or path.startswith("/") or ".." in path.split("/"):
+        return {"success": False, "error": "некорректный путь"}
+    cur = conn.cursor()
+    row = _load_product(cur, product_id)
+    if not row or not row[1]:
+        return {"success": False, "error": "продукт не найден или нет зеркала"}
+    lt = _ssh_git(["-C", _mirror_path(row[0]), "ls-tree", "-r", "--long", "main",
+                   "--", path], timeout=60)
+    entry = next((ln for ln in lt.stdout.splitlines()
+                  if ln.split("\t")[-1] == path), None)
+    if not entry:
+        return {"success": False, "error": "файл не найден"}
+    try:
+        size = int(entry.split("\t")[0].split()[3])
+    except (ValueError, IndexError):
+        size = -1
+    if size > FILE_SIZE_CAP:
+        return {"success": False,
+                "error": f"файл больше {FILE_SIZE_CAP // 1000} КБ — только по ssh"}
+    sh = _ssh_git(["-C", _mirror_path(row[0]), "cat-file", "blob", f"main:{path}"],
+                  timeout=60)
+    if sh.returncode != 0:
+        return {"success": False, "error": redact(sh.stderr)[:200]}
+    data = sh.stdout
+    if "\x00" in data:
+        return {"success": True, "path": path, "binary": True,
+                "content": "", "size": len(data)}
+    return {"success": True, "path": path, "binary": False,
+            "content": data, "size": len(data)}

@@ -191,6 +191,19 @@ class HumanInterfaceHandlers:
                 "inputSchema": {"type": "object", "properties": {}}
             },
             {
+                "name": "list_product_files",
+                "description": "Read-only file listing of a product mirror (main).",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "integer"}}, "required": ["id"]}
+            },
+            {
+                "name": "get_product_file",
+                "description": "Read one text file from a product mirror (capped).",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "integer"},
+                    "path": {"type": "string"}}, "required": ["id", "path"]}
+            },
+            {
                 "name": "import_product",
                 "description": "Create a product mirror on the artifact host from "
                                "a git URL or a results/<task_id> seed.",
@@ -362,6 +375,15 @@ class HumanInterfaceHandlers:
             from ..utils import products
             return {"success": True,
                     "products": products.list_products(self.task_storage.connection)}
+        elif tool_name == "list_product_files":
+            from ..utils import products
+            return products.list_product_files(
+                self.task_storage.connection, int(arguments.get("id", 0)))
+        elif tool_name == "get_product_file":
+            from ..utils import products
+            return products.get_product_file(
+                self.task_storage.connection, int(arguments.get("id", 0)),
+                arguments.get("path", ""))
         elif tool_name == "import_product":
             from ..utils import products
             return products.import_product(

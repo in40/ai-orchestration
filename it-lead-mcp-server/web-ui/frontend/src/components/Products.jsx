@@ -7,7 +7,7 @@ import {
 } from '@mui/material';
 import {
   Add as AddIcon, Public as PublishIcon, Sync as SyncIcon,
-  Undo as UndoIcon
+  Undo as UndoIcon, FolderOpen as FolderIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import PageHeader from './PageHeader';
@@ -31,6 +31,30 @@ const Products = () => {
   const [syncWord, setSyncWord] = useState('');
   const [syncTag, setSyncTag] = useState('');
   const [syncMsg, setSyncMsg] = useState('');
+  const [filesP, setFilesP] = useState(null);   // product whose file browser is open
+  const [filesList, setFilesList] = useState([]);
+  const [filesFilter, setFilesFilter] = useState('');
+  const [curFile, setCurFile] = useState(null);
+  const [fileData, setFileData] = useState(null);
+  const [filesBusy, setFilesBusy] = useState(false);
+
+  const openFiles = async (p) => {
+    setFilesP(p); setFilesList([]); setCurFile(null); setFileData(null); setFilesBusy(true);
+    try {
+      const r = await axios.get(`/api/products/${p.id}/files`);
+      setFilesList(r.data.files || []);
+      if (r.data.error) setFileData({ error: r.data.error });
+    } catch (e) { setFileData({ error: e.message }); }
+    setFilesBusy(false);
+  };
+  const showFile = async (f) => {
+    setCurFile(f); setFileData(null); setFilesBusy(true);
+    try {
+      const r = await axios.get(`/api/products/${filesP.id}/file/${encodeURI(f.path)}`);
+      setFileData(r.data);
+    } catch (e) { setFileData({ error: e.message }); }
+    setFilesBusy(false);
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -170,6 +194,10 @@ const Products = () => {
                       Обновить в GitHub
                     </Button>
                   )}
+                  <Button size="small" variant="outlined" startIcon={<FolderIcon />}
+                    onClick={() => openFiles(p)}>
+                    Файлы
+                  </Button>
                   {(p.upstream_url || p.github_url) && (
                     <Button size="small" variant="outlined" startIcon={<SyncIcon />}
                       onClick={() => openSync(p)}>
@@ -182,6 +210,55 @@ const Products = () => {
           </Grid>
         ))}
       </Grid>
+
+      {/* Read-only mirror file browser (P3) */}
+      <Dialog open={!!filesP} onClose={() => setFilesP(null)} maxWidth="lg" fullWidth>
+        <DialogTitle sx={{ pb: 1 }}>
+          {filesP && `${filesP.name} — зеркало (main, read-only)`}
+          <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
+            {['', 'openspec', 'src', 'dist'].map(f => (
+              <Chip key={f || 'all'} size="small" label={f || 'все'}
+                color={filesFilter === f ? 'primary' : 'default'} variant="outlined"
+                onClick={() => setFilesFilter(f)} />
+            ))}
+            <Chip size="small" label={`${filesList.length} файлов`} variant="outlined" />
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0 }}>
+          <Box sx={{ display: 'flex', height: '70vh' }}>
+            <Box sx={{ width: 320, borderRight: 1, borderColor: 'divider', overflowY: 'auto' }}>
+              {filesBusy && <Typography sx={{ p: 2 }} variant="body2">загрузка…</Typography>}
+              {filesList.filter(f => !filesFilter || f.path.startsWith(filesFilter)).map(f => (
+                <Typography
+                  key={f.path}
+                  component="div"
+                  onClick={() => showFile(f)}
+                  sx={{
+                    px: 2, py: 0.5, fontFamily: 'monospace', fontSize: 12, cursor: 'pointer',
+                    bgcolor: curFile?.path === f.path ? 'action.selected' : 'transparent',
+                    '&:hover': { bgcolor: 'action.hover' },
+                  }}
+                >
+                  {f.path} <span style={{ opacity: 0.5 }}>({f.size})</span>
+                </Typography>
+              ))}
+            </Box>
+            <Box sx={{ flex: 1, overflow: 'auto', p: 1 }}>
+              {fileData?.error && <Alert severity="error">{fileData.error}</Alert>}
+              {fileData && fileData.binary && <Alert severity="info">бинарный файл</Alert>}
+              {fileData && fileData.content && (
+                <Box component="pre" sx={{ m: 0, fontSize: 12, fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                  {fileData.content}
+                </Box>
+              )}
+            </Box>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFilesP(null)}>Закрыть</Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={importOpen} onClose={() => setImportOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Импортировать продукт</DialogTitle>

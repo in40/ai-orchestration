@@ -1011,6 +1011,58 @@ class TaskAssignmentManager:
             return False
         return bool(self._pid_from(metadata or {}))
 
+    @staticmethod
+    def _spec_slug(task_id):
+        import re as _re
+        return _re.sub(r"[^a-z0-9-]+", "-", str(task_id).lower()).strip("-")[:60]
+
+    def _generate_spec_via_agent(self, task_id, task_description, mirror, feedback=""):
+        """Preferred path for product tasks: the spec-writer agent explores
+        the real mirror (living specs + code) and writes the change files.
+        Returns {relpath: content} or None (caller falls back to the plain
+        LLM call)."""
+        try:
+            import subprocess as _sp, tempfile as _tf, shutil as _sh
+            work = _tf.mkdtemp(prefix="spec-agent-")
+            try:
+                _sp.run(["git", "clone", "-q", mirror, work], check=True,
+                        capture_output=True, timeout=180)
+                slug = self._spec_slug(task_id)
+                cdir = os.path.join(work, "openspec", "changes", slug)
+                os.makedirs(cdir, exist_ok=True)
+                fb = (f"\nЗамечания запросившего к предыдущему черновику, "
+                      f"учесть:\n{feedback}\n" if feedback else "")
+                prompt = (
+                    f"Задача от запросившего:\n\"\"\"{task_description[:4000]}\"\"\"\n"
+                    f"{fb}\nЖивые спеки проекта — в openspec/specs/, код — в рабочем "
+                    f"дереве. Запиши change строго в каталог "
+                    f"openspec/changes/{slug}/ (proposal.md, design.md, tasks.md, "
+                    f"specs/<capability>/spec.md). После записи выведи слово DONE.")
+                from .opencode_run import opencode_agent
+                ok, text, err = opencode_agent(
+                    "spec-writer", work, prompt,
+                    session=f"ses-spec-{task_id}", timeout=600)
+                change = {}
+                if ok and os.path.isdir(cdir):
+                    for root, _, files in os.walk(cdir):
+                        for fn in files:
+                            fp = os.path.join(root, fn)
+                            rel = os.path.relpath(fp, cdir).replace(os.sep, "/")
+                            try:
+                                change[rel] = open(fp).read()
+                            except Exception:
+                                pass
+                if change and "tasks.md" in change:
+                    return change
+                print(f"⚠️ spec-writer agent produced nothing usable "
+                      f"(ok={ok}, {(err or '')[:100]})", flush=True)
+                return None
+            finally:
+                _sh.rmtree(work, ignore_errors=True)
+        except Exception as e:
+            print(f"⚠️ spec-writer agent failed: {e}", flush=True)
+            return None
+
     def _generate_spec_change(self, task_description, metadata, feedback=""):
         """One LLM call -> OpenSpec change as {relpath: markdown} or None."""
         if not self.llm_client:
@@ -1079,21 +1131,13 @@ class TaskAssignmentManager:
         coder clones it and the future archive step finds it there."""
         try:
             import subprocess as _sp
-            pid = self._pid_from(metadata or {})
-            if not pid:
+            mirror = self._product_mirror(metadata)
+            if not mirror:
                 return
-            with self.task_storage.connection.cursor() as cur:
-                cur.execute("SELECT mirror_url, name FROM products WHERE id=%s",
-                            (int(pid),))
-                row = cur.fetchone()
-            self.task_storage.connection.commit()
-            if not row or not row[0]:
-                return
-            import re as _re
-            slug = _re.sub(r"[^a-z0-9-]+", "-", task_id.lower()).strip("-")[:60]
+            slug = self._spec_slug(task_id)
             import tempfile as _tf, shutil as _sh
             work = _tf.mkdtemp(prefix="spec-change-")
-            _sp.run(["git", "clone", "-q", row[0], work], check=True,
+            _sp.run(["git", "clone", "-q", mirror, work], check=True,
                     capture_output=True, timeout=180)
             cdir = os.path.join(work, "openspec", "changes", slug)
             for rel, content in change.items():
@@ -1112,17 +1156,165 @@ class TaskAssignmentManager:
                         capture_output=True, timeout=180)
             _sh.rmtree(work, ignore_errors=True)
             self._log_activity(task_id, "spec_pushed", agent="it-lead",
-                               detail=f"mirror '{row[1]}': openspec/changes/{slug}/")
+                               detail=f"openspec/changes/{slug}/")
         except Exception as e:
             print(f"⚠️ spec mirror push failed (non-fatal): {e}", flush=True)
+
+    # -- auto-archive (P3): merge the approved delta into the living specs --
+    @staticmethod
+    def _delta_sections(text):
+        """openspec delta -> {ADDED|MODIFIED|REMOVED: [(name, block)]}."""
+        out, sec, name, blk, nsec = {}, None, None, [], None
+        def flush():
+            if name and nsec:
+                out.setdefault(nsec, []).append((name, "\n".join(blk).rstrip()))
+        for ln in (text or "").splitlines():
+            h = ln.strip()
+            up = h.upper()
+            if up.startswith("## "):
+                sec = None
+                for k in ("ADDED", "MODIFIED", "REMOVED"):
+                    if k in up:
+                        sec = k
+                        break
+            if sec and h.startswith("### Requirement:"):
+                flush()
+                name, blk, nsec = h[len("### Requirement:"):].strip(), [ln], sec
+            elif h.startswith("## ") or h.startswith("### "):
+                flush()
+                name, nsec = None, None
+            elif name:
+                blk.append(ln)
+        flush()
+        return out
+
+    @staticmethod
+    def _split_req_blocks(text):
+        """living spec -> (preamble_lines, [(name, block_lines)])."""
+        lines = (text or "").splitlines()
+        pre, blocks, i = [], [], 0
+        while i < len(lines) and not lines[i].strip().startswith("### Requirement:"):
+            pre.append(lines[i])
+            i += 1
+        while i < len(lines):
+            name = lines[i].strip()[len("### Requirement:"):].strip()
+            blk = [lines[i]]
+            i += 1
+            while i < len(lines):
+                s = lines[i].strip()
+                if s.startswith("### ") or s.startswith("## "):
+                    break
+                blk.append(lines[i])
+                i += 1
+            blocks.append((name, blk))
+        return pre, blocks
+
+    @staticmethod
+    def _join_req_blocks(pre, blocks):
+        parts = ["\n".join(pre).rstrip()]
+        parts += ["\n".join(b).rstrip() for _, b in blocks]
+        return "\n\n".join(p for p in parts if p) + "\n"
+
+    def _archive_spec_change(self, task_id, metadata):
+        """On done: merge the approved change's delta into openspec/specs/
+        and move the change folder to openspec/archive/<date>-<slug>/ so the
+        living specs stay the current truth for the next task."""
+        try:
+            import subprocess as _sp, tempfile as _tf, shutil as _sh, time as _t
+            mirror = self._product_mirror(metadata)
+            if not mirror:
+                return
+            slug = self._spec_slug(task_id)
+            work = _tf.mkdtemp(prefix="spec-arch-")
+            try:
+                cl = _sp.run(["git", "clone", "-q", mirror, work],
+                             capture_output=True, text=True, timeout=180)
+                if cl.returncode != 0:
+                    return
+                cdir = os.path.join(work, "openspec", "changes", slug)
+                if not os.path.isdir(cdir):
+                    self._log_activity(task_id, "spec_archived", agent="it-lead",
+                                       detail="skipped (no change folder in mirror)")
+                    return
+                merged, caps = 0, []
+                for root, _, files in os.walk(os.path.join(cdir, "specs")):
+                    for fn in files:
+                        if not fn.endswith(".md"):
+                            continue
+                        fp = os.path.join(root, fn)
+                        rel = os.path.relpath(fp, cdir)  # specs/<cap>/spec.md
+                        delta = self._delta_sections(open(fp).read())
+                        living = os.path.join(work, "openspec", rel)
+                        os.makedirs(os.path.dirname(living), exist_ok=True)
+                        pre, blocks = self._split_req_blocks(
+                            open(living).read() if os.path.isfile(living) else
+                            "# Specification\n")
+                        for name, blk in delta.get("MODIFIED", []) + delta.get("ADDED", []):
+                            blocks = [(n, b) for n, b in blocks if n != name]
+                            blocks.append((name, blk.splitlines()))
+                            merged += 1
+                        for name, _b in delta.get("REMOVED", []):
+                            blocks = [(n, b) for n, b in blocks if n != name]
+                            merged += 1
+                        open(living, "w").write(self._join_req_blocks(pre, blocks))
+                        caps.append(os.path.basename(os.path.dirname(rel)))
+                arch = os.path.join(work, "openspec", "archive",
+                                    f"{_t.strftime('%Y-%m-%d')}-{slug}")
+                os.makedirs(os.path.dirname(arch), exist_ok=True)
+                if os.path.exists(arch):
+                    _sh.rmtree(arch)
+                _sh.move(cdir, arch)
+                run = lambda *a: _sp.run(list(a), cwd=work, capture_output=True,
+                                         text=True, timeout=120)
+                run("git", "add", "-A")
+                cm = run("git", "-c", "user.name=it-lead", "-c",
+                         "user.email=it-lead@local", "commit", "-m",
+                         f"openspec: archive {slug} ({merged} requirements merged)")
+                if "nothing to commit" in (cm.stdout + cm.stderr):
+                    return
+                p = run("git", "push", "origin", "HEAD:main")
+                if p.returncode != 0:
+                    run("git", "pull", "--rebase", "origin", "main")
+                    p = run("git", "push", "origin", "HEAD:main")
+                self._log_activity(task_id, "spec_archived", agent="it-lead",
+                                   detail=(f"{merged} requirements -> living specs "
+                                           f"[{', '.join(sorted(set(caps)))}]; "
+                                           f"change -> archive/")
+                                   if p.returncode == 0 else f"failed: {p.stderr[:120]}")
+            finally:
+                _sh.rmtree(work, ignore_errors=True)
+        except Exception as e:
+            print(f"⚠️ spec archive failed (non-fatal): {e}", flush=True)
+
+    def _product_mirror(self, metadata):
+        try:
+            pid = self._pid_from(metadata or {})
+            if not pid:
+                return None
+            with self.task_storage.connection.cursor() as cur:
+                cur.execute("SELECT mirror_url FROM products WHERE id=%s", (int(pid),))
+                row = cur.fetchone()
+            self.task_storage.connection.commit()
+            return row[0] if row and row[0] else None
+        except Exception:
+            return None
 
     def _spec_first_flow(self, task_id, task_description, metadata):
         """Returns: 'STOP' (status already set), or None to continue the
         build; on approval the change rides to the coder via
         metadata['spec_context'] and is stored in task metadata."""
+        mirror = self._product_mirror(metadata)
         feedback = ""
         for rnd in range(1, 4):
-            change = self._generate_spec_change(task_description, metadata, feedback)
+            change = None
+            if mirror:
+                change = self._generate_spec_via_agent(
+                    task_id, task_description, mirror, feedback)
+                if change:
+                    self._log_activity(task_id, "spec_generated_by", agent="it-lead",
+                                       detail="spec-writer agent (mirror explored)")
+            if not change:
+                change = self._generate_spec_change(task_description, metadata, feedback)
             if not change:
                 self._log_activity(task_id, "spec_generation_failed", agent="it-lead",
                                    detail="continuing with the planner manifest")
@@ -1505,12 +1697,14 @@ class TaskAssignmentManager:
                                        detail=f"skipped (clone: {cl.stderr[:100]})")
                     return
                 for item in os.listdir(work):
-                    if item == ".git":
+                    # openspec/ is mirror-owned: living specs, archives and the
+                    # approved change folder must survive a product sync.
+                    if item in (".git", "openspec"):
                         continue
                     p = os.path.join(work, item)
                     _sh.rmtree(p) if os.path.isdir(p) else os.remove(p)
                 for item in os.listdir(src):
-                    if item in (".git", "docs", "MANIFEST.md", "AGENTS.md"):
+                    if item in (".git", "docs", "MANIFEST.md", "AGENTS.md", "openspec"):
                         continue
                     s = os.path.join(src, item)
                     d = os.path.join(work, item)
@@ -1529,6 +1723,10 @@ class TaskAssignmentManager:
                 self._log_activity(task_id, "product_sync", agent="it-lead",
                                    detail=("ok -> " + pname) if p.returncode == 0
                                    else f"failed: {p.stderr[:120]}")
+                if p.returncode == 0:
+                    # P3: the task is accepted -> fold its spec delta into the
+                    # living specs and archive the change folder.
+                    self._archive_spec_change(task_id, md)
             finally:
                 _sh.rmtree(tmp, ignore_errors=True)
         except Exception as e:

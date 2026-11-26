@@ -120,3 +120,25 @@ Angular→React репетиция №1 (task-1795541246696): кодер пол�
 approval через колокольчик (текст change'а в вопросе), tasks.md → MANIFEST,
 приёмка QA по сценариям. P3 (archive-автоматизация + браузер зеркала) —
 по мере надобности.
+
+## P3 (реализовано, 2026-11-26)
+
+1. **Авто-archive дельты на done.** После успешного `product_sync` it-lead
+   мержит `openspec/changes/<task>/specs/**` в живые спеки зеркала
+   (ADDED/MODIFIED — замена блока по имени requirement, REMOVED — удаление)
+   и переносит change в `openspec/archive/YYYY-MM-DD-<slug>/`. Push с
+   retry-on-rebase на гонку параллельных задач. Sync больше не стирает
+   `openspec/` из зеркала (каталог принадлежит зеркалу, не results-дереву).
+   Событие `spec_archived` в activity. Юнит (парсер/мерж) и E2E на локальном
+   bare-репо — пройдены.
+2. **Браузер файлов зеркала.** Read-only, без клона: `git ls-tree`/`cat-file`
+   по ssh в bare-репо (`list_product_files` / `get_product_file`, cap 500 КБ,
+   защита от path traversal, бинарники — только имя). Эндпоинты
+   `GET /api/products/{id}/files` и `/api/products/{id}/file/{path}`; во
+   фронте Products — кнопка «Файлы», фильтр openspec/src/dist, просмотр.
+3. **Спеку пишет агент `spec-writer`** (opencode, роль requirements-engineer,
+   edit разрешён только в `openspec/**`): клонирует зеркало, читает живые
+   спеки и код, пишет change на диск. Дым на soft-toys: цитирует реальные
+   `addToCart` (App.jsx:105–113), `ToyModal.jsx`, `Deals.jsx` — спека
+   ground-truth, а не фантазия. Fallback на прежний одиночный LLM-вызов при
+   любом сбое агента; источник помечен в activity (`spec_generated_by`).

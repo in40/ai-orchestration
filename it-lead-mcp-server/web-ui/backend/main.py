@@ -529,6 +529,7 @@ async def handle_task_assignment_via_it_lead(task_data: dict):
                     "business_context": context.get("business_context"),
                     "deploy_after_implementation": context.get("deploy_after_implementation", False),
                     "requires_client": context.get("requires_client", False),
+                    "spec_first": context.get("spec_first", False),
                     "product_id": context.get("product_id")
                 }
                 logger.info(f"Built metadata with deploy_after_implementation={base_arguments['metadata'].get('deploy_after_implementation')}")
@@ -992,6 +993,16 @@ async def publish_product(pid: int, body: dict = None):
 @app.get("/api/products/{pid}/upstream")
 async def check_upstream(pid: int):
     return await _it_lead_tool("check_upstream", {"id": pid})
+
+
+@app.get("/api/products/{pid}/files")
+async def product_files(pid: int):
+    return await _it_lead_tool("list_product_files", {"id": pid})
+
+
+@app.get("/api/products/{pid}/file/{path:path}")
+async def product_file(pid: int, path: str):
+    return await _it_lead_tool("get_product_file", {"id": pid, "path": path})
 
 
 @app.post("/api/products/{pid}/upstream/pull")
